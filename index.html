@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>DARKOUT-TPS PROTOTYPE</title>
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+
+<div id="rotate-notice">
+  <div class="rotate-icon">&#8635;</div>
+  <div>スマートフォンを横向きにしてください</div>
+  <div class="rotate-sub">LANDSCAPE ONLY</div>
+</div>
+
+<div id="game-root">
+
+  <canvas id="scene-canvas"></canvas>
+
+  <!-- HUD: health / ammo / stealth / theme, kept as static DOM nodes updated via textContent/style only (no per-frame element creation) -->
+  <div id="hud">
+    <div id="hud-top-left">
+      <div id="hp-label">HP</div>
+      <div id="hp-bar-track"><div id="hp-bar-fill"></div></div>
+    </div>
+    <div id="hud-top-right">
+      <div id="ammo-readout">AMMO <span id="ammo-count">12</span>/<span id="ammo-reserve">48</span></div>
+      <div id="stealth-readout">STEALTH <span id="stealth-state">OFF</span></div>
+    </div>
+    <div id="hud-center-warning" hidden></div>
+    <div id="theme-label" class="hud-bottom-center">LAB / EXPERIMENT AREA</div>
+  </div>
+
+  <!-- FLASH (Y button) full-screen white pulse -->
+  <div id="flash-overlay"></div>
+
+  <!-- Debug / FPS panel -->
+  <div id="debug-panel">
+    <div>FPS <span id="dbg-fps">--</span></div>
+    <div>FRAME <span id="dbg-frametime">--</span>ms</div>
+    <div>DPR <span id="dbg-dpr">--</span></div>
+    <div>GAMEPAD <span id="dbg-gamepad">NONE</span></div>
+    <div>STATE <span id="dbg-state">--</span></div>
+  </div>
+
+  <!-- Theme switch (dev/test control, always visible in this prototype) -->
+  <div id="theme-switch">
+    <button type="button" data-theme="lab" class="theme-btn active">LAB</button>
+    <button type="button" data-theme="armored" class="theme-btn">ARMORED</button>
+    <button type="button" data-theme="escape" class="theme-btn">ESCAPE</button>
+  </div>
+
+  <!-- Enemy switch (dev/test control) -->
+  <div id="enemy-switch">
+    <button type="button" data-enemy="roid1" class="enemy-btn active">ROID1</button>
+    <button type="button" data-enemy="roid2" class="enemy-btn">ROID2</button>
+    <button type="button" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
+  </div>
+
+  <!-- On-screen touch fallback controls (for testing without a controller) -->
+  <div id="touch-controls">
+    <div id="touch-move-pad" class="touch-pad">
+      <div class="touch-pad-label">MOVE</div>
+      <div class="touch-stick"></div>
+    </div>
+    <div id="touch-light-pad" class="touch-pad">
+      <div class="touch-pad-label">LIGHT</div>
+      <div class="touch-stick"></div>
+    </div>
+    <div id="touch-aim-pad" class="touch-pad">
+      <div class="touch-pad-label">AIM</div>
+      <div class="touch-stick"></div>
+    </div>
+    <div id="touch-buttons">
+      <button type="button" id="touch-fire" class="touch-btn">FIRE</button>
+      <button type="button" id="touch-reload" class="touch-btn">RELOAD</button>
+      <button type="button" id="touch-stealth" class="touch-btn">STEALTH</button>
+      <button type="button" id="touch-flash" class="touch-btn">FLASH</button>
+      <button type="button" id="touch-dash-n" class="touch-btn">N-DASH</button>
+      <button type="button" id="touch-dash-s" class="touch-btn">S-STEP</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="game.js?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,256 @@
+:root {
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  color: #cfd8dc;
+}
+
+#rotate-notice {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #05070a;
+  color: #9fb0bd;
+  text-align: center;
+  font-size: 16px;
+  letter-spacing: 0.04em;
+}
+.rotate-icon { font-size: 40px; }
+.rotate-sub { font-size: 11px; opacity: 0.55; letter-spacing: 0.15em; }
+
+/* Landscape gate: show rotate notice only when the viewport is actually
+   portrait-shaped (covers desktop resize too, not just orientation API). */
+@media (max-aspect-ratio: 1/1) {
+  #rotate-notice { display: flex; }
+  #game-root { display: none !important; }
+}
+
+#game-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+#scene-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+#hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+#hud-top-left {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#hp-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ff6b6b;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+#hp-bar-track {
+  width: 160px;
+  height: 10px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#hp-bar-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #ff3b3b, #ff8a3b);
+  transition: width 0.15s ease-out;
+}
+
+#hud-top-right {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  text-align: right;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+#ammo-readout { color: #e0e6ea; margin-bottom: 3px; }
+#ammo-count { font-weight: 700; }
+#stealth-readout { color: #7fd3ff; opacity: 0.85; }
+#stealth-readout.active #stealth-state { color: #7fffb0; font-weight: 700; }
+
+#hud-center-warning {
+  position: absolute;
+  top: 14%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #ff4040;
+  text-shadow: 0 0 10px rgba(255,40,40,0.8);
+  animation: warnPulse 0.5s infinite alternate;
+}
+@keyframes warnPulse { from { opacity: 0.4; } to { opacity: 1; } }
+
+.hud-bottom-center {
+  position: absolute;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: rgba(200,210,220,0.5);
+}
+
+#flash-overlay {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 40;
+  transition: opacity 0.35s ease-out;
+}
+#flash-overlay.firing {
+  opacity: 0.9;
+  transition: none;
+}
+
+#debug-panel {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 10px;
+  line-height: 1.5;
+  display: flex;
+  gap: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+  color: #8fe38f;
+}
+#debug-panel span { color: #fff; }
+
+#theme-switch, #enemy-switch {
+  position: absolute;
+  z-index: 50;
+  display: flex;
+  gap: 4px;
+}
+#theme-switch { top: max(10px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); top: 40px; }
+#enemy-switch { top: 40px; right: max(14px, env(safe-area-inset-right)); }
+.theme-btn, .enemy-btn {
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  padding: 4px 7px;
+  background: rgba(20,24,28,0.7);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #9fb0bd;
+  border-radius: 3px;
+}
+.theme-btn.active, .enemy-btn.active {
+  background: rgba(80,180,255,0.35);
+  border-color: rgba(120,200,255,0.8);
+  color: #fff;
+}
+
+#touch-controls {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+}
+.touch-pad {
+  position: absolute;
+  bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px));
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.2);
+  touch-action: none;
+}
+.touch-pad-label {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: rgba(200,210,220,0.55);
+}
+.touch-stick {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.25);
+  transition: none;
+}
+#touch-move-pad { left: max(14px, env(safe-area-inset-left)); }
+#touch-light-pad { left: calc(max(14px, env(safe-area-inset-left)) + 110px); }
+#touch-aim-pad { right: max(120px, calc(env(safe-area-inset-right) + 120px)); }
+
+#touch-buttons {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(20px, env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(2, 52px);
+  gap: 6px;
+}
+.touch-btn {
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  padding: 10px 2px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.25);
+  color: #e0e6ea;
+  border-radius: 6px;
+  touch-action: none;
+}
+.touch-btn:active { background: rgba(255,255,255,0.3); }
+
+/* Narrow-height landscape (small phones): shrink touch controls a bit */
+@media (max-height: 420px) {
+  .touch-pad { width: 78px; height: 78px; bottom: max(56px, calc(env(safe-area-inset-bottom) + 56px)); }
+  .touch-btn { padding: 7px 2px; }
+}
