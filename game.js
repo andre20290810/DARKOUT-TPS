@@ -52,33 +52,90 @@ const STRAFE_DASH_DISTANCE_PX = 100;
 const STRAFE_MAX_OFFSET = 0.30; // fraction of canvas width from center
 
 // Enemy virtual distance range (world z-like units).
-const ENEMY_Z_MIN = 70;
 const ENEMY_Z_MAX = 1500;
+// 2ND-ROUND PART 4: max-approach distance is now PER ENEMY TYPE instead of
+// one shared ENEMY_Z_MIN=70 floor — the old shared floor let the player
+// walk up until a giant ROID mech's own closeBoost/anchor-crop math
+// overflowed the screen entirely (way oversized, not "just barely fits").
+// ROID1/ROID2 (giant mechs): always fully visible, foot-anchored, and the
+// approach floor is SOLVED per-frame from the current viewport height (see
+// approachZMinForRoid()) rather than a fixed world-z constant, so "whole
+// body just inside frame" holds on any device, not just the one this was
+// eyeballed on. GABRIEL (human-scale): allowed to approach much closer,
+// reusing round 1's existing closeBoost/anchor-crop formula UNCHANGED
+// (that formula already does "get close -> frame shifts toward the upper
+// body" correctly) — only ITS OWN zMin/world-height are new this round.
+// (145, not something smaller: round 1's closeBoost formula reaches its
+// OWN fixed maximum multiplier — 2.17x — at any zMin, since distNorm is
+// self-relative to zMin; so zMin alone controls how much on-screen height
+// that maximum boost lands on, via proj.scale(zMin). 145 was picked so the
+// closest approach reads as "clearly, dramatically close — upper body
+// fills most of the frame" without overflowing so far past the viewport
+// that it looks broken, while staying well inside — i.e. reachable before
+// — ROID's own ~247 floor (a live, viewport-height-solved value; see
+// approachZMinForRoid()), satisfying "GABRIELの方がROIDより近づける".)
+const GABRIEL_Z_MIN = 145;
+const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, never actually reached in practice
 // Enemy sprite height expressed in the SAME world-unit space the corridor
 // projection uses (see project()), so proj.scale converts it to pixels
 // consistently with everything else on screen — NOT the source image's own
 // pixel height, which would double up with proj.scale and blow up the size.
-const ENEMY_WORLD_HEIGHT = 700;
+// ROID (giant mech) and GABRIEL (human-scale) now get their OWN target
+// height — previously both shared one ENEMY_WORLD_HEIGHT=700, which made
+// GABRIEL exactly as "big" as the giant ROID mechs; PART 4 explicitly asks
+// for GABRIEL to read closer to human scale.
+const ROID_WORLD_HEIGHT = 700; // unchanged value from round 1 (was ENEMY_WORLD_HEIGHT)
+const GABRIEL_WORLD_HEIGHT = 480;
+const ROID_FULLBODY_SCREEN_FRAC = 0.92; // PART4: ROID's own max-approach target — whole body still just inside frame
 
-// Flashlight / aim.
+// PART 2: ROID1/ROID2 5-zone facing (farLeft/left/center/right/farRight),
+// replacing round 1's coarse east/west-only flip. NEAR/FAR/HYST are this
+// game's own screen-space tuning (ACTION-GAME's own real
+// ROID_FACE_ZONE_PX/FAR_PX/HYST_PX values of 60/120/20 are a different
+// game's canvas-coordinate scale — not directly portable — but the same
+// order of magnitude was kept since DARKOUT-TPS's own pre-existing
+// ENEMY_TURN_HYSTERESIS_PX=36 single-boundary constant was tuned for this
+// exact canvas and is in the same range).
+const ROID_FACE_ZONE_NEAR_PX = 60;
+const ROID_FACE_ZONE_FAR_PX = 120;
+const ROID_FACE_ZONE_HYST_PX = 20;
+
+// PART 3: ROID's FIRE pose is a non-directional 4-frame ping-pong
+// animation (matches ACTION-GAME's own real ROID1_SPRITES/ROID2_SPRITES —
+// investigated directly: its FIRE frames are NOT zone-specific, only
+// SEARCH is), gated on an actual shot having just been fired — not on
+// being merely "in an attack state" the whole time. Values copied verbatim
+// from ACTION-GAME's own real ROID_FIRE_FRAME_MS/ROID_ATTACK_POSE_HOLD_MS
+// constants (game.js ~L5023/5038).
+const ROID_FIRE_FRAME_MS = 110;
+const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
+
+// Flashlight / aim / view.
+// 2ND-ROUND PART 6/8: RIGHT STICK now drives ONE unified "view" point — the
+// flashlight beam AND the aim reticle sit at the exact same spot (spec:
+// "右スティックは今後、照準を合わせる/視界を操作するための入力として扱います").
+// VIEW_RANGE replaces the old separate FLASHLIGHT_STICK_RANGE (was LEFT
+// STICK, linear) / AIM_RANGE (was RIGHT STICK, curved) split — max reach is
+// kept the same magnitude both previously used (190px) so the beam/reticle
+// still sweeps the same distance at full deflection; the whole point moves
+// through applyAimCurve() now, and LEFT STICK is fully freed for MOVE.
 const FLASHLIGHT_BASE_RADIUS = 150;
-const FLASHLIGHT_STICK_RANGE = 190; // px the light can be pushed from its anchor
-const AIM_RANGE = 190; // px, pre-clamp — UNCHANGED: max reach at full stick
-// deflection must stay close to what it already was (see AIM_CURVE_POWER
-// below); only small/medium inputs get gentler.
-const AIM_MARKER_PAD = 14; // keep the aim reticle a little inside the light edge
+const VIEW_RANGE = 190; // px, pre-clamp — max sweep at full stick deflection
 
 // FOLLOWUP FIX (AIM was too twitchy for fine target lock): deadzone is
-// intentionally the SAME as MOVE/LIGHT's (never shrunk — a smaller deadzone
+// intentionally the SAME as MOVE's (never shrunk — a smaller deadzone
 // invites stick drift, which the spec explicitly warns against). What
-// changes is a response curve applied only to AIM's two axes: output =
-// sign(x) * |x|^AIM_CURVE_POWER. At x=1 (full deflection) output is still
-// 1 — max reach is preserved — but at x=0.5 output drops to ~0.5^2.2≈0.22,
-// so small stick nudges move the reticle far less while big ones stay
-// close to today's speed. MOVE and LIGHT are untouched (their own
-// deadzone/curve below is the original linear one).
+// changes is a response curve applied only to the RIGHT STICK (which now
+// drives BOTH the flashlight/view direction and the aim reticle — PART 6 of
+// the 2nd-round spec merges "視界操作" and "AIM" into one stick): output =
+// sign(x) * |x|^AIM_CURVE_POWER. At x=1 (full deflection) output is still 1
+// — max reach/max sweep speed is preserved — but small nudges are dulled
+// far more aggressively than the 1st-round curve (power raised from 2.2 to
+// 2.6: at x=0.5, output now drops to ~0.5^2.6≈0.165, vs ~0.22 before).
+// MOVE (LEFT STICK/D-PAD) is untouched (its own deadzone/curve below is the
+// original linear one).
 const AIM_DEADZONE = 0.16;
-const AIM_CURVE_POWER = 2.2;
+const AIM_CURVE_POWER = 2.6;
 
 const FIRE_COOLDOWN_MS = 130;
 const MAG_SIZE = 12;
@@ -89,6 +146,14 @@ const RELOAD_MS = 950;
 const BULLET_TRAVEL_MS = 55;
 
 const PLAYER_MAX_HP = 100;
+// PART 5 (2nd round): a moderate visual size bump only — leaning toward
+// the original "waist-up TPS presence" intent without overwhelming AIM/
+// enemy visibility. There is no separate player hit/collision-radius
+// constant in this game (damage is resolved via enemy attack-phase
+// judgment, not player-sprite distance checks), so this scale change has
+// nothing coupled to it that would need a matching, unrequested gameplay
+// change.
+const PLAYER_SCALE_BOOST = 1.18;
 
 const GAMEPAD_AXIS_DEADZONE = 0.16;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
@@ -121,7 +186,21 @@ const STEALTH_FADE_MS = 150; // enter/exit fade, same duration as ACTION-GAME
 // ---------------------------------------------------------------------
 const COVER_BLOCKS_ATTACK = { sniper: true, missile: false, claw: false };
 const COVER_BARREL_Z_MAX = 300; // barrel must be this close (world-z) to be usable as cover
-const COVER_RADIUS_PX = 72; // screen-space radius at proj.scale===1, shrinks with distance
+// 2ND-ROUND PART 1: the barrel was rendered far too large — at its closest
+// (drawH = 300 * proj.scale, proj.scale up to ~0.87 near the camera) it hit
+// ~260px tall, well OVER the player's own ~147px on-screen height (a drum
+// can was visually bigger than the protagonist). BARREL_DRAW_H is the new
+// world-scale "height" the barrel targets (down from the old hardcoded
+// 300), tuned so it never exceeds the player's own apparent height even at
+// the closest reachable distance (Z_NEAR=40 -> drawH ≈ 112px < ~147px) while
+// still reading as "a drum can a person can crouch behind" at typical COVER
+// range (z=COVER_BARREL_Z_MAX -> drawH ≈ 60px). COVER_RADIUS_PX is scaled
+// down by the exact same ratio (130/300≈0.43->150/300=0.5) as BARREL_DRAW_H
+// so the visible shadow/footprint and the actual COVER ZONE judgment never
+// drift apart after the resize (spec: "見た目とcover判定範囲が大きく乖離
+// しないよう調整").
+const BARREL_DRAW_H = 150; // was 300 (inline) — see comment above
+const COVER_RADIUS_PX = 36; // was 72 — same 0.5x ratio as BARREL_DRAW_H
 const BARREL_SPACING_Z = 420;
 const BARREL_LANE_OFFSET = 130; // world X either side of center — never blocks the center path
 
@@ -210,6 +289,56 @@ function loadImg(src) {
   return img;
 }
 
+// 2ND-ROUND PART 2/3: ROID1/ROID2 direction-specific SEARCH art (5 frames
+// each) and non-directional FIRE ping-pong art (4 frames each), copied
+// read-only from ACTION-GAME's real assets/characters/roid{1,2}/ directory
+// — not guessed or generated. bodyTopFrac/bodyBottomFrac are ACTION-GAME's
+// OWN real per-frame alpha-channel-measured body bounds (copied verbatim
+// from its ROID1_SPRITES/ROID2_SPRITES definitions, game.js ~L4937-4973) —
+// reused here so a frame's own canvas padding (they vary a lot: e.g.
+// roid1_search_05.png is a 1280x2427 canvas where the body itself only
+// fills a portion) never desyncs the on-screen body height between frames,
+// the same problem ACTION-GAME's own computeBodyVisualScale() exists to
+// solve — see spriteFrame()/computeRoidBodyScale() below.
+function spriteFrame(src, bodyTopFrac, bodyBottomFrac) {
+  return { img: loadImg(src), bodyTopFrac, bodyBottomFrac };
+}
+
+const ROID1_SPRITES = {
+  search: [
+    spriteFrame('assets/roid1/roid1_search_01.png', 0.0016, 0.9984),
+    spriteFrame('assets/roid1/roid1_search_02.png', 0.0016, 0.9984),
+    spriteFrame('assets/roid1/roid1_search_03.png', 0.0011, 0.9977),
+    spriteFrame('assets/roid1/roid1_search_04.png', 0.0023, 0.9977),
+    spriteFrame('assets/roid1/roid1_search_05.png', 0.0012, 0.9979),
+  ],
+  fire: [
+    spriteFrame('assets/roid1/roid1_fire_01.png', 0.0023, 0.9984),
+    spriteFrame('assets/roid1/roid1_fire_02.png', 0.0023, 0.9984),
+    spriteFrame('assets/roid1/roid1_fire_03.png', 0.0023, 0.9984),
+    spriteFrame('assets/roid1/roid1_fire_04.png', 0.0023, 0.9984),
+  ],
+};
+const ROID2_SPRITES = {
+  search: [
+    spriteFrame('assets/roid2/roid2_search_01.png', 0.0031, 0.9984),
+    spriteFrame('assets/roid2/roid2_search_02.png', 0.0031, 0.9977),
+    spriteFrame('assets/roid2/roid2_search_03.png', 0.0023, 0.9977),
+    spriteFrame('assets/roid2/roid2_search_04.png', 0.0031, 0.9984),
+    spriteFrame('assets/roid2/roid2_search_05.png', 0.0031, 0.9969),
+  ],
+  fire: [
+    spriteFrame('assets/roid2/roid2_fire_01.png', 0.0556, 0.9802),
+    spriteFrame('assets/roid2/roid2_fire_02.png', 0.1091, 0.9286),
+    spriteFrame('assets/roid2/roid2_fire_03.png', 0.0734, 0.9593),
+    spriteFrame('assets/roid2/roid2_fire_04.png', 0.0853, 0.9831),
+  ],
+};
+// zone -> search-frame-index, copied verbatim from ACTION-GAME's own
+// ROID1_FACE_FRAME/ROID2_FACE_FRAME (game.js ~L5059-5060) — both bosses
+// share the same zone->index layout in the reference game.
+const ROID_FACE_FRAME = { farRight: 0, right: 1, center: 2, left: 3, farLeft: 4 };
+
 const ASSETS = {
   player: {
     fire: loadImg('assets/player/player_north_fire.png'),
@@ -229,14 +358,8 @@ const ASSETS = {
     dashE: loadImg('assets/player/player_dash_east.png'),
     dashW: loadImg('assets/player/player_dash_west.png'),
   },
-  roid1: {
-    idle: loadImg('assets/roid1/roid1_search.png'),
-    fire: loadImg('assets/roid1/roid1_fire.png'),
-  },
-  roid2: {
-    idle: loadImg('assets/roid2/roid2_search.png'),
-    fire: loadImg('assets/roid2/roid2_fire.png'),
-  },
+  roid1: ROID1_SPRITES,
+  roid2: ROID2_SPRITES,
   gabriel: {
     idle: loadImg('assets/gabriel/gabriel_idle.png'),
     windup: loadImg('assets/gabriel/gabriel_claw_windup.png'),
@@ -292,7 +415,12 @@ const state = {
     z: 900,
     lane: 0,          // world X offset — slow drift only (PART 6), never a fast strafe
     laneTarget: 0,
-    facing: 'east',   // 'east' | 'west' — which way the sprite mirrors to face the player
+    facing: 'east',   // GABRIEL ONLY — 'east' | 'west', which way the sprite mirrors
+    // PART 2 (2nd round): ROID1/ROID2's own 5-zone facing, hysteresis-held
+    // one step at a time — replaces the old 2-state east/west flip for
+    // these types (real direction-specific art now exists, see
+    // ROID1_SPRITES/ROID2_SPRITES, so no canvas mirroring is needed).
+    zone: 'center',   // 'farLeft' | 'left' | 'center' | 'right' | 'farRight'
     lastTurnAt: -Infinity,
     attackState: 'idle', // per-kind phase name; see updateEnemy() for the full list
     attackUntil: 0,
@@ -300,6 +428,13 @@ const state = {
     kind: 'sniper',   // 'sniper' | 'missile' | 'claw'
     hp: 100,
     hitFlashUntil: 0,
+    // PART 3 (2nd round): ROID's own NORMAL<->FIRE animation state — the
+    // FIRE pose ping-pongs through its 4 frames only while actively firing
+    // (see isRoidActivelyFiring()/updateRoidAnimation()), gated on
+    // lastShotFiredAt (stamped at the real moment a shot exists — SNIPER's
+    // FIRE-phase bolt spawn — not for the whole attack-state span).
+    roidFireFrame: 0, roidFireDir: 1, roidFireFrameElapsedMs: 0,
+    lastShotFiredAt: -Infinity,
     // SNIPER (PART 8): red/yellow lock box tracks the player live during
     // both lock phases; fireFrom/fireTo freeze the bolt's endpoints the
     // instant FIRE starts, so the traveling-bolt render is deterministic.
@@ -313,8 +448,10 @@ const state = {
 
   input: {
     moveX: 0, moveY: 0,
-    lightX: 0, lightY: 0,
-    aimX: 0, aimY: 0,
+    // PART 6/8 (2nd round): flashlight aim + reticle aim are now ONE
+    // unified "view" input driven by the RIGHT STICK (see getFlashlightCenter/
+    // getAimPoint) — the old separate lightX/lightY + aimX/aimY pair is gone.
+    viewX: 0, viewY: 0,
     fireHeld: false,
   },
 
@@ -350,7 +487,11 @@ function spawnParticle(cfg) {
   for (let i = 0; i < state.particles.length; i++) {
     const p = state.particles[i];
     if (!p.active) {
-      Object.assign(p, cfg, { active: true });
+      // vx/vy default to 0 (most particle types don't move) — explicit so
+      // a pool slot previously used by a velocity-carrying 'ishard'
+      // particle (PART 9, 2nd round) never leaves stale motion on a
+      // later, unrelated particle that reuses the same slot.
+      Object.assign(p, { vx: 0, vy: 0 }, cfg, { active: true });
       return p;
     }
   }
@@ -497,42 +638,54 @@ function pollGamepad() {
   dbgGamepadEl.textContent = gp ? (gp.id ? gp.id.slice(0, 18) : 'CONNECTED') : 'NONE';
 
   const gpMove = { x: 0, y: 0 };
-  const gpLight = { x: 0, y: 0 };
-  const gpAim = { x: 0, y: 0 };
+  const gpView = { x: 0, y: 0 };
   let gpFire = false;
 
   if (gp) {
     const b = gp.buttons;
     const prev = state.prevButtons;
     const pressed = (i) => !!(b[i] && b[i].pressed);
-    const edge = (i) => pressed(i) && !(prev[i] && prev[i]);
+    const edge = (i) => pressed(i) && !prev[i];
 
-    // D-PAD -> normal move
-    if (pressed(14)) gpMove.x -= 1; // left
-    if (pressed(15)) gpMove.x += 1; // right
-    if (pressed(12)) gpMove.y -= 1; // up = north/forward
-    if (pressed(13)) gpMove.y += 1; // down = south/back
-
-    // MOVE/LIGHT sticks — UNCHANGED linear deadzone (PART 2: don't touch
-    // what already feels right, and don't shrink deadzone anywhere — a
-    // smaller deadzone only invites drift).
+    // 2ND-ROUND PART 8: button remap.
+    // LEFT STICK + D-PAD -> MOVE (both usable interchangeably, summed then
+    // clamped to a unit vector — the same "shared pipeline" pattern D-PAD
+    // already used ALONE before this batch).
+    if (pressed(14)) gpMove.x -= 1; // D-PAD left
+    if (pressed(15)) gpMove.x += 1; // D-PAD right
+    if (pressed(12)) gpMove.y -= 1; // D-PAD up = north/forward
+    if (pressed(13)) gpMove.y += 1; // D-PAD down = south/back
     const ax = (v) => (Math.abs(v) < GAMEPAD_AXIS_DEADZONE ? 0 : v);
-    gpLight.x = ax(gp.axes[0] || 0);
-    gpLight.y = ax(gp.axes[1] || 0);
-    // AIM stick only — deadzone (same size as above, not smaller) then a
-    // response curve so small nudges move the reticle far less while full
-    // deflection still reaches the same max speed as before (PART 2).
-    gpAim.x = applyAimCurve(gp.axes[2] || 0);
-    gpAim.y = applyAimCurve(gp.axes[3] || 0);
+    gpMove.x += ax(gp.axes[0] || 0);
+    gpMove.y += ax(gp.axes[1] || 0);
+    const moveMag = Math.hypot(gpMove.x, gpMove.y);
+    if (moveMag > 1) { gpMove.x /= moveMag; gpMove.y /= moveMag; }
 
-    gpFire = pressed(5); // RB
-    if (edge(4)) state.actions.reload = true;      // LB
-    if (edge(2)) state.actions.stealth = true;     // X
-    if (edge(3)) state.actions.flash = true;       // Y
-    if (edge(1)) state.actions.northDash = true;   // B
-    if (edge(0)) state.actions.southDash = true;   // A
-    if (edge(7)) state.actions.eastDash = true;    // RT
-    if (edge(6)) state.actions.westDash = true;    // LT
+    // RIGHT STICK -> unified VIEW (flashlight + aim reticle, PART 6/8) —
+    // deadzone (never shrunk) then the response curve so small nudges move
+    // the view far less while full deflection still reaches the same max
+    // sweep speed as before.
+    gpView.x = applyAimCurve(gp.axes[2] || 0);
+    gpView.y = applyAimCurve(gp.axes[3] || 0);
+
+    gpFire = pressed(5);                            // RB = FIRE
+    if (edge(4)) state.actions.flash = true;         // LB = FLASH
+    if (edge(3)) state.actions.northDash = true;      // Y = NORTH DASH
+    if (edge(2)) state.actions.westDash = true;       // X = WEST DASH
+    if (edge(1)) state.actions.eastDash = true;       // B = EAST DASH
+    if (edge(0)) state.actions.southDash = true;      // A = SOUTH DASH / BACKSTEP
+    // LT(6) + RT(7) held SIMULTANEOUSLY -> STEALTH. Rising-edge on the AND
+    // condition itself (never LT alone, never RT alone, and never re-fires
+    // on every frame both stay held — a latch, not a hold-to-toggle).
+    const bothTriggersHeld = pressed(6) && pressed(7);
+    const bothTriggersHeldPrev = !!prev[6] && !!prev[7];
+    if (bothTriggersHeld && !bothTriggersHeldPrev) state.actions.stealth = true;
+    // RELOAD isn't named anywhere in the 2nd-round button spec (every
+    // face/shoulder/trigger button is now spoken for by MOVE/AIM/DASH/FIRE/
+    // FLASH/STEALTH) — left stick click (L3) is the one remaining unused
+    // standard-mapping button, so RELOAD moves there rather than being
+    // silently dropped. Touch's own RELOAD button is unaffected.
+    if (edge(10)) state.actions.reload = true;        // L3 = RELOAD
 
     const nextPrev = new Array(b.length);
     for (let i = 0; i < b.length; i++) nextPrev[i] = pressed(i);
@@ -541,7 +694,7 @@ function pollGamepad() {
     state.prevButtons = [];
   }
 
-  return { move: gpMove, light: gpLight, aim: gpAim, fire: gpFire };
+  return { move: gpMove, view: gpView, fire: gpFire };
 }
 
 // ---------------------------------------------------------------------
@@ -619,6 +772,12 @@ document.querySelectorAll('.enemy-btn').forEach((btn) => {
     state.enemy.nextIdleCheckAt = 0;
     state.enemy.z = 900;
     state.enemy.facing = 'east';
+    state.enemy.zone = 'center';
+    state.enemy.lastTurnAt = -Infinity;
+    state.enemy.roidFireFrame = 0;
+    state.enemy.roidFireDir = 1;
+    state.enemy.roidFireFrameElapsedMs = 0;
+    state.enemy.lastShotFiredAt = -Infinity;
     state.enemy.lane = 0;
     state.enemy.laneTarget = 0;
   });
@@ -724,6 +883,21 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   return forwardDelta;
 }
 
+// PART 4 (2nd round): the closest world-z ROID1/ROID2 can ever be pushed to
+// — solved from the CURRENT viewport height so "whole body just inside
+// frame" holds on any device, rather than a fixed world-z constant that
+// would only happen to look right on the one screen this was eyeballed on.
+// drawH for ROID at any z is ROID_WORLD_HEIGHT*proj.scale (see
+// computeEnemyDrawRect() — ROID is always foot-anchored/never cropped), so
+// this simply solves that same formula for the z where drawH ==
+// ROID_FULLBODY_SCREEN_FRAC * cssH.
+function approachZMinForRoid() {
+  const targetH = ROID_FULLBODY_SCREEN_FRAC * state.cssH;
+  const neededScale = targetH / ROID_WORLD_HEIGHT;
+  const z = FOCAL * (1 / Math.max(0.001, neededScale) - 1);
+  return clamp(z, ENEMY_Z_ABS_FLOOR, ENEMY_Z_MAX);
+}
+
 function applyForwardDelta(forwardDelta) {
   for (const s of structures) {
     s.z -= forwardDelta;
@@ -738,7 +912,10 @@ function applyForwardDelta(forwardDelta) {
     else if (b.z > Z_FAR) b.z -= Z_RANGE;
   }
   const e = state.enemy;
-  e.z = Math.max(ENEMY_Z_MIN, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
+  // PART 4: per-type max-approach floor — ROID1/ROID2 (giant mechs) stop
+  // much farther out than GABRIEL (human-scale), see the constants above.
+  const zMin = e.type === 'gabriel' ? GABRIEL_Z_MIN : approachZMinForRoid();
+  e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
 }
 
 // PART 4/9: is the player currently standing in ANY barrel's cover zone?
@@ -773,11 +950,9 @@ function playerMarkerPos() {
   return { x: state.centerX + state.player.strafeOffset, y: state.cssH * 0.9 };
 }
 
-// PART 6: facing/turning — a slow, deliberate "heavy mech" turn, not an
-// instant flip. desiredFacing only changes once the player has crossed
-// ENEMY_TURN_HYSTERESIS_PX past center (no flicker at the midpoint), and
-// even then the flip itself is rate-limited by ENEMY_TURN_COOLDOWN_MS.
-// Lane drift is a slow bias toward the player's general side, never a
+// Facing/turning — a slow, deliberate "heavy mech" turn, not an instant
+// flip; the flip itself is rate-limited by ENEMY_TURN_COOLDOWN_MS either
+// way. Lane drift is a slow bias toward the player's general side, never a
 // fast strafe — the mech shifts weight, it doesn't sidestep.
 function updateEnemyFacing(dt, now) {
   const e = state.enemy;
@@ -785,12 +960,43 @@ function updateEnemyFacing(dt, now) {
   const playerScreenX = state.centerX + state.player.strafeOffset;
   const diff = playerScreenX - proj.x;
 
-  let desired = e.facing;
-  if (diff > ENEMY_TURN_HYSTERESIS_PX) desired = 'east';
-  else if (diff < -ENEMY_TURN_HYSTERESIS_PX) desired = 'west';
-  if (desired !== e.facing && now - e.lastTurnAt > ENEMY_TURN_COOLDOWN_MS) {
-    e.facing = desired;
-    e.lastTurnAt = now;
+  if (e.type === 'gabriel') {
+    // GABRIEL — unchanged from round 1: simple 2-state east/west flip.
+    let desired = e.facing;
+    if (diff > ENEMY_TURN_HYSTERESIS_PX) desired = 'east';
+    else if (diff < -ENEMY_TURN_HYSTERESIS_PX) desired = 'west';
+    if (desired !== e.facing && now - e.lastTurnAt > ENEMY_TURN_COOLDOWN_MS) {
+      e.facing = desired;
+      e.lastTurnAt = now;
+    }
+  } else {
+    // PART 2 (2nd round): ROID1/ROID2 — 5-zone hysteresis-held facing,
+    // stepping only ONE zone at a time (never jumps straight from farLeft
+    // to farRight), the same "single-step-per-frame hysteresis" shape
+    // ACTION-GAME's own real updateRoidTargetTracking() uses for its
+    // facingZone (game.js ~L7658-7683), adapted to this game's own
+    // screen-space diff (the same value the old 2-zone version already
+    // computed the exact same way).
+    let zone = e.zone;
+    const NEAR = ROID_FACE_ZONE_NEAR_PX, FAR = ROID_FACE_ZONE_FAR_PX, HYST = ROID_FACE_ZONE_HYST_PX;
+    if (zone === 'center') {
+      if (diff > NEAR) zone = 'right';
+      else if (diff < -NEAR) zone = 'left';
+    } else if (zone === 'right') {
+      if (diff > FAR) zone = 'farRight';
+      else if (diff < NEAR - HYST) zone = 'center';
+    } else if (zone === 'farRight') {
+      if (diff < FAR - HYST) zone = 'right';
+    } else if (zone === 'left') {
+      if (diff < -FAR) zone = 'farLeft';
+      else if (diff > -(NEAR - HYST)) zone = 'center';
+    } else if (zone === 'farLeft') {
+      if (diff > -(FAR - HYST)) zone = 'left';
+    }
+    if (zone !== e.zone && now - e.lastTurnAt > ENEMY_TURN_COOLDOWN_MS) {
+      e.zone = zone;
+      e.lastTurnAt = now;
+    }
   }
 
   e.laneTarget = clamp(diff * 0.12, -70, 70);
@@ -841,11 +1047,50 @@ function resolveMissileImpact(now) {
   }
 }
 
+// PART 3 (2nd round): is ROID currently within its post-shot FIRE-pose hold
+// window? Matches ACTION-GAME's own real isRoidActivelyFiring() — gated on
+// the actual shot-fired timestamp, not on "attackState is any attack-ish
+// value" (which is what made the OLD static single fire-image swap show
+// for the entire lock/fire/impact span, including during MISSILE attacks
+// where the real reference game never swaps to FIRE at all).
+function isRoidActivelyFiring(now) {
+  return (now - state.enemy.lastShotFiredAt) < ROID_ATTACK_POSE_HOLD_MS;
+}
+
+// Ping-pong index/direction stepper — bounces 0->last->0 instead of
+// wrapping, matching ACTION-GAME's own real stepPingPong() (game.js
+// ~L7602-7609), used here for ROID's FIRE frame cycling.
+function stepPingPong(index, dir, len) {
+  if (len <= 1) return { index: 0, dir: 1 };
+  let next = index + dir;
+  let nextDir = dir;
+  if (next >= len) { next = len - 2 >= 0 ? len - 2 : 0; nextDir = -1; }
+  else if (next < 0) { next = Math.min(1, len - 1); nextDir = 1; }
+  return { index: next, dir: nextDir };
+}
+
+function updateRoidAnimation(dt, now) {
+  const e = state.enemy;
+  if (e.type !== 'roid1' && e.type !== 'roid2') return;
+  if (isRoidActivelyFiring(now)) {
+    e.roidFireFrameElapsedMs += dt * 1000;
+    if (e.roidFireFrameElapsedMs >= ROID_FIRE_FRAME_MS) {
+      e.roidFireFrameElapsedMs = 0;
+      const step = stepPingPong(e.roidFireFrame, e.roidFireDir, ASSETS[e.type].fire.length);
+      e.roidFireFrame = step.index;
+      e.roidFireDir = step.dir;
+    }
+  } else {
+    e.roidFireFrame = 0; e.roidFireDir = 1; e.roidFireFrameElapsedMs = 0;
+  }
+}
+
 function updateEnemy(dt, now) {
   const e = state.enemy;
   const p = state.player;
 
   updateEnemyFacing(dt, now);
+  updateRoidAnimation(dt, now);
 
   if (e.attackState === 'idle') {
     if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500;
@@ -906,6 +1151,11 @@ function updateEnemy(dt, now) {
           e.fireToX = e.lockX; e.fireToY = e.lockY;
           e.attackState = 'fire';
           e.attackUntil = now + SNIPER_FIRE_TRAVEL_MS;
+          // PART 3 (2nd round): this is the real "a shot now exists"
+          // instant (matches ACTION-GAME's own fireRoidSniperBullet(), the
+          // exact moment it stamps roidState.lastShotFiredAt) — triggers
+          // the NORMAL<->FIRE ping-pong for ROID1/ROID2 only.
+          if (e.type !== 'gabriel') e.lastShotFiredAt = now;
         }
       }
     } else if (e.attackState === 'fire') {
@@ -952,33 +1202,66 @@ function screenSpaceEnemyAnchor() {
   return proj;
 }
 
-// Poses that should show the "aiming/firing" sprite instead of idle, for
-// the non-GABRIEL enemy types (sniper + missile share one aim pose).
-const ENEMY_AIM_POSES = ['lock_red', 'lock_yellow', 'fire', 'lockon', 'target', 'impact'];
+// PART 2/3/4 (2nd round): per-frame body-height normalization for
+// ROID1/ROID2 — mirrors ACTION-GAME's own real computeBodyVisualScale(),
+// so a frame's own canvas padding (varies a lot between the 9 real source
+// images) never desyncs the on-screen body height between zones/poses.
+function computeBodyVisualScale(frame, targetBodyHeightPx) {
+  const bodyHeightPx = (frame.bodyBottomFrac - frame.bodyTopFrac) * frame.img.naturalHeight;
+  return bodyHeightPx > 0 ? targetBodyHeightPx / bodyHeightPx : 1;
+}
 
 // Shared by renderEnemy() and fireWeapon() so the hit-test always matches
 // what's actually drawn.
 function computeEnemyDrawRect() {
   const e = state.enemy;
   const proj = screenSpaceEnemyAnchor();
-  const set = ASSETS[e.type];
-  const img = (e.type === 'gabriel')
-    ? (e.attackState === 'telegraph' ? set.windup : (e.attackState === 'impact' ? set.release : set.idle))
-    : (ENEMY_AIM_POSES.indexOf(e.attackState) !== -1 ? set.fire : set.idle);
 
-  const distNorm = 1 - (e.z - ENEMY_Z_MIN) / (ENEMY_Z_MAX - ENEMY_Z_MIN);
-  const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 2.6;
-  const drawH = ENEMY_WORLD_HEIGHT * proj.scale * closeBoost;
-  const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
-  const drawW = drawH * aspect;
+  if (e.type === 'gabriel') {
+    // GABRIEL: round-1's existing crop-toward-upper-body approach shape is
+    // UNCHANGED (it already does "get close -> frame shifts to the upper
+    // body" correctly) — PART 4 only retunes GABRIEL's OWN zMin/world
+    // height (see GABRIEL_Z_MIN/GABRIEL_WORLD_HEIGHT), not this formula.
+    const set = ASSETS.gabriel;
+    const img = e.attackState === 'telegraph' ? set.windup : (e.attackState === 'impact' ? set.release : set.idle);
+    const distNorm = 1 - (e.z - GABRIEL_Z_MIN) / (ENEMY_Z_MAX - GABRIEL_Z_MIN);
+    const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 2.6;
+    const drawH = GABRIEL_WORLD_HEIGHT * proj.scale * closeBoost;
+    const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
+    const drawW = drawH * aspect;
+    const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));
+    const anchorFrac = 1.0 - closeT * 0.45;
+    const drawBottomY = proj.y + (1 - anchorFrac) * drawH;
+    const drawX = proj.x - drawW / 2;
+    const drawTopY = drawBottomY - drawH;
+    return { img, proj, x: drawX, y: drawTopY, w: drawW, h: drawH, cx: proj.x, cy: drawTopY + drawH * 0.42 };
+  }
 
-  const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));
-  const anchorFrac = 1.0 - closeT * 0.45;
-  const drawBottomY = proj.y + (1 - anchorFrac) * drawH;
-  const drawX = proj.x - drawW / 2;
-  const drawTopY = drawBottomY - drawH;
+  // PART 2/3: ROID1/ROID2 — real direction-specific SEARCH art selected by
+  // 5-zone facing, or the non-directional FIRE ping-pong while a shot is
+  // actively being fired (matches ACTION-GAME's own real behavior — see
+  // the ROID1_SPRITES/ROID2_SPRITES comment). Always foot-anchored, full
+  // body, never cropped (PART 4: stays that way all the way down to this
+  // type's own approachZMinForRoid() floor).
+  const sprites = ASSETS[e.type];
+  const zoneIndex = ROID_FACE_FRAME[e.zone] != null ? ROID_FACE_FRAME[e.zone] : 2;
+  const frame = isRoidActivelyFiring(performance.now()) ? sprites.fire[e.roidFireFrame] : sprites.search[zoneIndex];
+  const img = frame.img;
 
-  return { img, proj, x: drawX, y: drawTopY, w: drawW, h: drawH, cx: proj.x, cy: drawTopY + drawH * 0.42 };
+  const targetBodyHeightPx = ROID_WORLD_HEIGHT * proj.scale;
+  const ready = imgReady(img);
+  const scale = ready ? computeBodyVisualScale(frame, targetBodyHeightPx) : targetBodyHeightPx / 900;
+  const nativeW = ready ? img.naturalWidth : 640;
+  const nativeH = ready ? img.naturalHeight : 900;
+  const w = nativeW * scale;
+  const h = nativeH * scale;
+  const dx = proj.x - w / 2;
+  const dy = proj.y - frame.bodyBottomFrac * h;
+
+  return {
+    img, proj, x: dx, y: dy, w, h, cx: proj.x,
+    cy: dy + h * ((frame.bodyTopFrac + frame.bodyBottomFrac) / 2),
+  };
 }
 
 // PART 3: fire spawns a muzzle flash + a fast traveling bullet only — no
@@ -1000,36 +1283,89 @@ function fireWeapon(now) {
   spawnBullet({ x1: muzzleX, y1: muzzleY, x2: aim.x, y2: aim.y, firedAt: now, resolveAt: now + BULLET_TRAVEL_MS });
 }
 
+// Shared by updateBullets() (real hit resolution) and renderAimReticle()
+// (PART 7's crosshair preview) so the crosshair's white->red feedback
+// always matches an ACTUAL registered hit, never a guessed narrower zone.
+// ROID1/ROID2 have no distinguished "weak point" separate from the general
+// body hit region in the real ACTION-GAME reference either (confirmed by
+// investigation — only GABRIEL has a real weak-point concept there, the
+// eye, and it depends on ACTION-GAME's own DEFENSE-pose system that
+// DARKOUT-TPS's GABRIEL doesn't implement), so this one shared region is
+// used for all 3 enemy types rather than inventing an unfounded narrower
+// hitbox for any of them.
+function enemyHitRadius(rect) {
+  return Math.max(18, rect.w * 0.42);
+}
+
+// PART 9 (2nd round): the player's own bullet impact — small radiating
+// debris particles that actually TRAVEL outward from the hit point (see
+// updateParticles()), never a fixed set of lines redrawn from the same
+// static point every frame (that fixed-symmetric redraw is exactly what
+// read as an "＊" glyph). Kept as its own particle type/spawn path
+// (distinct from 'spark', which resolveSniperImpact()/resolveMissileImpact()
+// still use unchanged — PART 11 explicitly keeps those "爆発" as-is).
+function spawnPlayerImpact(x, y, now) {
+  spawnParticle({ type: 'ihit', x, y, r: 9, born: now, until: now + 70 });
+  const n = 5 + Math.floor(Math.random() * 3); // 5-7, never the same shape twice
+  for (let i = 0; i < n; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const speed = 55 + Math.random() * 95;
+    spawnParticle({
+      type: 'ishard', x, y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+      born: now, until: now + 110 + Math.random() * 70,
+    });
+  }
+  if (Math.random() < 0.45) {
+    spawnParticle({ type: 'smoke', x, y, r: 7, born: now, until: now + 220 });
+  }
+}
+
 function updateBullets(now) {
   for (const b of state.bullets) {
     if (!b.active) continue;
     if (now < b.resolveAt) continue;
     b.active = false;
     const rect = computeEnemyDrawRect();
-    const hitRadius = Math.max(18, rect.w * 0.42);
+    const hitRadius = enemyHitRadius(rect);
     const dist = Math.hypot(b.x2 - rect.cx, b.y2 - rect.cy);
     if (dist <= hitRadius) {
       state.enemy.hitFlashUntil = now + 120;
-      spawnParticle({ type: 'spark', x: b.x2, y: b.y2, born: now, until: now + 180 });
+      spawnPlayerImpact(b.x2, b.y2, now);
     }
   }
 }
 
+// PART 9: advances the velocity-carrying 'ishard' debris particles each
+// frame (light drag so they scatter and settle rather than fly forever).
+// Every other particle type is purely alpha/size-animated in place and has
+// no vx/vy, so this is a no-op for them.
+function updateParticles(dt) {
+  for (const pt of state.particles) {
+    if (!pt.active || (!pt.vx && !pt.vy)) continue;
+    pt.x += pt.vx * dt;
+    pt.y += pt.vy * dt;
+    pt.vx *= 0.92;
+    pt.vy *= 0.92;
+  }
+}
+
+// 2ND-ROUND PART 6/8: the RIGHT STICK's curved output (state.input.viewX/Y,
+// see pollGamepad()) is the single source of truth for where the player is
+// looking — the flashlight beam is centered exactly there, and the aim
+// reticle sits at the exact same point (see getAimPoint() below). There is
+// no more independent flashlight-anchor stick.
 function getFlashlightCenter() {
-  const lx = clampAxis(state.input.lightX) * FLASHLIGHT_STICK_RANGE;
-  const ly = clampAxis(state.input.lightY) * FLASHLIGHT_STICK_RANGE;
-  return { x: state.centerX + lx, y: state.horizonY + state.cssH * 0.06 + ly };
+  const vx = clampAxis(state.input.viewX) * VIEW_RANGE;
+  const vy = clampAxis(state.input.viewY) * VIEW_RANGE;
+  return { x: state.centerX + vx, y: state.horizonY + state.cssH * 0.06 + vy };
 }
 function clampAxis(v) { return Math.max(-1, Math.min(1, v)); }
 
 function getAimPoint() {
-  const center = getFlashlightCenter();
-  let dx = clampAxis(state.input.aimX) * AIM_RANGE;
-  let dy = clampAxis(state.input.aimY) * AIM_RANGE;
-  const maxR = FLASHLIGHT_BASE_RADIUS - AIM_MARKER_PAD;
-  const dist = Math.hypot(dx, dy);
-  if (dist > maxR) { const s = maxR / dist; dx *= s; dy *= s; }
-  return { x: center.x + dx, y: center.y + dy };
+  // Aim = view. Kept as its own named function (rather than inlining
+  // getFlashlightCenter() at every call site) since fireWeapon(), the
+  // crosshair renderer, and the test API all call it under this name.
+  return getFlashlightCenter();
 }
 
 // ---------------------------------------------------------------------
@@ -1182,7 +1518,7 @@ function renderBarrels() {
     ctx.restore();
 
     const img = ASSETS.barrel;
-    const drawH = 300 * proj.scale;
+    const drawH = BARREL_DRAW_H * proj.scale;
     if (imgReady(img)) {
       const aspect = img.naturalWidth / img.naturalHeight;
       const drawW = drawH * aspect;
@@ -1286,7 +1622,13 @@ function renderPlayer(theme) {
     img = p.dashDir > 0 ? ASSETS.player.dashE : ASSETS.player.dashW;
   }
 
-  const baseScale = (state.cssH / 900) * 1.0;
+  // PART 5 (2nd round): the player reads a bit bigger now, leaning toward
+  // the original "腰から上を中心に表示するTPS" intent — PLAYER_SCALE_BOOST
+  // is the ONLY new factor here; nothing about AIM/hit-test/cover geometry
+  // reads this value (there is no player collision-radius constant in this
+  // game to begin with, so there is nothing coupled to accidentally
+  // over-scale alongside the sprite).
+  const baseScale = (state.cssH / 900) * PLAYER_SCALE_BOOST;
   const strength = getStealthStrength(nowTs);
 
   if (!imgReady(img)) {
@@ -1309,14 +1651,15 @@ function renderEnemy(theme) {
   const rect = computeEnemyDrawRect();
   const now = performance.now();
 
-  // PART 6: face whichever side the player is actually on, instead of a
-  // permanent EAST-facing pose. The source art's natural pose faces
-  // screen-right ("east"); mirror it around the sprite's own center when
-  // facing west.
+  // GABRIEL ONLY: face whichever side the player is actually on instead of
+  // a permanent EAST-facing pose — mirrored around the sprite's own center.
+  // ROID1/ROID2 no longer mirror at all (PART 2, 2nd round): real
+  // direction-specific art (see ROID1_SPRITES/ROID2_SPRITES) already shows
+  // the correct facing per zone, so flipping it would be wrong twice over.
   const flashing = now < e.hitFlashUntil;
   ctx.save();
   if (flashing) ctx.filter = 'brightness(2.2)';
-  if (e.facing === 'west') {
+  if (e.type === 'gabriel' && e.facing === 'west') {
     ctx.translate(rect.cx, 0);
     ctx.scale(-1, 1);
     ctx.translate(-rect.cx, 0);
@@ -1462,13 +1805,39 @@ function renderParticles() {
       const growProgress = 1 - fadeAlpha; // 0 at spawn -> 1 at expiry, always >= 0
       ctx.fillStyle = 'rgba(90,90,90,' + fadeAlpha * 0.35 + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, (pt.r || 18) * (1 + growProgress * 0.8), 0, Math.PI * 2); ctx.fill();
+    } else if (pt.type === 'ihit') {
+      // PART 9 (2nd round): a short, bright, instant flash at the impact
+      // core — "金属片が一瞬爆ぜた" — never a symmetric fixed-line burst.
+      ctx.fillStyle = 'rgba(255,255,255,' + fadeAlpha + ')';
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, (pt.r || 9) * (0.4 + fadeAlpha * 0.6), 0, Math.PI * 2); ctx.fill();
+    } else if (pt.type === 'ishard') {
+      // PART 9: each debris particle genuinely TRAVELS along its own
+      // random vx/vy (see updateParticles()) and is drawn as a short
+      // motion-streak trailing behind its current position — never
+      // redrawn as a fixed set of lines from one static point (that fixed
+      // symmetry is what read as an "＊" glyph).
+      const speed = Math.hypot(pt.vx, pt.vy);
+      const trail = Math.min(9, speed * 0.05 + 1.5);
+      const ang = Math.atan2(pt.vy, pt.vx);
+      ctx.strokeStyle = 'rgba(255,225,150,' + fadeAlpha + ')';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - Math.cos(ang) * trail, pt.y - Math.sin(ang) * trail);
+      ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
     }
   }
 }
 
-// PART 3: the traveling bullet itself — a short bright streak that moves
-// from muzzle to target over BULLET_TRAVEL_MS, never a static full-length
-// line drawn all at once.
+// PART 10 (2nd round): the traveling bullet as a perspective light-bolt —
+// thick/bright near the muzzle (t≈0, still close to the camera), tapering
+// to a thin/faint streak as it travels toward the target (t≈1, receding
+// into the depth of the corridor) — "奥へ進む→細くなる". A soft wide glow
+// underneath a narrower bright core, plus a short fading tail; never a
+// fixed-width straight line, and never a full-length static bar (still
+// only a short moving segment, resolved over BULLET_TRAVEL_MS).
+const BULLET_WIDTH_NEAR = 4.5;
+const BULLET_WIDTH_FAR = 1.2;
 function renderBullets() {
   const now = performance.now();
   for (const b of state.bullets) {
@@ -1477,15 +1846,29 @@ function renderBullets() {
     const t = Math.max(0, Math.min(1, (now - b.firedAt) / dur));
     const hx = b.x1 + (b.x2 - b.x1) * t;
     const hy = b.y1 + (b.y2 - b.y1) * t;
-    const tailT = Math.max(0, t - 0.22);
+    const tailT = Math.max(0, t - 0.24);
     const tx = b.x1 + (b.x2 - b.x1) * tailT;
     const ty = b.y1 + (b.y2 - b.y1) * tailT;
+    const width = BULLET_WIDTH_NEAR + (BULLET_WIDTH_FAR - BULLET_WIDTH_NEAR) * t;
+
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,245,210,0.95)';
-    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    // soft outer glow, fading toward the tail
+    const glowGrad = ctx.createLinearGradient(tx, ty, hx, hy);
+    glowGrad.addColorStop(0, 'rgba(255,225,150,0)');
+    glowGrad.addColorStop(1, 'rgba(255,230,160,0.5)');
+    ctx.strokeStyle = glowGrad;
+    ctx.lineWidth = width * 2.4;
+    ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
+    // bright core
+    const coreGrad = ctx.createLinearGradient(tx, ty, hx, hy);
+    coreGrad.addColorStop(0, 'rgba(255,255,255,0)');
+    coreGrad.addColorStop(1, 'rgba(255,255,255,0.95)');
+    ctx.strokeStyle = coreGrad;
+    ctx.lineWidth = width;
     ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
-    ctx.beginPath(); ctx.arc(hx, hy, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(hx, hy, Math.max(1, width * 0.7), 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 }
@@ -1529,14 +1912,26 @@ function renderFlashlightMask() {
 }
 
 // PART 2: simple, high-visibility "+" crosshair — no circle, no gap.
+// PART 7 (2nd round): "+" is now smaller, and turns white->red whenever it
+// sits over a spot that would register as a real hit — reusing the EXACT
+// SAME hit region enemyHitRadius()/computeEnemyDrawRect() already resolve
+// bullets against (see enemyHitRadius()'s own comment for why no separate,
+// unfounded "weak point" hitbox is invented for any of the 3 enemy types).
+function isAimOnEffectiveHit() {
+  const aim = getAimPoint();
+  const rect = computeEnemyDrawRect();
+  return Math.hypot(aim.x - rect.cx, aim.y - rect.cy) <= enemyHitRadius(rect);
+}
 function renderAimReticle() {
   const aim = getAimPoint();
+  const hot = isAimOnEffectiveHit();
   ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = hot ? 'rgba(255,70,60,0.95)' : 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 1.5;
+  const r = 6; // was 11 — PART 7: smaller crosshair
   ctx.beginPath();
-  ctx.moveTo(aim.x - 11, aim.y); ctx.lineTo(aim.x + 11, aim.y);
-  ctx.moveTo(aim.x, aim.y - 11); ctx.lineTo(aim.x, aim.y + 11);
+  ctx.moveTo(aim.x - r, aim.y); ctx.lineTo(aim.x + r, aim.y);
+  ctx.moveTo(aim.x, aim.y - r); ctx.lineTo(aim.x, aim.y + r);
   ctx.stroke();
   ctx.restore();
 }
@@ -1582,10 +1977,20 @@ function frame(ts) {
   const gpInput = pollGamepad();
   state.input.moveX = gpInput.move.x !== 0 ? gpInput.move.x : touchMove.x;
   state.input.moveY = gpInput.move.y !== 0 ? gpInput.move.y : touchMove.y;
-  state.input.lightX = Math.abs(gpInput.light.x) > 0.001 ? gpInput.light.x : touchLight.x;
-  state.input.lightY = Math.abs(gpInput.light.y) > 0.001 ? gpInput.light.y : touchLight.y;
-  state.input.aimX = Math.abs(gpInput.aim.x) > 0.001 ? gpInput.aim.x : touchAim.x;
-  state.input.aimY = Math.abs(gpInput.aim.y) > 0.001 ? gpInput.aim.y : touchAim.y;
+  // PART 6/8: RIGHT STICK's merged view axes take priority; the touch
+  // fallback still has two separate pads (light/aim, unchanged DOM/CSS,
+  // out of this round's scope) — touch-aim wins over touch-light when both
+  // are active, matching the old aim-over-light precedence.
+  if (Math.abs(gpInput.view.x) > 0.001 || Math.abs(gpInput.view.y) > 0.001) {
+    state.input.viewX = gpInput.view.x;
+    state.input.viewY = gpInput.view.y;
+  } else if (touchAim.x !== 0 || touchAim.y !== 0) {
+    state.input.viewX = touchAim.x;
+    state.input.viewY = touchAim.y;
+  } else {
+    state.input.viewX = touchLight.x;
+    state.input.viewY = touchLight.y;
+  }
   state.input.fireHeld = gpInput.fire || touchFireHeld;
 
   const actions = consumeActions();
@@ -1593,6 +1998,7 @@ function frame(ts) {
   applyForwardDelta(forwardDelta);
   updateEnemy(dt, ts);
   updateBullets(ts);
+  updateParticles(dt);
 
   if (state.input.fireHeld) fireWeapon(ts);
 
@@ -1644,4 +2050,5 @@ window.__darkoutTps = {
   // pure read-only helpers, exposed for automated testing only
   getAimPoint, getFlashlightCenter, computeEnemyDrawRect,
   isPlayerInCover, getStealthStrength, applyAimCurve, playerMarkerPos, barrels,
+  isAimOnEffectiveHit, enemyHitRadius, approachZMinForRoid, isRoidActivelyFiring,
 };
