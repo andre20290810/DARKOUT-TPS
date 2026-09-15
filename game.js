@@ -88,16 +88,18 @@ const ROID_WORLD_HEIGHT = 700; // unchanged value from round 1 (was ENEMY_WORLD_
 const GABRIEL_WORLD_HEIGHT = 480;
 const ROID_FULLBODY_SCREEN_FRAC = 0.92; // PART4: ROID's own max-approach target — whole body still just inside frame
 
-// PART 2: ROID1/ROID2 5-zone facing (farLeft/left/center/right/farRight),
-// replacing round 1's coarse east/west-only flip. NEAR/FAR/HYST are this
-// game's own screen-space tuning (ACTION-GAME's own real
-// ROID_FACE_ZONE_PX/FAR_PX/HYST_PX values of 60/120/20 are a different
-// game's canvas-coordinate scale — not directly portable — but the same
-// order of magnitude was kept since DARKOUT-TPS's own pre-existing
-// ENEMY_TURN_HYSTERESIS_PX=36 single-boundary constant was tuned for this
-// exact canvas and is in the same range).
+// PART 9 (3rd round): ROID1/ROID2 now use only 3 real direction poses —
+// SOUTH-WEST / SOUTH / SOUTH-EAST — never the true EAST/WEST full-profile
+// images (investigated the real asset set directly: roid{1,2}_search_02.png
+// and _04.png read as moderate ~30-45° diagonal turns, NOT full 90° side
+// profiles, while _01.png/_05.png are the more extreme turns — _05
+// confirmed a genuine full side profile by direct visual inspection — so
+// those two are excluded entirely this round; see ROID_FACE_FRAME below).
+// The old 5-zone farLeft/left/center/right/farRight hysteresis collapses to
+// a simple 3-zone left/center/right one (single NEAR boundary + HYST,
+// mirroring the exact shape round 1's original 2-zone east/west system
+// used before PART 2 of the 2nd round added the now-removed far tier).
 const ROID_FACE_ZONE_NEAR_PX = 60;
-const ROID_FACE_ZONE_FAR_PX = 120;
 const ROID_FACE_ZONE_HYST_PX = 20;
 
 // PART 3: ROID's FIRE pose is a non-directional 4-frame ping-pong
@@ -111,31 +113,40 @@ const ROID_FIRE_FRAME_MS = 110;
 const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
 
 // Flashlight / aim / view.
-// 2ND-ROUND PART 6/8: RIGHT STICK now drives ONE unified "view" point — the
-// flashlight beam AND the aim reticle sit at the exact same spot (spec:
-// "右スティックは今後、照準を合わせる/視界を操作するための入力として扱います").
-// VIEW_RANGE replaces the old separate FLASHLIGHT_STICK_RANGE (was LEFT
-// STICK, linear) / AIM_RANGE (was RIGHT STICK, curved) split — max reach is
-// kept the same magnitude both previously used (190px) so the beam/reticle
-// still sweeps the same distance at full deflection; the whole point moves
-// through applyAimCurve() now, and LEFT STICK is fully freed for MOVE.
+// 3RD-ROUND PART 3: the round-2 "merged view" design (RIGHT STICK driving
+// both flashlight AND aim as one point) is explicitly retired this round —
+// LEFT STICK is back to being its OWN independent control (FLASHLIGHT only,
+// never MOVE) and RIGHT STICK is back to being its OWN independent AIM
+// control. FLASHLIGHT_BASE_RADIUS is the lit-circle radius (unchanged).
+// LIGHT_RANGE/AIM_RANGE are each the max px the flashlight/aim can be
+// pushed from their own resting point at full stick deflection — PART 4
+// cuts both by 20% from round 2's shared 190px (190*0.8=152).
 const FLASHLIGHT_BASE_RADIUS = 150;
-const VIEW_RANGE = 190; // px, pre-clamp — max sweep at full stick deflection
+const LIGHT_RANGE = 152; // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
+const AIM_RANGE = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 
-// FOLLOWUP FIX (AIM was too twitchy for fine target lock): deadzone is
-// intentionally the SAME as MOVE's (never shrunk — a smaller deadzone
-// invites stick drift, which the spec explicitly warns against). What
-// changes is a response curve applied only to the RIGHT STICK (which now
-// drives BOTH the flashlight/view direction and the aim reticle — PART 6 of
-// the 2nd-round spec merges "視界操作" and "AIM" into one stick): output =
-// sign(x) * |x|^AIM_CURVE_POWER. At x=1 (full deflection) output is still 1
-// — max reach/max sweep speed is preserved — but small nudges are dulled
-// far more aggressively than the 1st-round curve (power raised from 2.2 to
-// 2.6: at x=0.5, output now drops to ~0.5^2.6≈0.165, vs ~0.22 before).
-// MOVE (LEFT STICK/D-PAD) is untouched (its own deadzone/curve below is the
-// original linear one).
+// PART 4 (3rd round): deadzone is intentionally the SAME as MOVE's on BOTH
+// sticks (never shrunk — a smaller deadzone invites stick drift). What's
+// new: LEFT STICK (FLASHLIGHT) now ALSO gets a response curve for the first
+// time (round 1/2 left it linear) — gentler than AIM's own, since the
+// flashlight is a broader "look around" sweep rather than a precision
+// input. RIGHT STICK (AIM)'s curve is pushed even further than round 2's
+// (power 2.6->2.9) for the "弱点へ精密にAIMできることを優先" precision
+// request: at x=0.5 output now drops to ~0.5^2.9≈0.134 (vs ~0.165 before),
+// while x=1 still reaches the (now 20%-lower) max range unchanged.
+const LIGHT_DEADZONE = 0.16;
+const LIGHT_CURVE_POWER = 2.0;
 const AIM_DEADZONE = 0.16;
-const AIM_CURVE_POWER = 2.6;
+const AIM_CURVE_POWER = 2.9; // was 2.6 (2nd round), was 2.2 (1st round)
+
+// PART 5/6 (3rd round): AIM is no longer "flashlight-relative" — it has its
+// own resting point (the player's own screen-space centerline, PART 5) plus
+// a persistent manual offset (PART 6, LT/RT+D-PAD) plus a live offset that
+// tracks the RIGHT STICK while deflected and smoothly relaxes back to 0
+// (not the manual offset — that's kept) once the stick returns to neutral.
+const AIM_RECENTER_RATE = 6; // dt-multiplier for the live-offset->0 lerp (~150-200ms to mostly settle)
+const AIM_MANUAL_SPEED = 140; // px/sec, D-PAD-driven height/horizontal trim while LT/RT is held alone
+const AIM_MANUAL_MAX_OFFSET = 70; // px, clamp on each manual-offset axis
 
 const FIRE_COOLDOWN_MS = 130;
 const MAG_SIZE = 12;
@@ -144,16 +155,25 @@ const RELOAD_MS = 950;
 // FOLLOWUP FIX (PART 3): the player's own shot is a fast traveling bullet
 // resolved on arrival, not an instant full-length line.
 const BULLET_TRAVEL_MS = 55;
+// PART 7 (3rd round): FIRE recoil haptics — short, weak-to-medium, once per
+// shot (triggered from inside fireWeapon(), which is itself already
+// per-shot cooldown-gated, so this can never fire faster than real shots
+// do). Feature-detected at call time (see triggerFireHaptics()); never
+// throws on unsupported hardware/browsers.
+const FIRE_HAPTIC_DURATION_MS = 70;
+const FIRE_HAPTIC_WEAK = 0.35;
+const FIRE_HAPTIC_STRONG = 0.15;
 
 const PLAYER_MAX_HP = 100;
-// PART 5 (2nd round): a moderate visual size bump only — leaning toward
-// the original "waist-up TPS presence" intent without overwhelming AIM/
-// enemy visibility. There is no separate player hit/collision-radius
-// constant in this game (damage is resolved via enemy attack-phase
-// judgment, not player-sprite distance checks), so this scale change has
-// nothing coupled to it that would need a matching, unrequested gameplay
-// change.
-const PLAYER_SCALE_BOOST = 1.18;
+// PART 2 (3rd round): a further visual size bump — leaning further toward
+// the "腰から上を画面手前に大きく見せる" TPS framing. This constant is
+// consumed ONLY by renderPlayer()'s own draw-size calculation; it never
+// touches movement speed, strafe/dash distances, AIM math, or the bullet
+// hit-test region (there is no separate player hit/collision-radius
+// constant in this game at all — damage is resolved via enemy attack-phase
+// judgment, not player-sprite distance checks — so render size and
+// gameplay judgment are already fully decoupled by construction).
+const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
 
 const GAMEPAD_AXIS_DEADZONE = 0.16;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
@@ -176,6 +196,12 @@ const STEALTH_DISTORT_AMPLITUDE_PX = 3.5;
 const STEALTH_DISTORT_PERIOD_MS = 650;
 const STEALTH_FADE_MS = 150; // enter/exit fade, same duration as ACTION-GAME
 
+// PART 13 (3rd round): COVER's own, much milder, player-sprite effect —
+// ~10% extra transparency + a subtle dark tint, clearly weaker than
+// STEALTH's alpha 0.35 drop + distortion so the two states read distinctly.
+const COVER_ALPHA_DROP = 0.10;
+const COVER_TINT_STRENGTH = 0.18;
+
 // ---------------------------------------------------------------------
 // COVER (drum-can barrels) — PART 4/9. Kept as one explicit lookup so
 // which attack kinds cover blocks is trivial to retune later, per spec.
@@ -185,22 +211,23 @@ const STEALTH_FADE_MS = 150; // enter/exit fade, same duration as ACTION-GAME
 // a barrel doesn't stop it) — neither of those was asked to change.
 // ---------------------------------------------------------------------
 const COVER_BLOCKS_ATTACK = { sniper: true, missile: false, claw: false };
-const COVER_BARREL_Z_MAX = 300; // barrel must be this close (world-z) to be usable as cover
-// 2ND-ROUND PART 1: the barrel was rendered far too large — at its closest
-// (drawH = 300 * proj.scale, proj.scale up to ~0.87 near the camera) it hit
-// ~260px tall, well OVER the player's own ~147px on-screen height (a drum
-// can was visually bigger than the protagonist). BARREL_DRAW_H is the new
-// world-scale "height" the barrel targets (down from the old hardcoded
-// 300), tuned so it never exceeds the player's own apparent height even at
-// the closest reachable distance (Z_NEAR=40 -> drawH ≈ 112px < ~147px) while
-// still reading as "a drum can a person can crouch behind" at typical COVER
-// range (z=COVER_BARREL_Z_MAX -> drawH ≈ 60px). COVER_RADIUS_PX is scaled
-// down by the exact same ratio (130/300≈0.43->150/300=0.5) as BARREL_DRAW_H
-// so the visible shadow/footprint and the actual COVER ZONE judgment never
-// drift apart after the resize (spec: "見た目とcover判定範囲が大きく乖離
-// しないよう調整").
-const BARREL_DRAW_H = 150; // was 300 (inline) — see comment above
-const COVER_RADIUS_PX = 36; // was 72 — same 0.5x ratio as BARREL_DRAW_H
+// 3RD-ROUND PART 1/11/12: barrel shrunk again (still read as "taller than an
+// adult male" at BARREL_DRAW_H=150) — 75 is exactly a 50% cut from that,
+// inside the requested 40-60% range, targeting "clearly shorter than an
+// adult male, chest-height or below". PART 11/12 also retire the old
+// separate COVER_RADIUS_PX (a fraction of the visual size, chosen only to
+// look reasonable on the ground-shadow ellipse that PART 10 now deletes
+// entirely) in favor of ONE shared BARREL_TOUCH_RADIUS_PX used for BOTH
+// physical collision (can't walk through the barrel) AND cover activation
+// (cover starts exactly when you're touching it) — sized to match the
+// barrel's own real visual half-width (drawW≈drawH since barrel.png is
+// square, so half-width ≈ BARREL_DRAW_H/2 ≈ 37.5 at scale 1; 40 is a hair
+// outside that so the collision boundary reads as "the barrel's edge",
+// not "somewhere inside the barrel's own graphic").
+const BARREL_DRAW_H = 75; // was 150 (a 50% cut, within the requested 40-60% range)
+const BARREL_TOUCH_RADIUS_PX = 40; // was COVER_RADIUS_PX=36 (a different, ellipse-shadow-sized concept) — now shared by collision AND cover
+const BARREL_TOUCH_Z_MAX = 300; // was COVER_BARREL_Z_MAX — barrel must be this close (world-z) to be interactable at all
+const BARREL_COLLIDE_Z_FLOOR = 55; // PART 11: forward movement can never push an X-aligned barrel's own z below this (walking into it from the front)
 const BARREL_SPACING_Z = 420;
 const BARREL_LANE_OFFSET = 130; // world X either side of center — never blocks the center path
 
@@ -337,7 +364,12 @@ const ROID2_SPRITES = {
 // zone -> search-frame-index, copied verbatim from ACTION-GAME's own
 // ROID1_FACE_FRAME/ROID2_FACE_FRAME (game.js ~L5059-5060) — both bosses
 // share the same zone->index layout in the reference game.
-const ROID_FACE_FRAME = { farRight: 0, right: 1, center: 2, left: 3, farLeft: 4 };
+// PART 9 (3rd round): only the 3 non-full-profile SEARCH frames are ever
+// selected now — right(SE)=search_02, center(S)=search_03, left(SW)=
+// search_04. search_01/search_05 stay defined in ROID1_SPRITES/
+// ROID2_SPRITES (real assets, harmless to keep loaded) but are simply never
+// referenced by this map, so they can never be chosen.
+const ROID_FACE_FRAME = { right: 1, center: 2, left: 3 };
 
 const ASSETS = {
   player: {
@@ -408,6 +440,18 @@ const state = {
     lastHpFillPct: -1,
     lastAmmoText: '',
     lastStealthText: '',
+    // PART 5/6 (3rd round): AIM's own persistent state — liveX/Y tracks the
+    // RIGHT STICK while deflected and relaxes back to 0 (not the manual
+    // offset) once neutral (see AIM_RECENTER_RATE); manualOffsetX/Y are the
+    // separate, persistent LT+D-PAD-up/down / RT+D-PAD-left/right trims,
+    // which survive the live-offset recenter untouched.
+    aimLiveX: 0, aimLiveY: 0,
+    aimManualOffsetX: 0, aimManualOffsetY: 0,
+    // PART 12/13 (3rd round): 0..1 smoothed "how deep in a barrel's touch
+    // radius" state, driving the COVER visual (see renderPlayer()) —
+    // smoothed the same dt-based way p.scale already is, so leaving cover
+    // fades out over a short interval rather than snapping.
+    coverVisual: 0,
   },
 
   enemy: {
@@ -420,7 +464,7 @@ const state = {
     // one step at a time — replaces the old 2-state east/west flip for
     // these types (real direction-specific art now exists, see
     // ROID1_SPRITES/ROID2_SPRITES, so no canvas mirroring is needed).
-    zone: 'center',   // 'farLeft' | 'left' | 'center' | 'right' | 'farRight'
+    zone: 'center',   // 'left' (SW) | 'center' (S) | 'right' (SE) — PART 9, 3rd round
     lastTurnAt: -Infinity,
     attackState: 'idle', // per-kind phase name; see updateEnemy() for the full list
     attackUntil: 0,
@@ -448,10 +492,16 @@ const state = {
 
   input: {
     moveX: 0, moveY: 0,
-    // PART 6/8 (2nd round): flashlight aim + reticle aim are now ONE
-    // unified "view" input driven by the RIGHT STICK (see getFlashlightCenter/
-    // getAimPoint) — the old separate lightX/lightY + aimX/aimY pair is gone.
-    viewX: 0, viewY: 0,
+    // PART 3 (3rd round): the round-2 merged "view" stick is retired —
+    // LEFT STICK (lightX/Y) is its own independent FLASHLIGHT control
+    // again, RIGHT STICK (aimX/Y) is its own independent AIM control.
+    lightX: 0, lightY: 0,
+    aimX: 0, aimY: 0,
+    // PART 6 (3rd round): while LT or RT is held alone, D-PAD drives the
+    // AIM manual-offset trim instead of MOVE — these are continuous
+    // -1/0/+1 magnitudes (same shape as moveX/moveY), applied dt-scaled in
+    // updatePlayer().
+    aimHeightAdjust: 0, aimHorizAdjust: 0,
     fireHeld: false,
   },
 
@@ -609,17 +659,22 @@ window.addEventListener('gamepaddisconnected', (e) => {
   }
 });
 
-// PART 2: deadzone + rescale + power curve, AIM stick only. Rescaling after
-// the deadzone cut avoids a "dead jump" right at the deadzone boundary;
-// the power curve then compresses small/medium inputs while preserving
-// output=1 at input=1 (full stick deflection still reaches full speed).
-function applyAimCurve(raw) {
+// Generic deadzone + rescale + power-curve shaper, shared by both sticks
+// (PART 4, 3rd round: LEFT STICK/FLASHLIGHT now gets a curve for the first
+// time too — round 1/2 left it linear). Rescaling after the deadzone cut
+// avoids a "dead jump" right at the deadzone boundary; the power curve then
+// compresses small/medium inputs while preserving output=1 at input=1
+// (full stick deflection still reaches the — now 20%-lower, see
+// LIGHT_RANGE/AIM_RANGE — max reach/speed).
+function applyStickCurve(raw, deadzone, power) {
   const a = Math.abs(raw);
-  if (a < AIM_DEADZONE) return 0;
-  const rescaled = (a - AIM_DEADZONE) / (1 - AIM_DEADZONE);
-  const curved = Math.pow(rescaled, AIM_CURVE_POWER);
+  if (a < deadzone) return 0;
+  const rescaled = (a - deadzone) / (1 - deadzone);
+  const curved = Math.pow(rescaled, power);
   return raw < 0 ? -curved : curved;
 }
+function applyAimCurve(raw) { return applyStickCurve(raw, AIM_DEADZONE, AIM_CURVE_POWER); }
+function applyLightCurve(raw) { return applyStickCurve(raw, LIGHT_DEADZONE, LIGHT_CURVE_POWER); }
 
 function pollGamepad() {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -638,7 +693,9 @@ function pollGamepad() {
   dbgGamepadEl.textContent = gp ? (gp.id ? gp.id.slice(0, 18) : 'CONNECTED') : 'NONE';
 
   const gpMove = { x: 0, y: 0 };
-  const gpView = { x: 0, y: 0 };
+  const gpLight = { x: 0, y: 0 };
+  const gpAim = { x: 0, y: 0 };
+  const gpAimAdjust = { height: 0, horiz: 0 };
   let gpFire = false;
 
   if (gp) {
@@ -647,26 +704,44 @@ function pollGamepad() {
     const pressed = (i) => !!(b[i] && b[i].pressed);
     const edge = (i) => pressed(i) && !prev[i];
 
-    // 2ND-ROUND PART 8: button remap.
-    // LEFT STICK + D-PAD -> MOVE (both usable interchangeably, summed then
-    // clamped to a unit vector — the same "shared pipeline" pattern D-PAD
-    // already used ALONE before this batch).
-    if (pressed(14)) gpMove.x -= 1; // D-PAD left
-    if (pressed(15)) gpMove.x += 1; // D-PAD right
-    if (pressed(12)) gpMove.y -= 1; // D-PAD up = north/forward
-    if (pressed(13)) gpMove.y += 1; // D-PAD down = south/back
-    const ax = (v) => (Math.abs(v) < GAMEPAD_AXIS_DEADZONE ? 0 : v);
-    gpMove.x += ax(gp.axes[0] || 0);
-    gpMove.y += ax(gp.axes[1] || 0);
+    // PART 3 (3rd round): LT(6)/RT(7) held SIMULTANEOUSLY -> STEALTH,
+    // unchanged latch shape from round 2 (rising-edge on the AND condition
+    // itself — never LT alone, never RT alone, never re-fires while both
+    // stay held). Computed FIRST so PART 6's D-PAD modifier logic below can
+    // check it and give STEALTH priority, per spec ("誤判定を防ぐ").
+    const ltHeld = pressed(6), rtHeld = pressed(7);
+    const bothTriggersHeld = ltHeld && rtHeld;
+    const bothTriggersHeldPrev = !!prev[6] && !!prev[7];
+    if (bothTriggersHeld && !bothTriggersHeldPrev) state.actions.stealth = true;
+
+    // PART 3/6 (3rd round): D-PAD is MOVE only when NEITHER trigger is held.
+    // LT alone -> D-PAD UP/DOWN trims AIM height (PART 6). RT alone -> D-PAD
+    // LEFT/RIGHT trims AIM horizontal offset. Both held at once is the
+    // STEALTH gesture above — D-PAD does nothing that frame either way, so
+    // a STEALTH press can never also register as a MOVE/AIM-trim input.
+    if (bothTriggersHeld) {
+      // pure STEALTH gesture window — D-PAD intentionally inert here.
+    } else if (ltHeld) {
+      if (pressed(12)) gpAimAdjust.height -= 1; // D-PAD up = raise AIM
+      if (pressed(13)) gpAimAdjust.height += 1; // D-PAD down = lower AIM
+    } else if (rtHeld) {
+      if (pressed(14)) gpAimAdjust.horiz -= 1; // D-PAD left = AIM left
+      if (pressed(15)) gpAimAdjust.horiz += 1; // D-PAD right = AIM right
+    } else {
+      if (pressed(14)) gpMove.x -= 1; // D-PAD left
+      if (pressed(15)) gpMove.x += 1; // D-PAD right
+      if (pressed(12)) gpMove.y -= 1; // D-PAD up = north/forward
+      if (pressed(13)) gpMove.y += 1; // D-PAD down = south/back
+    }
     const moveMag = Math.hypot(gpMove.x, gpMove.y);
     if (moveMag > 1) { gpMove.x /= moveMag; gpMove.y /= moveMag; }
 
-    // RIGHT STICK -> unified VIEW (flashlight + aim reticle, PART 6/8) —
-    // deadzone (never shrunk) then the response curve so small nudges move
-    // the view far less while full deflection still reaches the same max
-    // sweep speed as before.
-    gpView.x = applyAimCurve(gp.axes[2] || 0);
-    gpView.y = applyAimCurve(gp.axes[3] || 0);
+    // PART 3/4 (3rd round): LEFT STICK -> FLASHLIGHT only (never MOVE).
+    // RIGHT STICK -> AIM only. Both curved+deadzoned independently now.
+    gpLight.x = applyLightCurve(gp.axes[0] || 0);
+    gpLight.y = applyLightCurve(gp.axes[1] || 0);
+    gpAim.x = applyAimCurve(gp.axes[2] || 0);
+    gpAim.y = applyAimCurve(gp.axes[3] || 0);
 
     gpFire = pressed(5);                            // RB = FIRE
     if (edge(4)) state.actions.flash = true;         // LB = FLASH
@@ -674,17 +749,11 @@ function pollGamepad() {
     if (edge(2)) state.actions.westDash = true;       // X = WEST DASH
     if (edge(1)) state.actions.eastDash = true;       // B = EAST DASH
     if (edge(0)) state.actions.southDash = true;      // A = SOUTH DASH / BACKSTEP
-    // LT(6) + RT(7) held SIMULTANEOUSLY -> STEALTH. Rising-edge on the AND
-    // condition itself (never LT alone, never RT alone, and never re-fires
-    // on every frame both stay held — a latch, not a hold-to-toggle).
-    const bothTriggersHeld = pressed(6) && pressed(7);
-    const bothTriggersHeldPrev = !!prev[6] && !!prev[7];
-    if (bothTriggersHeld && !bothTriggersHeldPrev) state.actions.stealth = true;
-    // RELOAD isn't named anywhere in the 2nd-round button spec (every
-    // face/shoulder/trigger button is now spoken for by MOVE/AIM/DASH/FIRE/
-    // FLASH/STEALTH) — left stick click (L3) is the one remaining unused
-    // standard-mapping button, so RELOAD moves there rather than being
-    // silently dropped. Touch's own RELOAD button is unaffected.
+    // RELOAD isn't named anywhere in the button spec (every face/shoulder/
+    // trigger button is spoken for by MOVE/AIM/DASH/FIRE/FLASH/STEALTH/AIM
+    // trim) — left stick click (L3) is the one remaining unused
+    // standard-mapping button, so RELOAD stays there. Touch's own RELOAD
+    // button is unaffected.
     if (edge(10)) state.actions.reload = true;        // L3 = RELOAD
 
     const nextPrev = new Array(b.length);
@@ -694,7 +763,7 @@ function pollGamepad() {
     state.prevButtons = [];
   }
 
-  return { move: gpMove, view: gpView, fire: gpFire };
+  return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire };
 }
 
 // ---------------------------------------------------------------------
@@ -796,6 +865,7 @@ function consumeActions() {
 
 function updatePlayer(dt, now, moveX, moveY, actions) {
   const p = state.player;
+  const strafeOffsetAtFrameStart = p.strafeOffset;
 
   // WEST/EAST strafe (continuous, D-PAD/touch)
   p.strafeOffset += moveX * STRAFE_SPEED * dt;
@@ -814,6 +884,14 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     const eased = 1 - Math.pow(1 - tNorm, 2);
     p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.dashStrafeStart + p.dashDir * STRAFE_DASH_DISTANCE_PX * eased));
   }
+
+  // PART 11 (3rd round): barrel collision — clamp AFTER both the
+  // continuous move and any active dash have been applied this frame, so
+  // neither can walk/dash straight through a barrel. Uses the offset from
+  // the START of this frame to figure out which side we're approaching
+  // from (so the block lands at the correct edge, not always the same
+  // side).
+  p.strafeOffset = clampStrafeForBarrels(p.strafeOffset, strafeOffsetAtFrameStart);
 
   // NORTH/SOUTH world scroll + player scale sync
   let forwardDelta = 0;
@@ -871,6 +949,35 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     p.reloading = false;
   }
 
+  // PART 5/6 (3rd round): AIM live offset (RIGHT STICK) — tracks the stick
+  // directly while deflected, and smoothly relaxes back to 0 (never the
+  // manual offset — that's separate and persists) once neutral, so idle
+  // AIM re-centers on the player's own screen X (PART 5) without a
+  // "瞬間的にガクッと" teleport (short dt-based lerp instead).
+  const aimStickActive = Math.abs(state.input.aimX) > 0.001 || Math.abs(state.input.aimY) > 0.001;
+  if (aimStickActive) {
+    p.aimLiveX = clampAxis(state.input.aimX) * AIM_RANGE;
+    p.aimLiveY = clampAxis(state.input.aimY) * AIM_RANGE;
+  } else {
+    const recenterT = Math.min(1, dt * AIM_RECENTER_RATE);
+    p.aimLiveX += (0 - p.aimLiveX) * recenterT;
+    p.aimLiveY += (0 - p.aimLiveY) * recenterT;
+  }
+  // PART 6 (3rd round): persistent manual AIM trim — LT+D-PAD up/down
+  // moves height only (X untouched), RT+D-PAD left/right moves horizontal
+  // offset only (Y untouched); dt-scaled so held input ramps smoothly,
+  // clamped so the reticle can never be trimmed off past a bounded range.
+  p.aimManualOffsetY = clamp(p.aimManualOffsetY + state.input.aimHeightAdjust * AIM_MANUAL_SPEED * dt, -AIM_MANUAL_MAX_OFFSET, AIM_MANUAL_MAX_OFFSET);
+  p.aimManualOffsetX = clamp(p.aimManualOffsetX + state.input.aimHorizAdjust * AIM_MANUAL_SPEED * dt, -AIM_MANUAL_MAX_OFFSET, AIM_MANUAL_MAX_OFFSET);
+
+  // PART 12/13 (3rd round): COVER is now purely "touching a barrel" (see
+  // isPlayerInCover(), which now shares its radius/z-range with barrel
+  // collision above) — the only feedback is this short dt-based fade
+  // driving the player sprite's own alpha/tint in renderPlayer(), no more
+  // ground-level ellipse.
+  const coverTarget = isPlayerInCover() ? 1 : 0;
+  p.coverVisual += (coverTarget - p.coverVisual) * Math.min(1, dt * 10);
+
   // walk animation frame (only when strafing, purely cosmetic)
   if (Math.abs(moveX) > 0.05 || Math.abs(moveY) > 0.05) {
     p.walkTimer += dt;
@@ -898,6 +1005,49 @@ function approachZMinForRoid() {
   return clamp(z, ENEMY_Z_ABS_FLOOR, ENEMY_Z_MAX);
 }
 
+// PART 11 (3rd round): forward movement can never push an X-aligned barrel
+// closer than BARREL_COLLIDE_Z_FLOOR — this is what stops the player from
+// simply walking straight through a barrel that's directly ahead. Only
+// forward motion is capped (backing away is always free); a barrel not
+// aligned with the player's own screen X isn't in the way at all.
+function clampForwardDeltaForBarrels(forwardDelta) {
+  if (forwardDelta <= 0) return forwardDelta;
+  const playerScreenX = state.centerX + state.player.strafeOffset;
+  let allowed = forwardDelta;
+  for (const b of barrels) {
+    if (b.z - forwardDelta >= BARREL_COLLIDE_Z_FLOOR) continue;
+    const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
+    const radius = BARREL_TOUCH_RADIUS_PX * proj.scale;
+    if (Math.abs(proj.x - playerScreenX) < radius) {
+      allowed = Math.min(allowed, Math.max(0, b.z - BARREL_COLLIDE_Z_FLOOR));
+    }
+  }
+  return allowed;
+}
+
+// PART 11 (3rd round): sideways (strafe) collision — a barrel close enough
+// in z (within BARREL_TOUCH_Z_MAX) blocks the player's screen-X from
+// crossing into its own touch radius, landing them at whichever edge they
+// approached from (prevOffset) rather than snapping through to the far
+// side. This is what stops WEST/EAST movement AND dashes from cutting
+// straight through a barrel from the side.
+function clampStrafeForBarrels(desiredOffset, prevOffset) {
+  let offset = desiredOffset;
+  for (const b of barrels) {
+    if (b.z > BARREL_TOUCH_Z_MAX) continue;
+    const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
+    const radius = BARREL_TOUCH_RADIUS_PX * proj.scale;
+    const desiredScreenX = state.centerX + offset;
+    if (Math.abs(proj.x - desiredScreenX) < radius) {
+      const prevScreenX = state.centerX + prevOffset;
+      const fromLeft = prevScreenX <= proj.x;
+      const edgeScreenX = fromLeft ? proj.x - radius : proj.x + radius;
+      offset = edgeScreenX - state.centerX;
+    }
+  }
+  return offset;
+}
+
 function applyForwardDelta(forwardDelta) {
   for (const s of structures) {
     s.z -= forwardDelta;
@@ -918,17 +1068,27 @@ function applyForwardDelta(forwardDelta) {
   e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
 }
 
-// PART 4/9: is the player currently standing in ANY barrel's cover zone?
-// Screen-space check: the barrel must be close enough (world-z) to be
-// reachable, and the player's own screen X (their real strafe position)
-// must fall within the barrel's projected cover radius — i.e. the player
-// actually walked up next to it, not merely "somewhere in the corridor".
+// PART 12 (3rd round): COVER is now purely "is the player physically
+// touching a barrel" — the EXACT SAME radius/z-range clampStrafeForBarrels()
+// uses for hard collision (BARREL_TOUCH_RADIUS_PX/BARREL_TOUCH_Z_MAX), so
+// there is no separate, larger "safe zone" floating around the barrel
+// independent of its own collision footprint.
+// BUG FIX (found during regression testing): clampStrafeForBarrels() always
+// resolves a colliding player to EXACTLY the collision radius's edge
+// (distance == radius), so a strict "< radius" check here could never be
+// true from a normal walk-into-the-barrel approach — COVER would never
+// actually activate via real collision contact, only if some other code
+// path placed the player strictly inside the radius. COVER_TOUCH_SLOP_PX
+// is a few px of extra tolerance so resting right against the collision
+// edge (the only way to ever actually touch a barrel) still reads as
+// "touching" — it does NOT change the collision boundary itself.
+const COVER_TOUCH_SLOP_PX = 6;
 function isPlayerInCover() {
   const playerScreenX = state.centerX + state.player.strafeOffset;
   for (const b of barrels) {
-    if (b.z > COVER_BARREL_Z_MAX) continue;
+    if (b.z > BARREL_TOUCH_Z_MAX) continue;
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
-    const radius = COVER_RADIUS_PX * proj.scale;
+    const radius = BARREL_TOUCH_RADIUS_PX * proj.scale + COVER_TOUCH_SLOP_PX;
     if (Math.abs(proj.x - playerScreenX) < radius) return true;
   }
   return false;
@@ -970,28 +1130,20 @@ function updateEnemyFacing(dt, now) {
       e.lastTurnAt = now;
     }
   } else {
-    // PART 2 (2nd round): ROID1/ROID2 — 5-zone hysteresis-held facing,
-    // stepping only ONE zone at a time (never jumps straight from farLeft
-    // to farRight), the same "single-step-per-frame hysteresis" shape
-    // ACTION-GAME's own real updateRoidTargetTracking() uses for its
-    // facingZone (game.js ~L7658-7683), adapted to this game's own
-    // screen-space diff (the same value the old 2-zone version already
-    // computed the exact same way).
+    // PART 9 (3rd round): ROID1/ROID2 — 3-zone hysteresis-held facing
+    // (SW/S/SE only — the old 5-zone farLeft/farRight tier that used to
+    // select the true side-profile images is gone, see ROID_FACE_FRAME).
+    // Single NEAR boundary + HYST, the same shape round 1's original
+    // 2-zone east/west system used.
     let zone = e.zone;
-    const NEAR = ROID_FACE_ZONE_NEAR_PX, FAR = ROID_FACE_ZONE_FAR_PX, HYST = ROID_FACE_ZONE_HYST_PX;
+    const NEAR = ROID_FACE_ZONE_NEAR_PX, HYST = ROID_FACE_ZONE_HYST_PX;
     if (zone === 'center') {
       if (diff > NEAR) zone = 'right';
       else if (diff < -NEAR) zone = 'left';
     } else if (zone === 'right') {
-      if (diff > FAR) zone = 'farRight';
-      else if (diff < NEAR - HYST) zone = 'center';
-    } else if (zone === 'farRight') {
-      if (diff < FAR - HYST) zone = 'right';
+      if (diff < NEAR - HYST) zone = 'center';
     } else if (zone === 'left') {
-      if (diff < -FAR) zone = 'farLeft';
-      else if (diff > -(NEAR - HYST)) zone = 'center';
-    } else if (zone === 'farLeft') {
-      if (diff > -(FAR - HYST)) zone = 'left';
+      if (diff > -(NEAR - HYST)) zone = 'center';
     }
     if (zone !== e.zone && now - e.lastTurnAt > ENEMY_TURN_COOLDOWN_MS) {
       e.zone = zone;
@@ -1264,6 +1416,32 @@ function computeEnemyDrawRect() {
   };
 }
 
+// PART 7 (3rd round): short recoil haptics, once per real shot — feature-
+// detected here at call time (Gamepad Haptics' vibrationActuator is the
+// modern API; hapticActuators[0].pulse() is the older Chrome-only one),
+// and wrapped in try/catch so an unsupported controller/browser can never
+// throw — the game just continues normally with no vibration.
+function triggerFireHaptics() {
+  try {
+    if (state.gamepadIndex === null) return;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads[state.gamepadIndex];
+    if (!gp) return;
+    if (gp.vibrationActuator && typeof gp.vibrationActuator.playEffect === 'function') {
+      gp.vibrationActuator.playEffect('dual-rumble', {
+        startDelay: 0,
+        duration: FIRE_HAPTIC_DURATION_MS,
+        weakMagnitude: FIRE_HAPTIC_WEAK,
+        strongMagnitude: FIRE_HAPTIC_STRONG,
+      });
+    } else if (gp.hapticActuators && gp.hapticActuators[0] && typeof gp.hapticActuators[0].pulse === 'function') {
+      gp.hapticActuators[0].pulse(FIRE_HAPTIC_WEAK, FIRE_HAPTIC_DURATION_MS);
+    }
+  } catch (e) {
+    // Never let a haptics failure interrupt gameplay.
+  }
+}
+
 // PART 3: fire spawns a muzzle flash + a fast traveling bullet only — no
 // full-length line is ever drawn between muzzle and target. The bullet is
 // resolved (hit-test, then spark on a hit) by updateBullets() once it
@@ -1281,6 +1459,7 @@ function fireWeapon(now) {
 
   spawnParticle({ type: 'muzzle', x: muzzleX, y: muzzleY, born: now, until: now + 45 });
   spawnBullet({ x1: muzzleX, y1: muzzleY, x2: aim.x, y2: aim.y, firedAt: now, resolveAt: now + BULLET_TRAVEL_MS });
+  triggerFireHaptics();
 }
 
 // Shared by updateBullets() (real hit resolution) and renderAimReticle()
@@ -1349,23 +1528,32 @@ function updateParticles(dt) {
   }
 }
 
-// 2ND-ROUND PART 6/8: the RIGHT STICK's curved output (state.input.viewX/Y,
-// see pollGamepad()) is the single source of truth for where the player is
-// looking — the flashlight beam is centered exactly there, and the aim
-// reticle sits at the exact same point (see getAimPoint() below). There is
-// no more independent flashlight-anchor stick.
+// PART 3 (3rd round): FLASHLIGHT is its own independent LEFT-STICK-driven
+// point again (round 2's "merged view" is retired) — resting at the same
+// default point it always has (screen-center-ish, slightly below horizon).
 function getFlashlightCenter() {
-  const vx = clampAxis(state.input.viewX) * VIEW_RANGE;
-  const vy = clampAxis(state.input.viewY) * VIEW_RANGE;
-  return { x: state.centerX + vx, y: state.horizonY + state.cssH * 0.06 + vy };
+  const lx = clampAxis(state.input.lightX) * LIGHT_RANGE;
+  const ly = clampAxis(state.input.lightY) * LIGHT_RANGE;
+  return { x: state.centerX + lx, y: state.horizonY + state.cssH * 0.06 + ly };
 }
 function clampAxis(v) { return Math.max(-1, Math.min(1, v)); }
 
+// PART 5/6 (3rd round): AIM's own resting point is the player's own
+// screen-space centerline (X, tracks strafeOffset as the player moves) at
+// a fixed default look height (Y) — no longer flashlight-relative.
+// p.aimLiveX/Y (updated once per frame in updatePlayer(), see its AIM
+// section) supplies the RIGHT STICK's live offset from that resting point,
+// smoothly relaxing to 0 when the stick is neutral; p.aimManualOffsetX/Y
+// supplies the persistent LT/RT+D-PAD trim (PART 6) on top of that, which
+// the recenter never touches.
 function getAimPoint() {
-  // Aim = view. Kept as its own named function (rather than inlining
-  // getFlashlightCenter() at every call site) since fireWeapon(), the
-  // crosshair renderer, and the test API all call it under this name.
-  return getFlashlightCenter();
+  const p = state.player;
+  const baseX = state.centerX + p.strafeOffset;
+  const baseY = state.horizonY + state.cssH * 0.06;
+  return {
+    x: baseX + p.aimManualOffsetX + p.aimLiveX,
+    y: baseY + p.aimManualOffsetY + p.aimLiveY,
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -1494,31 +1682,20 @@ function renderCorridor(theme) {
 // isPlayerInCover()'s own math exactly, so what you see is what protects
 // you (drawn brighter once the player is actually standing in it, as
 // direct visual confirmation cover is active).
+// PART 10 (3rd round): the old ground-level COVER ZONE ellipse (black
+// "reachable" shadow / green-fill "active" indicator) is removed entirely
+// — it read as an artificial game-UI marker painted onto a dark, otherwise
+// diegetic stage, which doesn't fit this game's world or its TPS framing.
+// COVER feedback now lives ENTIRELY on the player's own sprite (PART 13,
+// see renderPlayer()); the barrel here is just the physical object itself.
 function renderBarrels() {
-  const inCover = isPlayerInCover();
   const sorted = barrels.slice().sort((a, b) => b.z - a.z);
   for (const b of sorted) {
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
-    const radius = COVER_RADIUS_PX * proj.scale;
-    if (radius < 1.5) continue;
-
-    const playerScreenX = state.centerX + state.player.strafeOffset;
-    const thisOneActive = inCover && b.z <= COVER_BARREL_Z_MAX && Math.abs(proj.x - playerScreenX) < radius;
-
-    ctx.save();
-    ctx.fillStyle = thisOneActive ? 'rgba(120,255,170,0.30)' : 'rgba(0,0,0,0.45)';
-    ctx.beginPath();
-    ctx.ellipse(proj.x, proj.y + 4 * proj.scale, radius, radius * 0.34, 0, 0, Math.PI * 2);
-    ctx.fill();
-    if (thisOneActive) {
-      ctx.strokeStyle = 'rgba(160,255,200,0.55)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    }
-    ctx.restore();
+    const drawH = BARREL_DRAW_H * proj.scale;
+    if (drawH < 1.5) continue;
 
     const img = ASSETS.barrel;
-    const drawH = BARREL_DRAW_H * proj.scale;
     if (imgReady(img)) {
       const aspect = img.naturalWidth / img.naturalHeight;
       const drawW = drawH * aspect;
@@ -1640,7 +1817,21 @@ function renderPlayer(theme) {
   const dx = cx - drawW / 2;
   const dy = bottomY - drawH;
   if (strength > 0.001) {
+    // STEALTH always wins visually over COVER (they must read as clearly
+    // distinct states) — the heat-haze distortion effect is unchanged.
     drawPlayerStealthed(img, dx, dy, drawW, drawH, strength, nowTs);
+  } else if (p.coverVisual > 0.001) {
+    // PART 13 (3rd round): COVER is shown on the player's own sprite, not
+    // a ground overlay — ~10% more transparent than normal plus a subtle
+    // dark tint, both scaled by coverVisual (which itself is the smoothed
+    // isPlayerInCover() target, see updatePlayer()) so entering/leaving
+    // barrel range fades rather than snapping. Deliberately much milder
+    // than STEALTH's alpha 0.35 + distortion, so the two never look alike.
+    ctx.save();
+    ctx.globalAlpha = 1 - COVER_ALPHA_DROP * p.coverVisual;
+    ctx.filter = `brightness(${(1 - COVER_TINT_STRENGTH * p.coverVisual).toFixed(3)})`;
+    ctx.drawImage(img, dx, dy, drawW, drawH);
+    ctx.restore();
   } else {
     ctx.drawImage(img, dx, dy, drawW, drawH);
   }
@@ -1977,25 +2168,21 @@ function frame(ts) {
   const gpInput = pollGamepad();
   state.input.moveX = gpInput.move.x !== 0 ? gpInput.move.x : touchMove.x;
   state.input.moveY = gpInput.move.y !== 0 ? gpInput.move.y : touchMove.y;
-  // PART 6/8: RIGHT STICK's merged view axes take priority; the touch
-  // fallback still has two separate pads (light/aim, unchanged DOM/CSS,
-  // out of this round's scope) — touch-aim wins over touch-light when both
-  // are active, matching the old aim-over-light precedence.
-  if (Math.abs(gpInput.view.x) > 0.001 || Math.abs(gpInput.view.y) > 0.001) {
-    state.input.viewX = gpInput.view.x;
-    state.input.viewY = gpInput.view.y;
-  } else if (touchAim.x !== 0 || touchAim.y !== 0) {
-    state.input.viewX = touchAim.x;
-    state.input.viewY = touchAim.y;
-  } else {
-    state.input.viewX = touchLight.x;
-    state.input.viewY = touchLight.y;
-  }
+  // PART 3/4 (3rd round): LEFT STICK drives FLASHLIGHT only, RIGHT STICK
+  // drives AIM only — each has its own touch-pad fallback, independent of
+  // the other, instead of the old merged single "view" axis.
+  state.input.lightX = gpInput.light.x !== 0 ? gpInput.light.x : touchLight.x;
+  state.input.lightY = gpInput.light.y !== 0 ? gpInput.light.y : touchLight.y;
+  state.input.aimX = gpInput.aim.x !== 0 ? gpInput.aim.x : touchAim.x;
+  state.input.aimY = gpInput.aim.y !== 0 ? gpInput.aim.y : touchAim.y;
+  // PART 6: LT/RT + D-PAD manual AIM trim (height/horizontal).
+  state.input.aimHeightAdjust = gpInput.aimAdjust.height;
+  state.input.aimHorizAdjust = gpInput.aimAdjust.horiz;
   state.input.fireHeld = gpInput.fire || touchFireHeld;
 
   const actions = consumeActions();
   const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
-  applyForwardDelta(forwardDelta);
+  applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
   updateEnemy(dt, ts);
   updateBullets(ts);
   updateParticles(dt);
@@ -2008,8 +2195,14 @@ function frame(ts) {
   renderEnemy(theme);
   renderPlayer(theme);
   renderParticles();
-  renderBullets();
   renderFlashlightMask();
+  // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
+  // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
+  // below — otherwise any tracer segment landing outside the lit circle
+  // (i.e. away from wherever AIM/FLASHLIGHT currently points) is nearly
+  // invisible against the 0.90-alpha overlay, which is why the tracer
+  // used to appear to vanish depending on input state.
+  renderBullets();
   // FOLLOWUP FIX: telegraphs (LOCK boxes/▲/target ellipse/bolts) render
   // AFTER the darkness mask so they stay legible as warnings no matter
   // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
@@ -2051,4 +2244,7 @@ window.__darkoutTps = {
   getAimPoint, getFlashlightCenter, computeEnemyDrawRect,
   isPlayerInCover, getStealthStrength, applyAimCurve, playerMarkerPos, barrels,
   isAimOnEffectiveHit, enemyHitRadius, approachZMinForRoid, isRoidActivelyFiring,
+  // added 3rd round (PART 3/4/6/9/11/12): new stick curve/collision helpers
+  applyLightCurve, clampStrafeForBarrels, clampForwardDeltaForBarrels,
+  triggerFireHaptics,
 };
