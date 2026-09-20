@@ -133,19 +133,129 @@ html, body {
   color: rgba(200,210,220,0.5);
 }
 
-#flash-overlay {
+/* 4th round PART 23: enemy HP gauge — centered top, below #debug-panel. */
+#enemy-hud {
   position: absolute;
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  z-index: 45;
+}
+#enemy-name {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ffcf5c;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  margin-bottom: 2px;
+}
+#enemy-hp-bar-track {
+  width: 140px;
+  height: 8px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#enemy-hp-bar-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #ffcf5c, #ff8a3b);
+  transition: width 0.15s ease-out;
+}
+
+/* 4th round PART 17: FOCUS gauge (LB / AUTO AIM resource). Positioned
+   below #enemy-switch, which can now wrap to 2 rows (7 buttons) — pushed
+   down far enough to clear both rows and avoid the overlap a fixed 66px
+   caused (found via screenshot review, see PART 9's own check). */
+#focus-hud {
+  position: absolute;
+  top: 94px;
+  right: max(14px, env(safe-area-inset-right));
+  text-align: right;
+  z-index: 45;
+}
+#focus-label {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: #b09fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  margin-bottom: 2px;
+}
+#focus-bar-track {
+  width: 100px;
+  height: 6px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#focus-bar-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #7fd3ff, #b09fff);
+  transition: width 0.1s ease-out;
+}
+
+/* 4th round: PAUSE button — always visible regardless of touch-controls
+   visibility (spec: never hide the minimum UI needed to progress the
+   game). Placed below #focus-hud so it never overlaps #hud-top-right or
+   #enemy-switch above it. */
+#pause-btn {
+  position: absolute;
+  top: 122px;
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 55;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 5px 10px;
+  background: rgba(20,24,28,0.7);
+  border: 1px solid rgba(255,255,255,0.25);
+  color: #e0e6ea;
+  border-radius: 3px;
+}
+
+/* 4th round PART 6/7: PAUSE menu overlay. */
+#pause-menu {
+  position: fixed;
   inset: 0;
-  background: #fff;
-  opacity: 0;
-  pointer-events: none;
-  z-index: 40;
-  transition: opacity 0.35s ease-out;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.72);
 }
-#flash-overlay.firing {
-  opacity: 0.9;
-  transition: none;
+#pause-menu[hidden] { display: none; }
+#pause-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 220px;
+  padding: 20px 24px;
+  background: rgba(15,18,22,0.92);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 6px;
 }
+#pause-title {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: #fff;
+  margin-bottom: 6px;
+}
+.pause-menu-btn {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.25);
+  color: #e0e6ea;
+  border-radius: 4px;
+}
+.pause-menu-btn:active { background: rgba(255,255,255,0.22); }
 
 #debug-panel {
   position: absolute;
@@ -174,7 +284,9 @@ html, body {
   gap: 4px;
 }
 #theme-switch { top: max(10px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); top: 40px; }
-#enemy-switch { top: 40px; right: max(14px, env(safe-area-inset-right)); }
+/* 4th round: 7 buttons now (AUTO + 6 identities, was 3) — wrap + right-align
+   so it never overflows offscreen on a narrow landscape phone width. */
+#enemy-switch { top: 40px; right: max(14px, env(safe-area-inset-right)); max-width: 46vw; flex-wrap: wrap; justify-content: flex-end; }
 .theme-btn, .enemy-btn {
   font-size: 9px;
   letter-spacing: 0.05em;
@@ -189,11 +301,27 @@ html, body {
   border-color: rgba(120,200,255,0.8);
   color: #fff;
 }
+/* 4th round: DRONE/ADAM SPHERE/ADAM have no implementation in this repo
+   (see ENEMY_IMPLEMENTED in game.js) — visually marked so it's clear
+   selecting them won't start a real fight, without removing them from the
+   ENEMY SELECT list (spec asks for all 6 to be listed). */
+.enemy-btn-unimplemented {
+  opacity: 0.45;
+  font-style: italic;
+}
 
+/* 4th round PART 6: touch controls default OFF — [hidden]-equivalent via
+   display:none until .touch-controls-visible is toggled on from PAUSE
+   (see setTouchControlsVisible() in game.js). The touch input
+   implementation itself is untouched; only this visibility rule is new. */
 #touch-controls {
   position: absolute;
   inset: 0;
   z-index: 20;
+  display: none;
+}
+#touch-controls.touch-controls-visible {
+  display: block;
 }
 .touch-pad {
   position: absolute;

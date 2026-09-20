@@ -18,7 +18,7 @@
 
   <canvas id="scene-canvas"></canvas>
 
-  <!-- HUD: health / ammo / stealth / theme, kept as static DOM nodes updated via textContent/style only (no per-frame element creation) -->
+  <!-- HUD: health / ammo / stealth / theme / enemy HP / FOCUS, kept as static DOM nodes updated via textContent/style only (no per-frame element creation) -->
   <div id="hud">
     <div id="hud-top-left">
       <div id="hp-label">HP</div>
@@ -28,12 +28,36 @@
       <div id="ammo-readout">AMMO <span id="ammo-count">12</span>/<span id="ammo-reserve">48</span></div>
       <div id="stealth-readout">STEALTH <span id="stealth-state">OFF</span></div>
     </div>
+    <!-- 4th round PART 23: enemy HP gauge — did not exist before this
+         round (enemy.hp was never wired to any UI or any damage source;
+         see game.js updateBullets()'s own root-cause comment). Name +
+         bar both switch with the current enemy (spawnEnemy()/updateHud()). -->
+    <div id="enemy-hud">
+      <div id="enemy-name">ROID 1</div>
+      <div id="enemy-hp-bar-track"><div id="enemy-hp-bar-fill"></div></div>
+    </div>
+    <!-- 4th round PART 17: FOCUS gauge (LB / AUTO AIM resource). -->
+    <div id="focus-hud">
+      <div id="focus-label">FOCUS</div>
+      <div id="focus-bar-track"><div id="focus-bar-fill"></div></div>
+    </div>
     <div id="hud-center-warning" hidden></div>
     <div id="theme-label" class="hud-bottom-center">LAB / EXPERIMENT AREA</div>
   </div>
 
-  <!-- FLASH (Y button) full-screen white pulse -->
-  <div id="flash-overlay"></div>
+  <!-- 4th round: PAUSE button — deliberately OUTSIDE #touch-controls so it
+       stays visible/usable even while touch controls are hidden (spec:
+       "PAUSEボタン等、ゲーム進行上必要な最低限のUIまで消さないよう"). -->
+  <button type="button" id="pause-btn">PAUSE</button>
+
+  <!-- 4th round PART 6/7: PAUSE menu overlay — TOUCH CONTROLS ON/OFF toggle. -->
+  <div id="pause-menu" hidden>
+    <div id="pause-panel">
+      <div id="pause-title">PAUSE</div>
+      <button type="button" id="touch-controls-toggle" class="pause-menu-btn">TOUCH CONTROLS : OFF</button>
+      <button type="button" id="pause-resume-btn" class="pause-menu-btn">RESUME</button>
+    </div>
+  </div>
 
   <!-- Debug / FPS panel -->
   <div id="debug-panel">
@@ -51,14 +75,28 @@
     <button type="button" data-theme="escape" class="theme-btn">ESCAPE</button>
   </div>
 
-  <!-- Enemy switch (dev/test control) -->
+  <!-- 4th round PART 10/11: ENEMY SELECT — extends the previous ROID1/
+       ROID2/GABRIEL-only BOSS TEST panel with AUTO + all 6 requested
+       identities. DRONE/ADAM SPHERE/ADAM have no implementation anywhere
+       in this repo (investigated first — no assets, no AI, no code) so
+       their buttons are marked visually disabled; clicking them shows a
+       "NOT IMPLEMENTED" notice instead of faking a fight (see
+       selectEnemy() in game.js). -->
   <div id="enemy-switch">
-    <button type="button" data-enemy="roid1" class="enemy-btn active">ROID1</button>
-    <button type="button" data-enemy="roid2" class="enemy-btn">ROID2</button>
+    <button type="button" data-enemy="auto" class="enemy-btn active">AUTO</button>
+    <button type="button" data-enemy="drone" class="enemy-btn enemy-btn-unimplemented">DRONE</button>
+    <button type="button" data-enemy="roid1" class="enemy-btn">ROID 1</button>
+    <button type="button" data-enemy="roid2" class="enemy-btn">ROID 2</button>
     <button type="button" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
+    <button type="button" data-enemy="adamSphere" class="enemy-btn enemy-btn-unimplemented">ADAM SPHERE</button>
+    <button type="button" data-enemy="adam" class="enemy-btn enemy-btn-unimplemented">ADAM</button>
   </div>
 
-  <!-- On-screen touch fallback controls (for testing without a controller) -->
+  <!-- On-screen touch fallback controls (for testing without a controller).
+       4th round PART 6: default HIDDEN (see game.js setTouchControlsVisible()
+       / style.css's default-hidden rule) — toggled ON/OFF from PAUSE only.
+       The touch input implementation itself (makeVirtualStick()/
+       wireButton() listeners) is completely unchanged; only visibility. -->
   <div id="touch-controls">
     <div id="touch-move-pad" class="touch-pad">
       <div class="touch-pad-label">MOVE</div>
@@ -76,7 +114,8 @@
       <button type="button" id="touch-fire" class="touch-btn">FIRE</button>
       <button type="button" id="touch-reload" class="touch-btn">RELOAD</button>
       <button type="button" id="touch-stealth" class="touch-btn">STEALTH</button>
-      <button type="button" id="touch-flash" class="touch-btn">FLASH</button>
+      <!-- 4th round: FLASH retired, this slot now hosts FOCUS/AUTO AIM (held, same as FIRE). -->
+      <button type="button" id="touch-focus" class="touch-btn">FOCUS</button>
       <button type="button" id="touch-dash-n" class="touch-btn">N-DASH</button>
       <button type="button" id="touch-dash-s" class="touch-btn">S-STEP</button>
     </div>

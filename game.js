@@ -141,10 +141,11 @@ const AIM_CURVE_POWER = 2.9; // was 2.6 (2nd round), was 2.2 (1st round)
 
 // PART 5/6 (3rd round): AIM is no longer "flashlight-relative" — it has its
 // own resting point (the player's own screen-space centerline, PART 5) plus
-// a persistent manual offset (PART 6, LT/RT+D-PAD) plus a live offset that
-// tracks the RIGHT STICK while deflected and smoothly relaxes back to 0
-// (not the manual offset — that's kept) once the stick returns to neutral.
-const AIM_RECENTER_RATE = 6; // dt-multiplier for the live-offset->0 lerp (~150-200ms to mostly settle)
+// a persistent manual offset (PART 6, LT/RT+D-PAD) plus a live offset.
+// 4th round: the live offset is now purely velocity-integrated and NEVER
+// auto-recenters (see AIM_MOVE_SPEED_PX_S above and updatePlayer()'s own
+// AIM section) — the old "relaxes back to 0 on release" behavior this
+// comment used to describe was exactly the bug this round was asked to fix.
 const AIM_MANUAL_SPEED = 140; // px/sec, D-PAD-driven height/horizontal trim while LT/RT is held alone
 const AIM_MANUAL_MAX_OFFSET = 70; // px, clamp on each manual-offset axis
 
@@ -177,6 +178,44 @@ const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
 
 const GAMEPAD_AXIS_DEADZONE = 0.16;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
+
+// ---------------------------------------------------------------------
+// AIM — 4th round: position-integrated (velocity) control, replacing the
+// old "stick position directly maps to AIM offset, auto-recenters to 0 on
+// release" design. See updatePlayer()'s own AIM section for the full
+// before/after writeup. AIM_MOVE_SPEED_PX_S is the max px/sec the AIM
+// point can travel at full stick deflection — chosen so a full sweep
+// across AIM_RANGE (152px each way, unchanged from before) takes roughly
+// 1/3 second, i.e. a deliberate but responsive sweep, not an instant snap
+// and not a sluggish crawl. The existing deadzone/curve shape (AIM_DEADZONE/
+// AIM_CURVE_POWER above) is completely unchanged — only what the curved
+// output DRIVES (velocity instead of absolute position) is new, per spec
+// ("既存AIM感度について、今回の目的と無関係な大幅変更はしない").
+const AIM_MOVE_SPEED_PX_S = 460;
+
+// FOCUS / AUTO AIM (4th round) — LB replaces the retired FLASH action.
+// Bare, testable starting values (spec explicitly says exact balance is
+// not yet decided) — kept as named constants, not scattered literals, so
+// they're trivial to retune later.
+const FOCUS_MAX = 100;
+const FOCUS_DRAIN_PER_SEC = 40;   // empties in 2.5s of continuous AUTO AIM
+const FOCUS_RECOVER_PER_SEC = 20; // refills in 5s from empty while not in use
+// How fast AUTO AIM's assisted point approaches the target hit-center —
+// a smooth pull-in, not an instant snap-to-target (dt-multiplier lerp,
+// same shape as AIM_MOVE_SPEED_PX_S's own manual-AIM integration above).
+const AUTO_AIM_APPROACH_RATE = 9;
+
+// ENEMY DEATH (4th round) — durations for the two death-effect families.
+const DEATH_EXPLODE_MS = 650; // DRONE/ROID1/ROID2/ADAM SPHERE: existing explosion particles + fade
+const DEATH_BURN_MS = 950;    // GABRIEL/ADAM: burn-down/dissolve, see startEnemyDeath()
+
+// Per-shot damage — PREVIOUSLY DID NOT EXIST AT ALL (see PHASE 9 root-cause
+// report: enemy.hp was declared but never once decremented anywhere in the
+// codebase). This is not a retune of an existing SHOT-power value — it is
+// the minimum new constant required to make hits actually reduce HP. Picked
+// so a fresh 100HP enemy takes ~9 hits (close to one MAG_SIZE=12 magazine).
+const BULLET_DAMAGE = 12;
+const ENEMY_MAX_HP = 100;
 
 // ---------------------------------------------------------------------
 // STEALTH — matched to ACTION-GAME's actual DARK OUT implementation
@@ -294,8 +333,13 @@ const ammoReserveEl = document.getElementById('ammo-reserve');
 const stealthReadoutEl = document.getElementById('stealth-readout');
 const stealthStateEl = document.getElementById('stealth-state');
 const centerWarningEl = document.getElementById('hud-center-warning');
+// 4th round: enemy HP gauge (PART 23) + FOCUS gauge (PART 17/18) — neither
+// existed before this round (see PHASE 9's root-cause report: there was no
+// boss HP gauge markup at all, only the player's own #hp-bar-*).
+const enemyNameEl = document.getElementById('enemy-name');
+const enemyHpFillEl = document.getElementById('enemy-hp-bar-fill');
+const focusFillEl = document.getElementById('focus-bar-fill');
 const themeLabelEl = document.getElementById('theme-label');
-const flashOverlayEl = document.getElementById('flash-overlay');
 
 const dbgFpsEl = document.getElementById('dbg-fps');
 const dbgFrameEl = document.getElementById('dbg-frametime');
@@ -371,6 +415,36 @@ const ROID2_SPRITES = {
 // referenced by this map, so they can never be chosen.
 const ROID_FACE_FRAME = { right: 1, center: 2, left: 3 };
 
+// ENEMY SELECT / AUTO MODE (4th round) — investigated first: only
+// roid1/roid2/gabriel have any implementation in this repo at all (assets,
+// AI, attack phases). DRONE / ADAM SPHERE / ADAM have NO assets, NO AI, NO
+// code anywhere in this file (confirmed via full-file search before writing
+// this) — they are NOT implemented, and per spec this is reported rather
+// than faked. ENEMY_IMPLEMENTED/ENEMY_LABEL/ENEMY_DEATH_FAMILY cover all 6
+// selectable identities so the UI can list all of them (per spec item 10)
+// while cleanly refusing to "start a fight" against one that doesn't exist.
+const ENEMY_IMPLEMENTED = {
+  drone: false, roid1: true, roid2: true, gabriel: true, adamSphere: false, adam: false,
+};
+const ENEMY_LABEL = {
+  drone: 'DRONE', roid1: 'ROID 1', roid2: 'ROID 2', gabriel: 'GABRIEL', adamSphere: 'ADAM SPHERE', adam: 'ADAM',
+};
+// 'explode' = reuse existing explosionFlash/spark/smoke burst (PART 25).
+// 'burn' = GABRIEL/ADAM's own burn-down/dissolve effect (PART 26) — never
+// the same simple explosion DRONE gets, per spec.
+const ENEMY_DEATH_FAMILY = {
+  drone: 'explode', roid1: 'explode', roid2: 'explode', adamSphere: 'explode',
+  gabriel: 'burn', adam: 'burn',
+};
+// AUTO MODE's order is the FULL requested order — DRONE/ADAM SPHERE/ADAM
+// are listed for documentation/UI purposes but AUTO_SEQUENCE (used by the
+// actual cycling logic below) only ever contains the 3 real, implemented
+// enemies, in their requested relative order. See selectEnemy()/
+// advanceAutoMode() and the completion report for the honest accounting of
+// this gap — nothing here pretends DRONE/ADAM SPHERE/ADAM are playable.
+const ENEMY_SELECT_ORDER = ['drone', 'roid1', 'roid2', 'gabriel', 'adamSphere', 'adam'];
+const AUTO_SEQUENCE = ENEMY_SELECT_ORDER.filter((t) => ENEMY_IMPLEMENTED[t]);
+
 const ASSETS = {
   player: {
     fire: loadImg('assets/player/player_north_fire.png'),
@@ -440,11 +514,11 @@ const state = {
     lastHpFillPct: -1,
     lastAmmoText: '',
     lastStealthText: '',
-    // PART 5/6 (3rd round): AIM's own persistent state — liveX/Y tracks the
-    // RIGHT STICK while deflected and relaxes back to 0 (not the manual
-    // offset) once neutral (see AIM_RECENTER_RATE); manualOffsetX/Y are the
-    // separate, persistent LT+D-PAD-up/down / RT+D-PAD-left/right trims,
-    // which survive the live-offset recenter untouched.
+    // PART 5/6 (3rd round), rewritten 4th round: AIM's own persistent
+    // state — liveX/Y is velocity-integrated by the RIGHT STICK and NEVER
+    // auto-recenters (see updatePlayer()'s own AIM section); manualOffsetX/Y
+    // are the separate, persistent LT+D-PAD-up/down / RT+D-PAD-left/right
+    // trims, unaffected either way.
     aimLiveX: 0, aimLiveY: 0,
     aimManualOffsetX: 0, aimManualOffsetY: 0,
     // PART 12/13 (3rd round): 0..1 smoothed "how deep in a barrel's touch
@@ -452,6 +526,10 @@ const state = {
     // smoothed the same dt-based way p.scale already is, so leaving cover
     // fades out over a short interval rather than snapping.
     coverVisual: 0,
+    // 4th round: FOCUS / AUTO AIM (LB, replaces the retired FLASH).
+    focus: FOCUS_MAX,
+    autoAimActive: false,
+    lastFocusFillPct: -1,
   },
 
   enemy: {
@@ -488,6 +566,17 @@ const state = {
     // PHASE2 (TARGET AREA) — not re-tracked live — so the player can
     // actually dodge it by moving away before it lands, per spec.
     missileTargetX: 0, missileTargetY: 0,
+    // 4th round: real max HP (enemy.hp was previously declared but never
+    // actually compared against a max anywhere — see PHASE 9 root-cause
+    // report) + death-sequence state. 'alive' -> ('exploding'|'burning') ->
+    // 'gone'. combat AI (updateEnemy()) and damage (updateBullets()) both
+    // check this and stop the instant it leaves 'alive' (PART 27).
+    maxHp: ENEMY_MAX_HP,
+    deathState: 'alive',
+    deathStartedAt: 0,
+    deathUntil: 0,
+    lastHpFillPct: -1,
+    lastNameText: '',
   },
 
   input: {
@@ -503,22 +592,33 @@ const state = {
     // updatePlayer().
     aimHeightAdjust: 0, aimHorizAdjust: 0,
     fireHeld: false,
+    focusHeld: false, // 4th round: LB/touch-focus — FOCUS/AUTO AIM
   },
 
   // edge-triggered one-shot actions, consumed by update() each frame
   actions: {
     reload: false,
     stealth: false,
-    flash: false,
     northDash: false,
     southDash: false,
     eastDash: false,
     westDash: false,
+    pauseToggle: false, // 4th round: gamepad Start / touch PAUSE button
   },
 
   gamepadConnected: false,
   gamepadIndex: null,
   prevButtons: [],
+
+  // 4th round: touch UI is OFF by default (spec item 6 — Gamepad play
+  // shouldn't have the screen full of sticks/buttons); PAUSE toggles it.
+  touchControlsVisible: false,
+  paused: false,
+  // ENEMY SELECT / AUTO MODE (4th round). 'auto' cycles AUTO_SEQUENCE;
+  // any other value is one specific implemented enemy type. autoMode.index
+  // is AUTO_SEQUENCE's own index (only ever points at an implemented type).
+  enemySelect: 'auto',
+  autoMode: { active: true, index: 0 },
 
   particles: [], // muzzle flash / tracer / hit spark, fixed pool
 
@@ -697,6 +797,7 @@ function pollGamepad() {
   const gpAim = { x: 0, y: 0 };
   const gpAimAdjust = { height: 0, horiz: 0 };
   let gpFire = false;
+  let gpFocusHeld = false; // LB held — FOCUS/AUTO AIM (4th round)
 
   if (gp) {
     const b = gp.buttons;
@@ -744,17 +845,24 @@ function pollGamepad() {
     gpAim.y = applyAimCurve(gp.axes[3] || 0);
 
     gpFire = pressed(5);                            // RB = FIRE
-    if (edge(4)) state.actions.flash = true;         // LB = FLASH
+    // 4th round: LB is FOCUS/AUTO AIM — a HELD state (consumed continuously
+    // in updatePlayer(), not an edge-triggered one-shot action), replacing
+    // the retired FLASH. See gpFocusHeld below and PART 16/17/19.
+    const gpFocusHeldLocal = pressed(4);
     if (edge(3)) state.actions.northDash = true;      // Y = NORTH DASH
     if (edge(2)) state.actions.westDash = true;       // X = WEST DASH
     if (edge(1)) state.actions.eastDash = true;       // B = EAST DASH
     if (edge(0)) state.actions.southDash = true;      // A = SOUTH DASH / BACKSTEP
     // RELOAD isn't named anywhere in the button spec (every face/shoulder/
-    // trigger button is spoken for by MOVE/AIM/DASH/FIRE/FLASH/STEALTH/AIM
+    // trigger button is spoken for by MOVE/AIM/DASH/FIRE/FOCUS/STEALTH/AIM
     // trim) — left stick click (L3) is the one remaining unused
     // standard-mapping button, so RELOAD stays there. Touch's own RELOAD
     // button is unaffected.
     if (edge(10)) state.actions.reload = true;        // L3 = RELOAD
+    // 4th round: Start/Menu (standard mapping button 9) toggles PAUSE —
+    // previously unused. Touch's own on-screen PAUSE button is unaffected.
+    if (edge(9)) state.actions.pauseToggle = true;
+    gpFocusHeld = gpFocusHeldLocal;
 
     const nextPrev = new Array(b.length);
     for (let i = 0; i < b.length; i++) nextPrev[i] = pressed(i);
@@ -763,7 +871,7 @@ function pollGamepad() {
     state.prevButtons = [];
   }
 
-  return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire };
+  return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
 }
 
 // ---------------------------------------------------------------------
@@ -808,6 +916,7 @@ const touchLight = makeVirtualStick(document.getElementById('touch-light-pad'), 
 const touchAim = makeVirtualStick(document.getElementById('touch-aim-pad'), document.querySelector('#touch-aim-pad .touch-stick'));
 
 let touchFireHeld = false;
+let touchFocusHeld = false; // 4th round: FOCUS/AUTO AIM touch button (replaces FLASH's old slot)
 function wireButton(id, onPress) {
   const el = document.getElementById(id);
   el.addEventListener('pointerdown', (e) => { e.preventDefault(); onPress(); });
@@ -819,7 +928,15 @@ fireBtnEl.addEventListener('pointerup', () => { touchFireHeld = false; });
 fireBtnEl.addEventListener('pointercancel', () => { touchFireHeld = false; });
 wireButton('touch-reload', () => { state.actions.reload = true; });
 wireButton('touch-stealth', () => { state.actions.stealth = true; });
-wireButton('touch-flash', () => { state.actions.flash = true; });
+// 4th round: FLASH's touch button is retired; the same slot now hosts
+// FOCUS (held, same pattern as touch-fire above — not an edge action,
+// since AUTO AIM needs to know while the button is held, see
+// touchFocusHeld's use in updatePlayer()).
+wireButton('touch-focus', () => {});
+const focusBtnEl = document.getElementById('touch-focus');
+focusBtnEl.addEventListener('pointerdown', () => { touchFocusHeld = true; });
+focusBtnEl.addEventListener('pointerup', () => { touchFocusHeld = false; });
+focusBtnEl.addEventListener('pointercancel', () => { touchFocusHeld = false; });
 wireButton('touch-dash-n', () => { state.actions.northDash = true; });
 wireButton('touch-dash-s', () => { state.actions.southDash = true; });
 
@@ -831,26 +948,47 @@ document.querySelectorAll('.theme-btn').forEach((btn) => {
     themeLabelEl.textContent = THEMES[state.theme].label;
   });
 });
+// PART 10/11 (4th round): ENEMY SELECT — extends the existing BOSS TEST
+// panel (previously ROID1/ROID2/GABRIEL only) with AUTO + all 6 requested
+// identities, reusing the SAME selectEnemy()/spawnEnemy() reset every other
+// entry point uses (never a second, duplicate enemy-switch implementation).
 document.querySelectorAll('.enemy-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.enemy-btn').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
-    state.enemy.type = btn.dataset.enemy;
-    state.enemy.kind = btn.dataset.enemy === 'gabriel' ? 'claw' : 'sniper';
-    state.enemy.attackState = 'idle';
-    state.enemy.nextIdleCheckAt = 0;
-    state.enemy.z = 900;
-    state.enemy.facing = 'east';
-    state.enemy.zone = 'center';
-    state.enemy.lastTurnAt = -Infinity;
-    state.enemy.roidFireFrame = 0;
-    state.enemy.roidFireDir = 1;
-    state.enemy.roidFireFrameElapsedMs = 0;
-    state.enemy.lastShotFiredAt = -Infinity;
-    state.enemy.lane = 0;
-    state.enemy.laneTarget = 0;
+    selectEnemy(btn.dataset.enemy);
   });
 });
+
+// ---------------------------------------------------------------------
+// PAUSE MENU / TOUCH CONTROLS VISIBILITY (4th round)
+// ---------------------------------------------------------------------
+
+const pauseMenuEl = document.getElementById('pause-menu');
+const touchControlsEl = document.getElementById('touch-controls');
+const touchToggleBtnEl = document.getElementById('touch-controls-toggle');
+
+// PART 6/7/8: touch UI defaults to HIDDEN (state.touchControlsVisible
+// starts false) — only [hidden]/a CSS class is ever touched here, the
+// underlying touch input implementation (makeVirtualStick()/wireButton()
+// listeners) is completely untouched either way, so switching back ON from
+// PAUSE restores full touch control exactly as before. The PAUSE button
+// itself lives OUTSIDE #touch-controls (see index.html) so it's never
+// hidden along with the rest of the touch UI.
+function setTouchControlsVisible(visible) {
+  state.touchControlsVisible = visible;
+  touchControlsEl.classList.toggle('touch-controls-visible', visible);
+  touchToggleBtnEl.textContent = 'TOUCH CONTROLS : ' + (visible ? 'ON' : 'OFF');
+}
+setTouchControlsVisible(state.touchControlsVisible);
+
+function togglePauseMenu() {
+  state.paused = !state.paused;
+  pauseMenuEl.hidden = !state.paused;
+}
+document.getElementById('pause-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
+document.getElementById('pause-resume-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
+touchToggleBtnEl.addEventListener('pointerdown', (e) => { e.preventDefault(); setTouchControlsVisible(!state.touchControlsVisible); });
 
 // ---------------------------------------------------------------------
 // UPDATE
@@ -859,7 +997,7 @@ document.querySelectorAll('.enemy-btn').forEach((btn) => {
 function consumeActions() {
   const a = state.actions;
   const out = { ...a };
-  a.reload = a.stealth = a.flash = a.northDash = a.southDash = a.eastDash = a.westDash = false;
+  a.reload = a.stealth = a.northDash = a.southDash = a.eastDash = a.westDash = a.pauseToggle = false;
   return out;
 }
 
@@ -922,20 +1060,6 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   // toggle STEALTH — stealthToggledAt drives the enter/exit fade (PART 5)
   if (actions.stealth) { p.stealth = !p.stealth; p.stealthToggledAt = now; }
 
-  // FLASH — brief screen pulse (instant opacity via .firing, no transition)
-  // then a plain setTimeout drops the class so the base rule's own
-  // transition fades it back out. Plus: interrupts a nearby enemy's
-  // telegraphed attack (reused as a stun, per DARK OUT's FLASH concept).
-  if (actions.flash) {
-    flashOverlayEl.classList.add('firing');
-    clearTimeout(flashOverlayEl._flashTimer);
-    flashOverlayEl._flashTimer = setTimeout(() => { flashOverlayEl.classList.remove('firing'); }, 90);
-    if (INTERRUPTIBLE_PHASES.indexOf(state.enemy.attackState) !== -1) {
-      state.enemy.attackState = 'cooldown';
-      state.enemy.attackUntil = now + 900;
-    }
-  }
-
   // RELOAD
   if (actions.reload && !p.reloading && p.ammo < MAG_SIZE && p.reserve > 0) {
     p.reloading = true;
@@ -949,19 +1073,52 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     p.reloading = false;
   }
 
-  // PART 5/6 (3rd round): AIM live offset (RIGHT STICK) — tracks the stick
-  // directly while deflected, and smoothly relaxes back to 0 (never the
-  // manual offset — that's separate and persists) once neutral, so idle
-  // AIM re-centers on the player's own screen X (PART 5) without a
-  // "瞬間的にガクッと" teleport (short dt-based lerp instead).
-  const aimStickActive = Math.abs(state.input.aimX) > 0.001 || Math.abs(state.input.aimY) > 0.001;
-  if (aimStickActive) {
-    p.aimLiveX = clampAxis(state.input.aimX) * AIM_RANGE;
-    p.aimLiveY = clampAxis(state.input.aimY) * AIM_RANGE;
+  // 4th round: FOCUS / AUTO AIM (LB / touch-focus), replacing FLASH. Held +
+  // FOCUS>0 -> AUTO AIM active, draining FOCUS; released (or FOCUS empty)
+  // -> AUTO AIM off, FOCUS recovers. SHOT itself is untouched (still RB) —
+  // this only ever assists the AIM point, never fires on its own.
+  p.autoAimActive = state.input.focusHeld && p.focus > 0.001;
+  if (p.autoAimActive) {
+    p.focus = Math.max(0, p.focus - FOCUS_DRAIN_PER_SEC * dt);
   } else {
-    const recenterT = Math.min(1, dt * AIM_RECENTER_RATE);
-    p.aimLiveX += (0 - p.aimLiveX) * recenterT;
-    p.aimLiveY += (0 - p.aimLiveY) * recenterT;
+    p.focus = Math.min(FOCUS_MAX, p.focus + FOCUS_RECOVER_PER_SEC * dt);
+  }
+
+  // AIM — 4th round rewrite: position-integrated (velocity), NOT
+  // "stick position = AIM position with an auto-recenter-to-0 on release".
+  // aimLiveX/Y is now a genuinely PERSISTENT offset: it only ever moves
+  // while the stick is actually deflected (or AUTO AIM is pulling it), and
+  // simply stays exactly where it is the instant the stick returns to
+  // neutral — never snaps or decays back toward 0. Root cause of the old
+  // "AIM resets on release" bug: the previous code intentionally lerped
+  // aimLiveX/Y back to 0 every frame the stick was neutral (see git
+  // history) — that recenter-to-center behavior is exactly what this round
+  // was asked to remove.
+  if (p.autoAimActive) {
+    // AUTO AIM: smoothly pull the SAME persistent aimLiveX/Y toward the
+    // current enemy's existing hit-center (computeEnemyDrawRect()/
+    // enemyHitRadius() — the exact region SHOT already resolves against,
+    // no invented separate "weak point"), converted into the same
+    // base-relative offset space getAimPoint() reads. A smooth approach,
+    // never an instant snap. Because this writes the SAME variable manual
+    // AIM reads/writes, releasing LB leaves AIM exactly where AUTO AIM put
+    // it — manual AIM simply resumes from there (PART 20), never resets.
+    const rect = computeEnemyDrawRect();
+    const baseX = state.centerX + p.strafeOffset;
+    const baseY = state.horizonY + state.cssH * 0.06;
+    const targetLiveX = clamp(rect.cx - baseX - p.aimManualOffsetX, -AIM_RANGE, AIM_RANGE);
+    const targetLiveY = clamp(rect.cy - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE);
+    const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
+    p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
+    p.aimLiveY += (targetLiveY - p.aimLiveY) * approachT;
+  } else {
+    // Manual AIM: stick input (already deadzoned/curved upstream by
+    // applyAimCurve()) drives VELOCITY, not absolute position. Deadzone
+    // means state.input.aimX/Y is exactly 0 while the stick is neutral, so
+    // this is naturally a no-op (position frozen) without any special-case
+    // branch for "stick released".
+    p.aimLiveX = clamp(p.aimLiveX + state.input.aimX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
+    p.aimLiveY = clamp(p.aimLiveY + state.input.aimY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
   }
   // PART 6 (3rd round): persistent manual AIM trim — LT+D-PAD up/down
   // moves height only (X untouched), RT+D-PAD left/right moves horizontal
@@ -1093,10 +1250,6 @@ function isPlayerInCover() {
   }
   return false;
 }
-
-// Phases that FLASH (Y) can interrupt — anything before the attack is
-// actually committed (fire/impact are too late to stun out of).
-const INTERRUPTIBLE_PHASES = ['telegraph', 'lock_red', 'lock_yellow', 'lockon', 'target'];
 
 function showCenterMsg(text, color) {
   centerWarningEl.textContent = text;
@@ -1237,9 +1390,135 @@ function updateRoidAnimation(dt, now) {
   }
 }
 
+// ENEMY SELECT / AUTO MODE (4th round) — PART 13: the single shared reset
+// point for "start fighting a fresh instance of this enemy type", used by
+// selectEnemy()/advanceEnemyRotation() and the ENEMY SELECT UI alike, so
+// there is exactly one enemy-reset code path, not one per caller. Resets
+// EVERY per-enemy field to a clean initial value — HP, AI/attack-phase
+// state, projectile/lock/target coordinates, animation frame, hit-flash,
+// death state — so nothing from a previous enemy can ever leak into the
+// next one (PART 13's explicit requirement).
+function spawnEnemy(type) {
+  const e = state.enemy;
+  e.type = type;
+  e.z = 900;
+  e.lane = 0;
+  e.laneTarget = 0;
+  e.facing = 'east';
+  e.zone = 'center';
+  e.lastTurnAt = -Infinity;
+  e.attackState = 'idle';
+  e.attackUntil = 0;
+  e.nextIdleCheckAt = 0;
+  e.kind = type === 'gabriel' ? 'claw' : 'sniper';
+  e.hp = ENEMY_MAX_HP;
+  e.maxHp = ENEMY_MAX_HP;
+  e.hitFlashUntil = 0;
+  e.roidFireFrame = 0;
+  e.roidFireDir = 1;
+  e.roidFireFrameElapsedMs = 0;
+  e.lastShotFiredAt = -Infinity;
+  e.lockX = 0; e.lockY = 0;
+  e.fireFromX = 0; e.fireFromY = 0; e.fireToX = 0; e.fireToY = 0;
+  e.missileTargetX = 0; e.missileTargetY = 0;
+  e.deathState = 'alive';
+  e.deathStartedAt = 0;
+  e.deathUntil = 0;
+}
+
+// PART 10/11: ENEMY SELECT entry point. AUTO starts the AUTO_SEQUENCE from
+// its first (implemented) enemy; a specific implemented type starts that
+// fight directly; a specific UNIMPLEMENTED type (drone/adamSphere/adam —
+// see ENEMY_IMPLEMENTED, investigated up front: none of the three have any
+// asset/AI/code in this repo) is refused with an on-screen notice rather
+// than fabricating a fight against an enemy that doesn't exist.
+function selectEnemy(type) {
+  if (type === 'auto') {
+    state.enemySelect = 'auto';
+    state.autoMode.active = true;
+    state.autoMode.index = 0;
+    spawnEnemy(AUTO_SEQUENCE[0]);
+    return;
+  }
+  if (!ENEMY_IMPLEMENTED[type]) {
+    showCenterMsg((ENEMY_LABEL[type] || type.toUpperCase()) + ' NOT IMPLEMENTED', '#ffcf5c');
+    return;
+  }
+  state.enemySelect = type;
+  state.autoMode.active = false;
+  spawnEnemy(type);
+}
+
+// PART 12: called once an enemy's death effect finishes while AUTO MODE is
+// active — advances to the next entry in AUTO_SEQUENCE (looping back to the
+// start after the last one, for a repeatable test loop) and spawns it via
+// the SAME spawnEnemy() reset every other entry point uses.
+function advanceEnemyRotation(now) {
+  if (!state.autoMode.active) return;
+  state.autoMode.index = (state.autoMode.index + 1) % AUTO_SEQUENCE.length;
+  spawnEnemy(AUTO_SEQUENCE[state.autoMode.index]);
+}
+
+// PART 24/25/26/27: called once when enemy.hp first reaches 0. Picks the
+// death family (ENEMY_DEATH_FAMILY), stamps the death-timer window, and
+// immediately forces attackState back to 'idle' so any in-progress
+// telegraph (LOCK box, missile target ellipse, etc.) stops being drawn on
+// the very next frame — updateEnemy()'s own deathState!=='alive' early
+// return (PART 27) is what actually stops combat AI/new attacks from here on.
+function startEnemyDeath(now) {
+  const e = state.enemy;
+  if (e.deathState !== 'alive') return;
+  const family = ENEMY_DEATH_FAMILY[e.type] || 'explode';
+  e.deathState = family === 'burn' ? 'burning' : 'exploding';
+  e.deathStartedAt = now;
+  e.deathUntil = now + (family === 'burn' ? DEATH_BURN_MS : DEATH_EXPLODE_MS);
+  e.attackState = 'idle';
+
+  const rect = computeEnemyDrawRect();
+  if (family === 'explode') {
+    // PART 25: DRONE/ROID1/ROID2/ADAM SPHERE — reuses the EXACT SAME
+    // particle types (explosionFlash/spark/smoke) resolveMissileImpact()
+    // already spawns elsewhere in this file, just bigger/more of them for
+    // a "defeated" moment instead of a mid-fight impact. No new particle
+    // type, no new image asset.
+    spawnParticle({ type: 'explosionFlash', x: rect.cx, y: rect.cy, r: 60, born: now, until: now + 170 });
+    for (let i = 0; i < 3; i++) {
+      spawnParticle({ type: 'smoke', x: rect.cx + (i - 1) * 16, y: rect.cy, r: 30, born: now, until: now + 500 + i * 90 });
+    }
+    for (let i = 0; i < 8; i++) {
+      spawnParticle({
+        type: 'spark', x: rect.cx + (Math.random() - 0.5) * rect.w * 0.5, y: rect.cy + (Math.random() - 0.5) * rect.h * 0.3,
+        born: now, until: now + 180 + Math.random() * 160,
+      });
+    }
+  } else {
+    // PART 26: GABRIEL/ADAM — NOT the same explosion. A scatter of ember
+    // ('spark', already amber-toned — see renderParticles()) bursts across
+    // the body, paired with renderEnemy()'s own bottom-up dissolve/tint for
+    // the sustained "burning down" read over DEATH_BURN_MS.
+    for (let i = 0; i < 7; i++) {
+      spawnParticle({
+        type: 'spark', x: rect.cx + (Math.random() - 0.5) * rect.w * 0.6, y: rect.y + rect.h * (0.3 + Math.random() * 0.5),
+        born: now, until: now + 260 + Math.random() * 320,
+      });
+    }
+  }
+}
+
 function updateEnemy(dt, now) {
   const e = state.enemy;
   const p = state.player;
+
+  // PART 27: once death has started, combat AI is fully stopped — no
+  // facing/animation updates, no attack-phase progression, no new
+  // projectiles. Only the death-timer itself advances, until it completes.
+  if (e.deathState !== 'alive') {
+    if (now >= e.deathUntil) {
+      e.deathState = 'gone';
+      advanceEnemyRotation(now);
+    }
+    return;
+  }
 
   updateEnemyFacing(dt, now);
   updateRoidAnimation(dt, now);
@@ -1500,16 +1779,27 @@ function spawnPlayerImpact(x, y, now) {
 }
 
 function updateBullets(now) {
+  const e = state.enemy;
   for (const b of state.bullets) {
     if (!b.active) continue;
     if (now < b.resolveAt) continue;
     b.active = false;
+    if (e.deathState !== 'alive') continue; // PART 27: no damage while already dying/gone
     const rect = computeEnemyDrawRect();
     const hitRadius = enemyHitRadius(rect);
     const dist = Math.hypot(b.x2 - rect.cx, b.y2 - rect.cy);
     if (dist <= hitRadius) {
-      state.enemy.hitFlashUntil = now + 120;
+      // ROOT CAUSE (PART 21/22): this hit-test always fired correctly, but
+      // NOTHING here ever touched enemy.hp — a full-repo search before this
+      // change confirmed enemy.hp had no writer anywhere in the codebase
+      // (only its initial value). It was Case A: the underlying HP value
+      // itself never decreased — not a gauge-only display bug (no gauge
+      // existed at all yet either, see the new #enemy-hud markup/updateHud()
+      // below). This is the actual fix: apply real damage here.
+      e.hp = Math.max(0, e.hp - BULLET_DAMAGE);
+      e.hitFlashUntil = now + 120;
       spawnPlayerImpact(b.x2, b.y2, now);
+      if (e.hp <= 0) startEnemyDeath(now);
     }
   }
 }
@@ -1839,22 +2129,67 @@ function renderPlayer(theme) {
 
 function renderEnemy(theme) {
   const e = state.enemy;
+  if (e.deathState === 'gone') return; // fully defeated — nothing left to draw
   const rect = computeEnemyDrawRect();
   const now = performance.now();
 
-  // GABRIEL ONLY: face whichever side the player is actually on instead of
-  // a permanent EAST-facing pose — mirrored around the sprite's own center.
-  // ROID1/ROID2 no longer mirror at all (PART 2, 2nd round): real
-  // direction-specific art (see ROID1_SPRITES/ROID2_SPRITES) already shows
-  // the correct facing per zone, so flipping it would be wrong twice over.
-  const flashing = now < e.hitFlashUntil;
+  // 4th round BUG FIX: GABRIEL used to be MIRRORED (ctx.scale(-1,1)) around
+  // its own center whenever e.facing==='west', to fake "turning to face the
+  // player". GABRIEL is an asymmetric character (wing on one side, an
+  // enlarged/bulged arm on the other) — mirroring swaps which side each
+  // feature is on, breaking the design. Investigated first: no
+  // direction-specific (east/west) GABRIEL art exists in assets/gabriel/ at
+  // all (only pose variants: idle/claw_windup/claw_release), so per spec
+  // ("方向別assetが存在しない場合は、勝手にmirrorして補完せず、現在利用可能
+  // な正しいassetの範囲で表示") the correct fix is simply: never mirror.
+  // GABRIEL now always renders in its one available orientation for
+  // whichever pose is active, for every state (idle/movement/attack/
+  // damage/CLAW/death) — e.facing is still tracked (updateEnemyFacing())
+  // for lane-drift bias math elsewhere, but no longer read here.
+  const flashing = e.deathState === 'alive' && now < e.hitFlashUntil;
   ctx.save();
   if (flashing) ctx.filter = 'brightness(2.2)';
-  if (e.type === 'gabriel' && e.facing === 'west') {
-    ctx.translate(rect.cx, 0);
-    ctx.scale(-1, 1);
-    ctx.translate(-rect.cx, 0);
+
+  if (e.deathState === 'exploding') {
+    // PART 25: DRONE/ROID1/ROID2/ADAM SPHERE — reuses the exact same
+    // explosionFlash/spark/smoke particle types resolveMissileImpact()/
+    // resolveSniperImpact() already use elsewhere (no new asset/effect
+    // invented) — see startEnemyDeath() for the actual particle burst.
+    // The sprite itself fades out and flash-brightens rather than vanishing
+    // instantly, so the moment of "defeated" reads clearly.
+    const t = clamp((now - e.deathStartedAt) / Math.max(1, e.deathUntil - e.deathStartedAt), 0, 1);
+    ctx.globalAlpha = 1 - t;
+    ctx.filter = `brightness(${(1 + (1 - t) * 2.5).toFixed(2)})`;
+  } else if (e.deathState === 'burning') {
+    // PART 26: GABRIEL/ADAM — a "burn down / dissolve", never a simple
+    // explosion. Built entirely from existing canvas primitives (progressive
+    // bottom-up crop + a warm-to-dark brightness/saturation pulse) — no new
+    // image asset, and NOT a copy of ACTION-GAME's own burn effect (that
+    // repo is not reachable from here — see startEnemyDeath()'s comment).
+    const t = clamp((now - e.deathStartedAt) / Math.max(1, e.deathUntil - e.deathStartedAt), 0, 1);
+    const warm = t < 0.25 ? 1 : 0; // brief warm ignition flash at the very start
+    const dark = 1 - t * 0.85;
+    ctx.filter = warm
+      ? 'brightness(1.8) saturate(1.6)'
+      : `brightness(${dark.toFixed(2)}) saturate(${(1 + t * 1.2).toFixed(2)})`;
+    ctx.globalAlpha = 1 - t;
+    // crop progressively from the BOTTOM up (collapsing/dissolving downward)
+    const keepH = rect.h * (1 - t);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x - 4, rect.y, rect.w + 8, keepH);
+    ctx.clip();
+    if (imgReady(rect.img)) {
+      ctx.drawImage(rect.img, rect.x, rect.y, rect.w, rect.h);
+    } else {
+      ctx.fillStyle = '#334';
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    }
+    ctx.restore();
+    ctx.restore();
+    return;
   }
+
   if (imgReady(rect.img)) {
     ctx.drawImage(rect.img, rect.x, rect.y, rect.w, rect.h);
   } else {
@@ -2146,6 +2481,20 @@ function updateHud() {
     stealthReadoutEl.classList.toggle('active', p.stealth);
     p.lastStealthText = stealthText;
   }
+
+  // PART 23: enemy HP gauge — always reflects the CURRENT enemy's own
+  // hp/maxHp (reset to 100% by spawnEnemy() on every switch, per spec), and
+  // the name label switches with it. Clamped to 0 so a mid-death-effect
+  // frame never shows a negative-width bar.
+  const e = state.enemy;
+  const ehpPct = Math.max(0, Math.round((e.hp / e.maxHp) * 100));
+  if (ehpPct !== e.lastHpFillPct) { enemyHpFillEl.style.width = ehpPct + '%'; e.lastHpFillPct = ehpPct; }
+  const enemyName = ENEMY_LABEL[e.type] || e.type.toUpperCase();
+  if (enemyName !== e.lastNameText) { enemyNameEl.textContent = enemyName; e.lastNameText = enemyName; }
+
+  // PART 17: FOCUS gauge.
+  const focusPct = Math.round((p.focus / FOCUS_MAX) * 100);
+  if (focusPct !== p.lastFocusFillPct) { focusFillEl.style.width = focusPct + '%'; p.lastFocusFillPct = focusPct; }
 }
 
 // ---------------------------------------------------------------------
@@ -2179,15 +2528,23 @@ function frame(ts) {
   state.input.aimHeightAdjust = gpInput.aimAdjust.height;
   state.input.aimHorizAdjust = gpInput.aimAdjust.horiz;
   state.input.fireHeld = gpInput.fire || touchFireHeld;
+  state.input.focusHeld = gpInput.focusHeld || touchFocusHeld;
 
   const actions = consumeActions();
-  const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
-  applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
-  updateEnemy(dt, ts);
-  updateBullets(ts);
-  updateParticles(dt);
+  // 4th round: PAUSE (gamepad Start / touch PAUSE button) toggles the
+  // overlay — see togglePauseMenu(). Checked before the paused-gate below
+  // so the SAME frame that opens/closes PAUSE can still toggle it back.
+  if (actions.pauseToggle) togglePauseMenu();
 
-  if (state.input.fireHeld) fireWeapon(ts);
+  if (!state.paused) {
+    const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
+    applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
+    updateEnemy(dt, ts);
+    updateBullets(ts);
+    updateParticles(dt);
+
+    if (state.input.fireHeld) fireWeapon(ts);
+  }
 
   const theme = THEMES[state.theme];
   renderCorridor(theme);
@@ -2236,6 +2593,12 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) stop(); else { lastTs = performance.now(); start(); }
 });
 
+// 4th round: boot straight into AUTO MODE's first enemy via the SAME
+// spawnEnemy() reset every other entry point uses, rather than relying on
+// the state.enemy object literal's own initial field values staying in
+// sync with spawnEnemy() by hand.
+spawnEnemy(AUTO_SEQUENCE[0]);
+
 start();
 
 window.__darkoutTps = {
@@ -2247,4 +2610,9 @@ window.__darkoutTps = {
   // added 3rd round (PART 3/4/6/9/11/12): new stick curve/collision helpers
   applyLightCurve, clampStrafeForBarrels, clampForwardDeltaForBarrels,
   triggerFireHaptics,
+  // added 4th round: ENEMY SELECT/AUTO MODE, FOCUS/AUTO AIM, death effects,
+  // PAUSE/touch-controls-visibility — exposed for automated testing only.
+  selectEnemy, spawnEnemy, startEnemyDeath, advanceEnemyRotation,
+  togglePauseMenu, setTouchControlsVisible,
+  ENEMY_IMPLEMENTED, ENEMY_LABEL, ENEMY_DEATH_FAMILY, AUTO_SEQUENCE,
 };
