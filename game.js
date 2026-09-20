@@ -339,6 +339,10 @@ const centerWarningEl = document.getElementById('hud-center-warning');
 const enemyNameEl = document.getElementById('enemy-name');
 const enemyHpFillEl = document.getElementById('enemy-hp-bar-fill');
 const focusFillEl = document.getElementById('focus-bar-fill');
+// PART 29/30 (4th round follow-up): main gameplay BGM — real audio file now
+// provided (assets/audio/after_the_limits.mp3). See tryStartBgm()/
+// togglePauseMenu() for the actual lifecycle.
+const bgmAudioEl = document.getElementById('bgm-audio');
 const themeLabelEl = document.getElementById('theme-label');
 
 const dbgFpsEl = document.getElementById('dbg-fps');
@@ -864,6 +868,15 @@ function pollGamepad() {
     if (edge(9)) state.actions.pauseToggle = true;
     gpFocusHeld = gpFocusHeldLocal;
 
+    // PART 29/30 (4th round follow-up): the first real gamepad button
+    // press is a genuine user-activation event too — this is what lets a
+    // controller-only player (no touch/mouse/keyboard input at all) still
+    // satisfy the browser's autoplay gesture requirement for BGM. See
+    // tryStartBgm()'s own comment for the full picture.
+    for (let i = 0; i < b.length; i++) {
+      if (pressed(i) && !prev[i]) { tryStartBgm(); break; }
+    }
+
     const nextPrev = new Array(b.length);
     for (let i = 0; i < b.length; i++) nextPrev[i] = pressed(i);
     state.prevButtons = nextPrev;
@@ -982,9 +995,46 @@ function setTouchControlsVisible(visible) {
 }
 setTouchControlsVisible(state.touchControlsVisible);
 
+// ---------------------------------------------------------------------
+// BGM — "AFTER THE LIMITS" (4th round follow-up, PART 29/30)
+// ---------------------------------------------------------------------
+// This prototype has no separate TITLE/menu screen — the page IS gameplay
+// from the moment it loads (see start() at the bottom of this file), so
+// "GAMEPLAY開始" has no dedicated button to hook. What DOES gate audio
+// here is the browser's own autoplay policy: playback with sound may only
+// start from inside a real user-gesture event handler, never on load. So
+// tryStartBgm() is called from the first genuine input this game already
+// listens for — a touch/mouse pointerdown, a keydown, or the first
+// detected gamepad button press (see the edge-detection loop added to
+// pollGamepad() below) — whichever comes first. bgmStarted guards against
+// calling play() repeatedly before playback has actually begun, and
+// against ever calling it again afterward (so it never re-triggers/
+// restarts once genuinely started).
+let bgmStarted = false;
+function tryStartBgm() {
+  if (bgmStarted || !bgmAudioEl) return;
+  const p = bgmAudioEl.play();
+  if (p && p.catch) p.catch(() => {}); // autoplay rejected (no gesture yet) — silently retry on the next one
+  if (!bgmAudioEl.paused) bgmStarted = true;
+}
+document.addEventListener('pointerdown', tryStartBgm);
+document.addEventListener('keydown', tryStartBgm);
+
+// PART 30 (4th round follow-up): PAUSE/RESUME lifecycle for the BGM.
+// audio.pause()/audio.play() on the SAME element never touch currentTime —
+// that's the native platform guarantee this relies on for "同じ再生位置
+// からresume" (no manual position bookkeeping needed, and no risk of a
+// second overlapping playback either, since play() on an element that's
+// merely paused-in-place just continues that one instance).
 function togglePauseMenu() {
   state.paused = !state.paused;
   pauseMenuEl.hidden = !state.paused;
+  if (state.paused) {
+    bgmAudioEl.pause();
+  } else if (bgmStarted) {
+    const p = bgmAudioEl.play();
+    if (p && p.catch) p.catch(() => {});
+  }
 }
 document.getElementById('pause-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
 document.getElementById('pause-resume-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
@@ -2615,4 +2665,6 @@ window.__darkoutTps = {
   selectEnemy, spawnEnemy, startEnemyDeath, advanceEnemyRotation,
   togglePauseMenu, setTouchControlsVisible,
   ENEMY_IMPLEMENTED, ENEMY_LABEL, ENEMY_DEATH_FAMILY, AUTO_SEQUENCE,
+  // added 4th round follow-up: BGM lifecycle.
+  tryStartBgm, bgmAudioEl,
 };

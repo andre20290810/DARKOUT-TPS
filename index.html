@@ -18,6 +18,14 @@
 
   <canvas id="scene-canvas"></canvas>
 
+  <!-- Main gameplay BGM ("AFTER THE LIMITS"). loop: this is a continuous
+       gameplay track, expected to keep playing across the whole AUTO MODE
+       sequence, well past a single loop of the song. Playback itself is
+       driven from game.js (tryStartBgm()/togglePauseMenu()) — never
+       autoplay="" here, since browsers require a real user gesture before
+       audio with sound may start. -->
+  <audio id="bgm-audio" src="assets/audio/after_the_limits.mp3" loop preload="auto"></audio>
+
   <!-- HUD: health / ammo / stealth / theme / enemy HP / FOCUS, kept as static DOM nodes updated via textContent/style only (no per-frame element creation) -->
   <div id="hud">
     <div id="hud-top-left">
