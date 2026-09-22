@@ -7,6 +7,22 @@
  */
 
 // ---------------------------------------------------------------------
+// 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
+// URLSearchParams so it can never misparse/consume any OTHER existing query
+// param (URLSearchParams parses the full string generically; presence of
+// any other key/value is completely irrelevant to this single get('debug')
+// lookup). Every debug-only behavior added this round (the on-screen panel,
+// event-log ring buffer, console diagnostic logging, FIRE/enemy counters)
+// is gated behind this ONE boolean, checked before any of that work runs —
+// never merely hidden by CSS while still computing under the hood — so a
+// normal URL (this flag false) is provably unchanged: zero extra DOM
+// writes, zero extra console output, zero extra per-frame work, and the
+// gate itself never reads/writes anything gameplay logic also reads, so it
+// cannot affect gameplay either way.
+// ---------------------------------------------------------------------
+const DEBUG_MODE = new URLSearchParams(window.location.search).get('debug') === '1';
+
+// ---------------------------------------------------------------------
 // CONSTANTS
 // ---------------------------------------------------------------------
 
@@ -72,12 +88,15 @@ const STRAFE_MAX_OFFSET = 0.30; // fraction of canvas width from center
 // backward, the opposite of a high-speed escape).
 const ESCAPE_AUTO_SCROLL_SPEED = 170;
 const ESCAPE_STRAFE_SPEED = 300;             // px/sec continuous lateral dodge (left stick + D-PAD, unified)
-const ESCAPE_STRAFE_DASH_DISTANCE_PX = 130;  // LB/X WEST, RB/B EAST dash burst distance
+const ESCAPE_STRAFE_DASH_DISTANCE_PX = 32.5;  // 8TH ROUND: was 130 — real-device feedback said WEST/EAST dash traveled too far; reduced to ~25%. NORTH BACKSTEP/SOUTH DASH (Z-axis, below) are explicitly NOT touched.
 const ESCAPE_STRAFE_DASH_DURATION_MS = 200;
 const ESCAPE_SOUTH_DASH_DISTANCE_Z = 260;    // A — accelerate further in the direction of travel
 const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 200; // Y — brief backstep against the direction of travel
 const ESCAPE_FWD_DASH_DURATION_MS = 220;
-const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval between SOUTH/WEST/EAST frames
+const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval between SOUTH/WEST/EAST frames (WEST/EAST only as of 8TH ROUND — see updateEscapePlayer())
+// 8TH ROUND (item 16): SOUTH's single-static-image "breathing" pulse — see renderEscapePlayer().
+const SOUTH_PULSE_PERIOD_MS = 420;
+const SOUTH_PULSE_AMPLITUDE = 0.03; // scale ranges [1.0, 1.03] — spec cap "must never exceed ~103%"
 
 // Enemy virtual distance range (world z-like units).
 const ENEMY_Z_MAX = 1500;
@@ -314,7 +333,7 @@ const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
 // FIRE_POSE_HOLD_MS is shorter than FIRE_COOLDOWN_MS (130ms) so consecutive
 // shots read as distinct pulses rather than one continuous enlarged pose.
 const FIRE_POSE_HOLD_MS = 90;
-const FIRE_POSE_SCALE_BOOST = 1.12;
+const FIRE_POSE_SCALE_BOOST = 1.03; // 8TH ROUND: was 1.12 — real-device feedback said the fire-pose enlargement read as too large; anchor/centering math is untouched, only the scale factor shrank
 // 7TH ROUND PART 17: the fraction down from the TOP of the player's own
 // drawn sprite rect where the raised-arm/gun sits — read directly off
 // player_north_aim.png/player_north_fire.png (both share the same raised-
@@ -553,6 +572,95 @@ const dbgFrameEl = document.getElementById('dbg-frametime');
 const dbgDprEl = document.getElementById('dbg-dpr');
 const dbgGamepadEl = document.getElementById('dbg-gamepad');
 const dbgStateEl = document.getElementById('dbg-state');
+
+// ---------------------------------------------------------------------
+// 8TH ROUND: DEBUG MODE panel + FIRE/enemy diagnostics (?debug=1 only —
+// see DEBUG_MODE at the very top of this file). r10DebugState is null on
+// a normal URL — every read/write below is gated on `DEBUG_MODE` (never
+// on r10DebugState's own truthiness) so there is exactly one flag
+// controlling all of this, and no normal-URL code path allocates or
+// touches it at all.
+// ---------------------------------------------------------------------
+const r10DebugPanelEl = document.getElementById('r10-debug-panel');
+const r10DbgGameEl = document.getElementById('r10-dbg-game');
+const r10DbgPlayerEl = document.getElementById('r10-dbg-player');
+const r10DbgFireEl = document.getElementById('r10-dbg-fire');
+const r10DbgShotEl = document.getElementById('r10-dbg-shot');
+const r10DbgEnemyEl = document.getElementById('r10-dbg-enemy');
+const r10DbgInputEl = document.getElementById('r10-dbg-input');
+const r10DbgLogEl = document.getElementById('r10-dbg-log');
+
+const r10DebugState = DEBUG_MODE ? {
+  fireCallCount: 0,     // every real fireWeapon() invocation, success or reject
+  fireSuccessCount: 0,  // shots that actually passed both guards and were created
+  fireRejectCount: 0,
+  fireRejectReason: '-',
+  lastFireAt: 0,
+  nextFireAllowedAt: 0,
+  shotCreatedCount: 0,
+  lastShotDir: null,
+  lastTarget: null,
+  lastHitTestResult: '-',
+  hitCount: 0,
+  missCount: 0,
+  lastDamage: 0,
+  lastDamageAt: 0,
+  inputMode: 'controller', // set from handleModeSelect()
+  log: [], // capped ring buffer of {t, text}
+} : null;
+
+// Event-driven only (FIRE input, shot created/rejected, hit, miss, damage
+// applied) — never called per-rAF-frame, so this can never become
+// per-frame console spam. Silent no-op on a normal URL.
+function r10DebugLog(text) {
+  if (!DEBUG_MODE) return;
+  const t = performance.now();
+  r10DebugState.log.push({ t, text });
+  if (r10DebugState.log.length > 60) r10DebugState.log.shift();
+  console.log('[DEBUG ' + t.toFixed(0) + ']', text);
+}
+
+let r10DbgLastRenderAt = 0;
+function r10UpdateDebugPanel(ts) {
+  if (ts - r10DbgLastRenderAt < 150) return; // throttled DOM writes, debug-only
+  r10DbgLastRenderAt = ts;
+  const p = state.player, e = state.enemy, es = state.escape, d = r10DebugState;
+  const activeBullets = state.bullets.filter((b) => b.active).length;
+  const activeParticles = state.particles.filter((pt) => pt.active).length;
+  const dashActive = ts < p.dashUntil || ts < p.fwdDashUntil || ts < es.strafeDashUntil || ts < es.fwdDashUntil;
+
+  r10DbgGameEl.textContent = 'GAME mode=' + state.gameMode + ' theme=' + state.theme +
+    ' started=' + state.gameStarted + ' paused=' + state.paused;
+
+  r10DbgPlayerEl.textContent = 'PLAYER x=' + Math.round(p.strafeOffset) + ' facing=' + p.facing +
+    ' hp=' + p.hp + '/' + PLAYER_MAX_HP +
+    ' cover=' + isPlayerInCover() + '(' + p.coverFacing + ')' +
+    ' dash=' + dashActive;
+
+  r10DbgFireEl.textContent = 'FIRE held=' + state.input.fireHeld +
+    ' calls=' + d.fireCallCount + ' ok=' + d.fireSuccessCount +
+    ' rej=' + d.fireRejectCount + '(' + d.fireRejectReason + ')' +
+    '\n lastAt=' + Math.round(d.lastFireAt) +
+    ' cdLeft=' + Math.max(0, Math.round(p.fireCooldownUntil - ts)) +
+    ' nextOk=' + Math.round(d.nextFireAllowedAt);
+
+  r10DbgShotEl.textContent = 'SHOT active=' + activeBullets + ' fx=' + activeParticles +
+    ' created=' + d.shotCreatedCount +
+    '\n lastDir=' + (d.lastShotDir ? d.lastShotDir.x.toFixed(0) + ',' + d.lastShotDir.y.toFixed(0) : '-') +
+    ' lastTgt=' + (d.lastTarget ? d.lastTarget.x.toFixed(0) + ',' + d.lastTarget.y.toFixed(0) : '-') +
+    '\n lastTest=' + d.lastHitTestResult;
+
+  r10DbgEnemyEl.textContent = 'ENEMY ' + e.type + ' hp=' + e.hp + '/' + e.maxHp +
+    '\n lastDmg=' + d.lastDamage + '@' + Math.round(d.lastDamageAt) +
+    ' hits=' + d.hitCount + ' miss=' + d.missCount;
+
+  r10DbgInputEl.textContent = 'INPUT mode=' + d.inputMode + ' fireBtn=' + state.input.fireHeld +
+    '\n stickR=' + state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2) +
+    ' aimLive=' + p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0);
+
+  const lines = d.log.slice(-16).reverse().map((en) => en.t.toFixed(0) + ' ' + en.text);
+  r10DbgLogEl.textContent = lines.join('\n');
+}
 
 // ---------------------------------------------------------------------
 // ASSETS (real DARK OUT art, copied read-only from ACTION-GAME; falls
@@ -891,7 +999,7 @@ const modeSelectScreenEl = document.getElementById('mode-select-screen');
 // is jittered by up to ±LOADING_WALK_JITTER_MS so the tempo reads as
 // deliberate/cautious rather than a perfectly metronomic slow-motion loop
 // — a real setTimeout recursion (not setInterval) so each step can vary.
-const LOADING_WALK_FRAME_MS = 420; // was 140 — no longer tied to the real player's own walk speed
+const LOADING_WALK_FRAME_MS = 462; // 8TH ROUND: was 420 (x1.1, ~10% slower) — real-device feedback said the walk-in-darkness cadence was still too brisk
 const LOADING_WALK_JITTER_MS = 70;
 let loadingWalkTimerHandle = null;
 let loadingWalkFrameIndex = 0;
@@ -967,6 +1075,15 @@ const ETA_MIN_SPAN_MS = 400;
 const ETA_SMOOTHING = 0.25; // EMA factor applied to the rate itself
 let etaSamples = []; // {t, loaded}
 let etaSmoothedRate = null; // items/ms, smoothed
+// 8TH ROUND: real-device feedback said "CALCULATING..." could sit on screen
+// indefinitely whenever the ETA never becomes computable (e.g. load finishes
+// too fast/uniformly for ETA_MIN_SAMPLES/ETA_MIN_SPAN_MS to be satisfied).
+// loadingFirstCheckAt marks the first checkAssetsReady() call so the display
+// logic (see below) can give up and hide the text after a short grace
+// window instead of showing a stalled, meaningless "CALCULATING..." for the
+// rest of the load.
+let loadingFirstCheckAt = null;
+const ETA_CALCULATING_GRACE_MS = 900;
 
 function estimateRemainingSeconds(now, loaded, total) {
   etaSamples.push({ t: now, loaded });
@@ -989,6 +1106,7 @@ function estimateRemainingSeconds(now, loaded, total) {
 // setTimeout/fixed-duration "looks done" fallback — genuinely polls each
 // required image's own real state (img.complete/naturalWidth) every time.
 function checkAssetsReady(now) {
+  if (loadingFirstCheckAt === null) loadingFirstCheckAt = now;
   let loaded = 0;
   const total = REQUIRED_IMAGES.length;
   const pendingPaths = [];
@@ -1026,9 +1144,15 @@ function checkAssetsReady(now) {
   if (loaded >= total) {
     loadingEtaEl.textContent = '';
   } else if (etaSec === null) {
-    loadingEtaEl.textContent = 'CALCULATING...';
+    // 8TH ROUND: only show "CALCULATING..." for a brief grace window right
+    // at the start of loading. If it's still not computable after that
+    // (load too fast/uniform for real samples to accumulate), hide the
+    // text entirely instead of leaving a stalled, meaningless message up —
+    // never show a fabricated number either.
+    loadingEtaEl.textContent = (now - loadingFirstCheckAt < ETA_CALCULATING_GRACE_MS) ? 'CALCULATING...' : '';
   } else {
-    loadingEtaEl.textContent = 'ESTIMATED TIME: ' + Math.max(1, Math.ceil(etaSec)) + ' SEC';
+    const secDisplay = Math.max(1, Math.ceil(etaSec));
+    loadingEtaEl.textContent = secDisplay + ' SEC REMAINING';
   }
   return loaded >= total;
 }
@@ -1844,6 +1968,7 @@ function handleModeSelect(mode) {
   setTouchControlsVisible(mode === 'touch');
   tryStartBgm();
   state.gameStarted = true;
+  if (DEBUG_MODE) { r10DebugState.inputMode = mode; r10DebugLog('MODE SELECTED: ' + mode); }
 }
 
 document.getElementById('mode-btn-controller').addEventListener('click', () => handleModeSelect('controller'));
@@ -2138,14 +2263,22 @@ function updateEscapePlayer(dt, now, moveX, actions) {
   // no separate hazard system invented for this.
   p.strafeOffset = clampStrafeForBarrels(p.strafeOffset, strafeOffsetAtFrameStart);
 
-  // Continuous, automatic SOUTH-heading auto-scroll — see
-  // ESCAPE_AUTO_SCROLL_SPEED's own comment for the sign-convention
-  // reasoning. A SOUTH DASH briefly ADDS to it (accelerate further in the
-  // direction of travel); Y NORTH BACKSTEP briefly SUBTRACTS from it
-  // (against the direction of travel) — this is what "A=進行方向への加速,
-  // Y=進行方向と逆向きのバックステップ" (spec section 8) actually means in
-  // world-z terms.
-  let forwardDelta = ESCAPE_AUTO_SCROLL_SPEED * dt;
+  // Continuous, automatic SOUTH-heading auto-scroll. 8TH ROUND (item 13,
+  // real-device feedback): the ORIGINAL sign here (matching LAB's own
+  // forward-walk convention, +forwardDelta -> structure z decreases) made
+  // ESCAPE's background visibly scroll the SAME direction as LAB/ARMORED,
+  // which testing confirmed reads wrong — ESCAPE must scroll the OPPOSITE
+  // way. ESCAPE_DIR_SIGN flips the WHOLE travel axis (base auto-scroll AND
+  // both dash terms together) rather than just negating player input, so
+  // this is a genuine background-scroll reversal, not an input remap.
+  // A SOUTH DASH still briefly ADDS to fwdDashSign (accelerate further in
+  // the, now-reversed, direction of travel); Y NORTH BACKSTEP still
+  // SUBTRACTS (against it) — their RELATIVE meaning to each other and to
+  // the base scroll is completely unchanged, only the shared overall
+  // direction flips. LAB/ARMORED's own applyForwardDelta()/updatePlayer()
+  // north-walk code is untouched — this sign lives only in this function.
+  const ESCAPE_DIR_SIGN = -1;
+  let forwardDelta = ESCAPE_DIR_SIGN * ESCAPE_AUTO_SCROLL_SPEED * dt;
   if (actions.southDash) { es.fwdDashSign = 1; es.fwdDashUntil = now + ESCAPE_FWD_DASH_DURATION_MS; es.fwdDashCoveredZ = 0; }
   if (actions.northBackstep) { es.fwdDashSign = -1; es.fwdDashUntil = now + ESCAPE_FWD_DASH_DURATION_MS; es.fwdDashCoveredZ = 0; }
   if (now < es.fwdDashUntil) {
@@ -2153,7 +2286,7 @@ function updateEscapePlayer(dt, now, moveX, actions) {
     const eased = 1 - Math.pow(1 - tNorm, 2);
     const totalDist = es.fwdDashSign > 0 ? ESCAPE_SOUTH_DASH_DISTANCE_Z : ESCAPE_NORTH_BACKSTEP_DISTANCE_Z;
     const coveredNow = totalDist * eased;
-    forwardDelta += es.fwdDashSign * (coveredNow - es.fwdDashCoveredZ);
+    forwardDelta += ESCAPE_DIR_SIGN * es.fwdDashSign * (coveredNow - es.fwdDashCoveredZ);
     es.fwdDashCoveredZ = coveredNow;
   }
 
@@ -2168,10 +2301,21 @@ function updateEscapePlayer(dt, now, moveX, actions) {
   // Time-elapsed frame advance (spec: "requestAnimationFrameの実行回数
   // ベースではなく") — dt is real elapsed seconds, so this holds a stable
   // cadence regardless of actual frame rate, unlike counting rAF calls.
-  es.animElapsedMs += dt * 1000;
-  if (es.animElapsedMs >= ESCAPE_ANIM_FRAME_MS) {
-    es.animElapsedMs -= ESCAPE_ANIM_FRAME_MS;
-    es.animFrame = (es.animFrame + 1) % 3;
+  // 8TH ROUND (item 15, real-device feedback): the SOUTH loop no longer
+  // advances through escape_south_01/02/03 — cycling them read as visually
+  // discontinuous (hair/body didn't connect smoothly frame to frame).
+  // SOUTH now always shows frame 0 (escape_south_01) only; 02/03 stay
+  // registered in ASSETS.playerEscape.south, completely untouched, for
+  // possible future use. WEST/EAST keep their own existing 3-frame cycle
+  // exactly as before — this only changes the SOUTH branch.
+  if (es.facing === 'south') {
+    es.animFrame = 0;
+  } else {
+    es.animElapsedMs += dt * 1000;
+    if (es.animElapsedMs >= ESCAPE_ANIM_FRAME_MS) {
+      es.animElapsedMs -= ESCAPE_ANIM_FRAME_MS;
+      es.animFrame = (es.animFrame + 1) % 3;
+    }
   }
 
   return forwardDelta;
@@ -2381,6 +2525,15 @@ function resolveMissileImpact(now) {
     spawnParticle({ type: 'spark', x: e.missileTargetX + (i - 1) * 10, y: e.missileTargetY, born: now, until: now + 200 + i * 30 });
   }
   spawnParticle({ type: 'smoke', x: e.missileTargetX, y: e.missileTargetY, r: 26, born: now, until: now + 420 });
+  // 8TH ROUND (items 21/22/29): new floor-anchored expanding SHOCKWAVE ring
+  // — the concrete missing piece the warning->impact sequence needed (the
+  // OTHER particles above already existed and were already floor-anchored
+  // at e.missileTargetX/Y, never the player's own position — unchanged).
+  // Spawned here regardless of invincible/inSplash below, exactly like the
+  // existing explosionFlash/spark/smoke: the floor visibly explodes at the
+  // target point even when the player dodged out of it, per spec (a
+  // dodge is confirmed by "the floor still explodes, but no damage/blink").
+  spawnParticle({ type: 'shockwave', x: e.missileTargetX, y: e.missileTargetY, r: 40, born: now, until: now + 260 });
 
   if (invincible) {
     showCenterMsg('AVOIDED', '#7fffb0');
@@ -2886,8 +3039,29 @@ function computePlayerDrawRect() {
 
 function fireWeapon(now) {
   const p = state.player;
-  if (p.reloading || p.ammo <= 0) return;
-  if (now < p.fireCooldownUntil) return;
+  // 8TH ROUND: FIRE diagnostics — fireWeapon() is called every frame
+  // state.input.fireHeld is true (see frame()'s `if (state.input.fireHeld)
+  // fireWeapon(ts);`), so this counts EVERY such call, success or reject,
+  // never just the first. Completely inert on a normal URL (DEBUG_MODE
+  // false short-circuits every line below before r10DebugState — which is
+  // null — is ever touched).
+  if (DEBUG_MODE) { r10DebugState.fireCallCount++; r10DebugLog('FIRE INPUT'); }
+  if (p.reloading || p.ammo <= 0) {
+    if (DEBUG_MODE) {
+      r10DebugState.fireRejectCount++;
+      r10DebugState.fireRejectReason = p.reloading ? 'RELOADING' : 'NO AMMO';
+      r10DebugLog('FIRE BLOCKED: ' + r10DebugState.fireRejectReason);
+    }
+    return;
+  }
+  if (now < p.fireCooldownUntil) {
+    if (DEBUG_MODE) {
+      r10DebugState.fireRejectCount++;
+      r10DebugState.fireRejectReason = 'COOLDOWN';
+      r10DebugLog('FIRE BLOCKED: COOLDOWN (' + Math.ceil(p.fireCooldownUntil - now) + 'ms left)');
+    }
+    return;
+  }
   p.fireCooldownUntil = now + FIRE_COOLDOWN_MS;
   p.ammo -= 1;
   p.lastShotAt = now; // 7TH ROUND PART 15 — drives renderPlayer()'s synced fire-pose pulse
@@ -2898,8 +3072,18 @@ function fireWeapon(now) {
   const aim = getAimPoint();
 
   spawnParticle({ type: 'muzzle', x: muzzleX, y: muzzleY, born: now, until: now + 45 });
-  spawnBullet({ x1: muzzleX, y1: muzzleY, x2: aim.x, y2: aim.y, firedAt: now, resolveAt: now + BULLET_TRAVEL_MS });
+  const bullet = spawnBullet({ x1: muzzleX, y1: muzzleY, x2: aim.x, y2: aim.y, firedAt: now, resolveAt: now + BULLET_TRAVEL_MS });
   triggerFireHaptics();
+
+  if (DEBUG_MODE) {
+    r10DebugState.fireSuccessCount++;
+    r10DebugState.lastFireAt = now;
+    r10DebugState.nextFireAllowedAt = p.fireCooldownUntil;
+    r10DebugState.shotCreatedCount++;
+    r10DebugState.lastShotDir = { x: aim.x - muzzleX, y: aim.y - muzzleY };
+    r10DebugState.lastTarget = { x: aim.x, y: aim.y };
+    r10DebugLog('SHOT CREATED' + (bullet ? '' : ' (BULLET POOL EXHAUSTED — DROPPED)'));
+  }
 }
 
 // Shared by updateBullets() (real hit resolution) and renderAimReticle()
@@ -2945,7 +3129,10 @@ function updateBullets(now) {
     if (!b.active) continue;
     if (now < b.resolveAt) continue;
     b.active = false;
-    if (e.deathState !== 'alive') continue; // PART 27: no damage while already dying/gone
+    if (e.deathState !== 'alive') {
+      if (DEBUG_MODE) r10DebugLog('SHOT RESOLVED: enemy not alive (deathState=' + e.deathState + ') — no hit-test run');
+      continue; // PART 27: no damage while already dying/gone
+    }
     const rect = computeEnemyDrawRect();
     const hitRadius = enemyHitRadius(rect);
     const dist = Math.hypot(b.x2 - rect.cx, b.y2 - rect.cy);
@@ -2957,10 +3144,23 @@ function updateBullets(now) {
       // itself never decreased — not a gauge-only display bug (no gauge
       // existed at all yet either, see the new #enemy-hud markup/updateHud()
       // below). This is the actual fix: apply real damage here.
+      const hpBefore = e.hp;
       e.hp = Math.max(0, e.hp - BULLET_DAMAGE);
       e.hitFlashUntil = now + 120;
       spawnPlayerImpact(b.x2, b.y2, now);
+      if (DEBUG_MODE) {
+        r10DebugState.hitCount++;
+        r10DebugState.lastHitTestResult = 'HIT dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
+        r10DebugState.lastDamage = BULLET_DAMAGE;
+        r10DebugState.lastDamageAt = now;
+        r10DebugLog('HIT ' + (ENEMY_LABEL[e.type] || e.type) + ' dist=' + dist.toFixed(1) + ' r=' + hitRadius.toFixed(1));
+        r10DebugLog('DAMAGE ' + BULLET_DAMAGE + ' HP ' + hpBefore + '->' + e.hp);
+      }
       if (e.hp <= 0) startEnemyDeath(now);
+    } else if (DEBUG_MODE) {
+      r10DebugState.missCount++;
+      r10DebugState.lastHitTestResult = 'MISS dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
+      r10DebugLog('MISS dist=' + dist.toFixed(1) + ' r=' + hitRadius.toFixed(1));
     }
   }
 }
@@ -3542,7 +3742,21 @@ function renderEscapePlayer() {
   // so ESCAPE's rider reads as "about the same size as the LAB player", not
   // judged by source-image resolution (spec section 4).
   const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST;
-  const bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
+  let bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
+  // 8TH ROUND (item 16): since SOUTH is now a single static image
+  // (escape_south_01 only, see updateEscapePlayer()), a small continuous
+  // ~100%->~103%->100% scale "breathing" pulse simulates forward motion on
+  // its own. A smooth raised-cosine (never a discrete step) driven by
+  // state.timeSec (a continuous real-elapsed-seconds clock, not a rAF
+  // count) so the cycle reads as a natural periodic pulse, never flickery.
+  // Applied to bodyScale BEFORE drawW/drawH are derived from it, so the
+  // wheel-bottom/wheel-center-x anchor below (computed FROM drawW/drawH)
+  // scales together with the sprite and never drifts.
+  if (es.facing === 'south') {
+    const phase = (state.timeSec % (SOUTH_PULSE_PERIOD_MS / 1000)) / (SOUTH_PULSE_PERIOD_MS / 1000);
+    const pulse = 1 + SOUTH_PULSE_AMPLITUDE * (0.5 - 0.5 * Math.cos(phase * Math.PI * 2));
+    bodyScale *= pulse;
+  }
   const drawW = frame.img.naturalWidth * bodyScale;
   const drawH = frame.img.naturalHeight * bodyScale;
 
@@ -3737,12 +3951,53 @@ function renderEnemyTelegraphs(theme) {
         ctx.restore();
       }
     } else if (e.attackState === 'target') {
+      // 8TH ROUND (items 19-20, real-device feedback): the old plain
+      // filled-white ellipse read flat/unclear on a real screen. Replaced
+      // with a Canvas-only "danger zone on the floor" treatment — a
+      // glowing radial-gradient fill (energy-concentrated center fading to
+      // the edge), a pulsing/intensifying outline, and a few short
+      // converging rim ticks — no new image assets, matching the game's
+      // existing dark SF/fortress palette (warm orange/red warning glow).
+      // The underlying trigger/geometry (frozen missileTargetX/Y, the same
+      // progress-driven growth curve, the same MISSILE_TARGET_MS timing)
+      // is completely unchanged — only the visual treatment is richer.
+      // Scoped to the 'missile' kind only (ROID1/ROID2/ADAM SPHERE, which
+      // share this code path) — GABRIEL/ADAM's own 'claw' telegraph above
+      // and SNIPER's lock-box/bolt telegraph are both untouched.
       const progress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
+      const rx = 30 + progress * 28, ry = 12 + progress * 10; // same growth curve as before
+      const pulse = 0.55 + 0.45 * Math.sin(now * 0.012);
       ctx.save();
-      ctx.fillStyle = 'rgba(255,255,255,' + (progress * 0.9) + ')';
+      const grad = ctx.createRadialGradient(e.missileTargetX, e.missileTargetY, 0, e.missileTargetX, e.missileTargetY, rx);
+      grad.addColorStop(0, 'rgba(255,210,120,' + (0.55 * progress) + ')');
+      grad.addColorStop(0.55, 'rgba(255,110,40,' + (0.38 * progress) + ')');
+      grad.addColorStop(1, 'rgba(255,60,30,0)');
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.ellipse(e.missileTargetX, e.missileTargetY, 30 + progress * 28, 12 + progress * 10, 0, 0, Math.PI * 2);
+      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
       ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255,140,60,' + ((0.5 + progress * 0.5) * pulse) + ')';
+      ctx.lineWidth = 2 + progress * 2.5;
+      ctx.shadowColor = 'rgba(255,120,40,0.9)';
+      ctx.shadowBlur = 6 + progress * 10;
+      ctx.beginPath();
+      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(255,220,160,' + (0.5 + 0.5 * progress) + ')';
+      ctx.lineWidth = 1.5;
+      const tickCount = 8;
+      for (let i = 0; i < tickCount; i++) {
+        const ang = (i / tickCount) * Math.PI * 2 + now * 0.0015;
+        const ox = Math.cos(ang) * rx * 1.08, oy = Math.sin(ang) * ry * 1.08;
+        const ix = Math.cos(ang) * rx * 0.85, iy = Math.sin(ang) * ry * 0.85;
+        ctx.beginPath();
+        ctx.moveTo(e.missileTargetX + ox, e.missileTargetY + oy);
+        ctx.lineTo(e.missileTargetX + ix, e.missileTargetY + iy);
+        ctx.stroke();
+      }
       ctx.restore();
     }
   }
@@ -3784,6 +4039,17 @@ function renderParticles() {
       const growProgress = 1 - fadeAlpha; // 0 at spawn -> 1 at expiry, always >= 0
       ctx.fillStyle = 'rgba(90,90,90,' + fadeAlpha * 0.35 + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, (pt.r || 18) * (1 + growProgress * 0.8), 0, Math.PI * 2); ctx.fill();
+    } else if (pt.type === 'shockwave') {
+      // 8TH ROUND (items 21/22/29): a floor-anchored expanding, fading
+      // ring — flattened to match the floor-perspective ellipse the
+      // MISSILE warning already uses, so the impact reads as the SAME
+      // ground point the warning was on, not a generic circular burst.
+      const growProgress = 1 - fadeAlpha; // 0 at spawn -> 1 at expiry
+      const rx = (pt.r || 40) * (0.3 + growProgress * 1.4);
+      const ry = rx * 0.4;
+      ctx.strokeStyle = 'rgba(255,160,70,' + (fadeAlpha * 0.85) + ')';
+      ctx.lineWidth = 3 * fadeAlpha + 1;
+      ctx.beginPath(); ctx.ellipse(pt.x, pt.y, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
     } else if (pt.type === 'ihit') {
       // PART 9 (2nd round): a short, bright, instant flash at the impact
       // core — "金属片が一瞬爆ぜた" — never a symmetric fixed-line burst.
@@ -4030,14 +4296,27 @@ function frame(ts) {
 
   if (!state.paused) {
     if (state.gameMode === 'escape') {
-      // ESCAPE: its own dedicated update path — no updatePlayer()/
-      // updateEnemy()/updateBullets()/fireWeapon() call anywhere in this
-      // branch, so no combat state can advance and no shot can ever be
-      // fired while this mode is active (spec section 7).
+      // ESCAPE: its own dedicated player-update path — still no
+      // updatePlayer()/updateBullets()/fireWeapon() call anywhere in this
+      // branch, so the PLAYER still has zero attack commands and no shot
+      // can ever be fired while this mode is active (unchanged from the
+      // ESCAPE round's own spec). 8TH ROUND (real-device feedback item 14):
+      // state.enemy itself is NO LONGER fully halted — updateEnemy() now
+      // runs here too, so whichever enemy is currently selected (via the
+      // existing ENEMY SELECT panel/AUTO MODE — the SAME shared
+      // state.enemy object COMBAT already uses, never a separate/invented
+      // ESCAPE roster) chases/attacks the player during ESCAPE exactly as
+      // it already does in LAB/ARMORED. This is safe to share as-is: e.z
+      // was ALREADY being advanced every ESCAPE frame via the unconditional
+      // applyForwardDelta() call below (it always touched enemy z, even
+      // while updateEnemy() itself was skipped), so resuming updateEnemy()
+      // does not require any new position/state bookkeeping — no separate
+      // enemy state, no corruption risk.
       const escActions = consumeEscapeActions();
       const forwardDelta = updateEscapePlayer(dt, ts, state.input.moveX, escActions);
       applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
-      updateParticles(dt); // harmless/no-op: ESCAPE never spawns a particle, kept only for pool upkeep symmetry
+      updateEnemy(dt, ts);
+      updateParticles(dt); // ESCAPE itself still spawns no particles directly, but the now-active enemy's own attack impacts do (spark/smoke/shockwave) — no longer a pure no-op
     } else {
       const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
       applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
@@ -4053,12 +4332,17 @@ function frame(ts) {
   renderCorridor(theme);
   renderBarrels();
   if (state.gameMode === 'escape') {
-    // No enemy, no muzzle/tracer/telegraph/reticle in ESCAPE — state.enemy
-    // is left completely inert (never updated/rendered) while this mode is
-    // active.
+    // 8TH ROUND (item 14): the enemy is no longer inert here — render it
+    // and its attack telegraphs same as COMBAT (item 23: same warning/
+    // impact/shockwave quality in both modes). Still no muzzle/tracer/aim
+    // reticle — the PLAYER still has no weapon in ESCAPE, only
+    // updateBullets()/fireWeapon()/renderBullets()/renderAimReticle() stay
+    // excluded.
+    renderEnemy(theme);
     renderParticles();
     renderEscapePlayer();
     renderFlashlightMask();
+    renderEnemyTelegraphs(theme);
   } else {
     renderEnemy(theme);
     // 7TH ROUND PART 18 ("射撃エフェクトが主人公より前面にオーバーレイされ
@@ -4097,6 +4381,10 @@ function frame(ts) {
     dbgFrameEl.textContent = (dt * 1000).toFixed(1);
     dbgStateEl.textContent = `${state.enemy.type}/${state.enemy.attackState}`;
   }
+
+  // 8TH ROUND: DEBUG MODE panel refresh — single top-level gate, so a
+  // normal URL never even evaluates r10UpdateDebugPanel()'s body.
+  if (DEBUG_MODE) r10UpdateDebugPanel(ts);
 }
 
 function start() {
@@ -4123,6 +4411,14 @@ spawnEnemy(AUTO_SEQUENCE[0]);
 // is stopped the instant the player actually picks a mode — it never runs
 // concurrently with real gameplay and never touches state.player/state.enemy.
 startLoadingWalkAnimation();
+
+// 8TH ROUND: DEBUG MODE panel visibility — the ONLY place `hidden` is
+// touched for this element. False (normal URL): stays exactly as the HTML
+// declares it (hidden), never even considered again.
+if (DEBUG_MODE) {
+  r10DebugPanelEl.hidden = false;
+  r10DebugLog('DEBUG MODE ACTIVE (?debug=1)');
+}
 
 start();
 
@@ -4163,4 +4459,8 @@ window.__darkoutTps = {
   ESCAPE_AUTO_SCROLL_SPEED, ESCAPE_STRAFE_SPEED, ESCAPE_ANIM_FRAME_MS,
   // COVER ACTION — exposed for automated testing only.
   COVER_HEIGHT_RATIO, getFlippedCoverEastImage,
+  // 8TH ROUND: DEBUG MODE — exposed for automated testing only. Read-only
+  // diagnostic state; nothing here is ever written FROM a test back into
+  // gameplay logic.
+  DEBUG_MODE, r10DebugState,
 };

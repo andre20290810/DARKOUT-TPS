@@ -476,6 +476,43 @@ html, body {
 }
 #debug-panel span { color: #fff; }
 
+/* 8TH ROUND: ?debug=1-only DEBUG MODE panel — [hidden] is the default
+   (normal-URL) state, cleared only from game.js when DEBUG_MODE is true.
+   Bottom-left, small, its own scroll region — deliberately compact so it
+   never obstructs mobile-landscape gameplay (the MOVE stick lives at
+   bottom-left too, but this panel is pointer-events:none and sits above
+   it visually only, never intercepting touches). */
+#r10-debug-panel {
+  position: absolute;
+  left: max(6px, env(safe-area-inset-left));
+  bottom: max(6px, env(safe-area-inset-bottom));
+  z-index: 90;
+  width: 168px;
+  max-height: 62vh;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.72);
+  border: 1px solid rgba(120,255,160,0.35);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 8px;
+  line-height: 1.4;
+  color: #a8ffb8;
+  pointer-events: none;
+  white-space: pre-line;
+}
+#r10-debug-panel[hidden] { display: none; }
+#r10-dbg-title, #r10-dbg-log-title {
+  color: #fff;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+}
+#r10-dbg-title { margin-top: 0; }
+#r10-dbg-log {
+  color: #ffd98f;
+  font-size: 7.5px;
+}
+
 #theme-switch, #enemy-switch {
   position: absolute;
   z-index: 50;

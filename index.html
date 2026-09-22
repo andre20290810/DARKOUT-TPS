@@ -137,6 +137,28 @@
     <div>STATE <span id="dbg-state">--</span></div>
   </div>
 
+  <!-- 8TH ROUND: real-device DEBUG MODE panel — only ever shown when the
+       page was loaded with ?debug=1 (see DEBUG_MODE in game.js). `hidden`
+       here is the default/normal-URL state; game.js clears it only when
+       DEBUG_MODE is true, and every field inside is only ever written
+       while DEBUG_MODE is true — a normal URL never touches this element
+       at all after the initial hidden-check. Deliberately compact/small
+       (own scroll region, small font) so it cannot obstruct mobile-
+       landscape gameplay; positioned bottom-left, away from the existing
+       top-center #debug-panel and the bottom-right #enemy-switch/
+       #touch-buttons. -->
+  <div id="r10-debug-panel" hidden>
+    <div id="r10-dbg-title">DEBUG (?debug=1)</div>
+    <div id="r10-dbg-game"></div>
+    <div id="r10-dbg-player"></div>
+    <div id="r10-dbg-fire"></div>
+    <div id="r10-dbg-shot"></div>
+    <div id="r10-dbg-enemy"></div>
+    <div id="r10-dbg-input"></div>
+    <div id="r10-dbg-log-title">EVENT LOG</div>
+    <div id="r10-dbg-log"></div>
+  </div>
+
   <!-- Theme switch (dev/test control, always visible in this prototype) -->
   <div id="theme-switch">
     <button type="button" data-theme="lab" class="theme-btn active">LAB</button>
