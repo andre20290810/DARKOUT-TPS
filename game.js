@@ -20,7 +20,19 @@
 // gate itself never reads/writes anything gameplay logic also reads, so it
 // cannot affect gameplay either way.
 // ---------------------------------------------------------------------
-const DEBUG_MODE = new URLSearchParams(window.location.search).get('debug') === '1';
+// 12TH ROUND (items 6-8): DEBUG COLLECTION is now ALWAYS ON, on every URL
+// — the "?debug=1 only" gate above described the 8TH ROUND design; this
+// round explicitly asks for background recording regardless of URL, with
+// only the VISUAL PANEL staying opt-in (now via PAUSE MENU, not the URL).
+// DEBUG_MODE itself (checked at ~100 call sites throughout this file —
+// every r10DebugLog()/counter-increment site) is simply always true now,
+// so every one of those sites keeps recording unconditionally with zero
+// changes needed at each call site. DEBUG_URL_FLAG keeps the original
+// ?debug=1 meaning ALIVE only for seeding the panel's initial visibility
+// (a developer convenience — a debug URL still opens straight into the
+// panel — see state.debugPanelVisible below), never for collection.
+const DEBUG_URL_FLAG = new URLSearchParams(window.location.search).get('debug') === '1';
+const DEBUG_MODE = true;
 
 // ---------------------------------------------------------------------
 // CONSTANTS
@@ -67,6 +79,25 @@ const STRAFE_SPEED = 260;
 const STRAFE_DASH_DISTANCE_PX = 100;
 const STRAFE_MAX_OFFSET = 0.30; // fraction of canvas width from center
 
+// 12TH ROUND (items 13-14): shared PLAYER PERSPECTIVE concept — a single
+// bounded "depth position" (p.depthPos in COMBAT, es.depthPos in ESCAPE;
+// [-1, +1], negative=SOUTH/near/bigger, positive=NORTH/far/smaller) that
+// both modes independently accumulate from their own NORTH/SOUTH input,
+// converted through this ONE shared formula into the visible body scale —
+// so "WORLD DEPTH -> PERSPECTIVE SCALE" is the same concept everywhere,
+// per the round's own closing "空間表現" section, without unifying the two
+// modes' actual movement models (COMBAT's is a world-scrolls-under-a-
+// fixed-camera model via forwardDelta/applyForwardDelta(); ESCAPE's is a
+// real free-roam screen position — see updateEscapePlayer()). Nothing
+// outside rendering reads player scale (no collision/hit-test radius is
+// derived from it — confirmed true since the 2nd round), so this is purely
+// visual and cannot affect AIM/DAMAGE/COVER geometry.
+function perspectiveScaleFromDepth(depthPos, range) {
+  return 1 - clamp(depthPos, -1, 1) * range;
+}
+const PLAYER_DEPTH_SCALE_RANGE = 0.12; // COMBAT: scale spans ~0.88 (far/NORTH) to ~1.12 (near/SOUTH)
+const PLAYER_DEPTH_RECOVER_PER_SEC = 0.9; // COMBAT depthPos eases back toward 0 when idle (mirrors the old scaleTarget=1.0 rest state)
+
 // ---------------------------------------------------------------------
 // ESCAPE-EXCLUSIVE CONSTANTS — this whole block only ever affects the
 // ESCAPE gameplay mode (state.gameMode === 'escape', see the STATE section
@@ -86,8 +117,31 @@ const STRAFE_MAX_OFFSET = 0.30; // fraction of canvas width from center
 // SEMANTIC/story direction (north walk -> automatic south run), not a flip
 // of this visual convention (flipping it would read as the player drifting
 // backward, the opposite of a high-speed escape).
-const ESCAPE_AUTO_SCROLL_SPEED = 170;
+// 12TH ROUND (item 19): background/stage scroll roughly doubled again.
+// This is the AUTOMATIC environmental scroll rate (fires every frame
+// regardless of player input), not player-input-driven WALK_FORWARD_SPEED/
+// ESCAPE_STRAFE_SPEED, so doubling it satisfies "faster background scroll"
+// without doubling raw player input speed, per the explicit spec
+// instruction. CLEAR SEQUENCE trigger stays purely on timeLeftSec (real
+// elapsed seconds), so this doesn't touch SURVIVE MM:SS pacing.
+const ESCAPE_AUTO_SCROLL_SPEED = 340; // was 170
 const ESCAPE_STRAFE_SPEED = 300;             // px/sec continuous lateral dodge (left stick + D-PAD, unified)
+// 12TH ROUND (items 15-18): ESCAPE gains a genuine, sustained NORTH/SOUTH
+// movement axis (es.depthPos, [-1, +1]) alongside the existing WEST/EAST
+// strafe — "奥行きのあるフィールド内を移動可能に". Unlike COMBAT's
+// depthPos (which eases back to 0 — see PLAYER_DEPTH_RECOVER_PER_SEC),
+// this one has NO auto-recovery: it stays wherever the player leaves it,
+// exactly mirroring how p.strafeOffset (WEST/EAST) already behaves — free
+// 2-axis movement within a bounded field, not a spring-loaded lean.
+// ESCAPE_DEPTH_SCALE_RANGE is wider than COMBAT's (0.12) since ESCAPE's
+// whole framing is "run freely through a field", where a more dramatic
+// near/far read is appropriate; ESCAPE_DEPTH_SCREEN_RANGE_PX additionally
+// moves the player's own screen Y with depth (COMBAT's camera-fixed model
+// has no equivalent — the world scrolls instead).
+const ESCAPE_DEPTH_SPEED = 0.9; // depthPos units/sec at full stick deflection
+const ESCAPE_DEPTH_SCALE_RANGE = 0.18;
+const ESCAPE_DEPTH_SCREEN_RANGE_PX = 46;
+const ESCAPE_DEPTH_DASH_NUDGE = 0.35; // brief depthPos push on NORTH/SOUTH instant DASH, on top of the world-z burst
 // 10TH ROUND (items 33-36): investigated current value first, per spec —
 // 8TH ROUND had cut this from 130 to 32.5 (~25%) after "dash travels too
 // far" feedback, but real-device play now reports the opposite problem:
@@ -97,9 +151,14 @@ const ESCAPE_STRAFE_SPEED = 300;             // px/sec continuous lateral dodge 
 // complaints rather than picking either extreme again. NORTH BACKSTEP/
 // SOUTH DASH (Z-axis, separate constants below) are untouched, matching
 // both the 8th and 10th round's own scoping.
-const ESCAPE_STRAFE_DASH_DISTANCE_PX = 65; // was 32.5 (8th round), was 130 originally
-const ESCAPE_SOUTH_DASH_DISTANCE_Z = 260;    // A — accelerate further in the direction of travel
-const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 200; // Y — brief backstep against the direction of travel
+// 12TH ROUND (item 45): was 65 (11th round) — increased so the emergency
+// dodge reads as clearly distinct from normal continuous MOVE, per this
+// round's explicit "通常MOVEとの差が明確な緊急回避に" instruction. Still
+// well short of the STRAFE_MAX_OFFSET screen-edge clamp already applied in
+// updateEscapePlayer(), so it can never fling the player off-screen.
+const ESCAPE_STRAFE_DASH_DISTANCE_PX = 110; // was 65 (11th round), 32.5 (8th round), 130 originally
+const ESCAPE_SOUTH_DASH_DISTANCE_Z = 340;    // was 260 (11th round) — A, accelerate further in the direction of travel
+const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 260; // was 200 (11th round) — Y, brief backstep against the direction of travel
 // 11TH ROUND (items 6-8): DASH is now a true INSTANT teleport — the full
 // ESCAPE_STRAFE_DASH_DISTANCE_PX / ESCAPE_SOUTH_DASH_DISTANCE_Z /
 // ESCAPE_NORTH_BACKSTEP_DISTANCE_Z is applied in the single frame the
@@ -109,7 +168,14 @@ const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 200; // Y — brief backstep against th
 // post-teleport blink+invulnerability window (reuses state.player.
 // invincibleUntil, the SAME i-frame field LAB's own DASH already sets —
 // no second invulnerability system).
-const ESCAPE_DASH_BLINK_MS = 220;
+// 12TH ROUND (item 43-44): the previous 220ms window at a 60ms toggle
+// period produced ~3-4 on/off flips ("細かい高速点滅" per real-device
+// feedback) — too rapid to read as a deliberate, calm blink. Slowed to a
+// 300ms window at a 75ms toggle period: 300/75=4 phase transitions
+// (on->off->on->off->on), i.e. exactly 2 distinct "off" flashes, per the
+// explicit "約2回程度の落ち着いたblink" request.
+const ESCAPE_DASH_BLINK_MS = 300;
+const ESCAPE_DASH_BLINK_TOGGLE_MS = 75;
 const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval — now drives the always-on 5-frame RUN LOOP (items 1-4), not the old per-direction facing loop
 // 11TH ROUND (item 5): investigated first — ESCAPE's continuous lateral
 // move had NO separate smoothing/acceleration/interpolation layer at all;
@@ -343,7 +409,12 @@ const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
 // GABRIEL/ADAM draw sizes at NORMAL distance during this round's testing).
 // 11TH ROUND (item 23): was 105 — shrunk a further ~10% (105 * 0.90 = 94.5).
 // Center position and AIM-follow speed are untouched, only this radius.
-const FLASHLIGHT_BASE_RADIUS = 94.5;
+// 12TH ROUND (item 50): was 94.5 — shrunk a further ~50% (94.5 * 0.50 =
+// 47.25) per explicit spec instruction. Center position and AIM-follow
+// speed remain untouched; AIM is now additionally CLAMPED to stay inside
+// this circle (see getAimPoint()) so the crosshair can never leave the lit
+// area at all, not just visually — see item 52's own comment there.
+const FLASHLIGHT_BASE_RADIUS = 47.25;
 const LIGHT_RANGE = 152; // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 const AIM_RANGE = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 
@@ -393,6 +464,10 @@ const AIM_MANUAL_MAX_OFFSET = 70; // px, clamp on each manual-offset axis
 // AIM_RANGE — so the input range itself is never shrunk, exactly per spec
 // ("入力レンジそのものを縮めることではありません").
 const AIM_SCREEN_SAFE_MARGIN_PX = 26;
+// 12TH ROUND (item 52): small inward margin for the AIM-inside-LIGHT clamp
+// (see getAimPoint()) so the crosshair visibly sits inside the lit disc's
+// edge rather than exactly riding its boundary line.
+const AIM_LIGHT_CLAMP_MARGIN_PX = 6;
 
 // 7TH ROUND PART 11: CONTROLLER-only AIM sensitivity, adjustable from
 // PAUSE (see #aim-sens-row in index.html / the click handlers below).
@@ -403,8 +478,13 @@ const AIM_SENSITIVITY_PRESETS = { low: 0.7, normal: 1.0, high: 1.4 };
 let controllerAimSensitivity = AIM_SENSITIVITY_PRESETS.normal;
 
 const FIRE_COOLDOWN_MS = 130;
-const MAG_SIZE = 12;
-const RESERVE_MAX = 48;
+// 12TH ROUND (item 9): MAG_SIZE 12->30. RESERVE_MAX scaled by the SAME
+// ratio it always had to MAG_SIZE (48/12 = 4x) rather than picking an
+// arbitrary new number, so the number of full reloads available before
+// the reserve-refill safety net (see updatePlayer()'s RELOAD block) kicks
+// in stays consistent with the pre-round balance.
+const MAG_SIZE = 30;
+const RESERVE_MAX = 120;
 const RELOAD_MS = 950;
 // 9TH ROUND (items 3-5): real-device DEBUG log showed a genuine
 // permanent-lock bug — investigation of updatePlayer()'s RELOAD block
@@ -437,7 +517,9 @@ const FIRE_HAPTIC_STRONG = 0.15;
 // current definition is read and multiplied, not a guessed replacement
 // number. Existing damage values (SNIPER_DAMAGE/MISSILE_DAMAGE/CLAW_DAMAGE)
 // are intentionally left unchanged this round.
-const PLAYER_MAX_HP = 100 * 5;
+// 12TH ROUND (item 10): current value (500) read and doubled, per spec —
+// not a guessed replacement number.
+const PLAYER_MAX_HP = 100 * 5 * 2;
 // 5TH ROUND PART 12: short damage-blink duration — brief enough not to
 // obscure gameplay, clearly visible as an immediate "you were just hit"
 // cue. Never overlaps the moment damage is possible again: damage is only
@@ -659,6 +741,20 @@ const MISSILE_LOCKON_MS = 650;
 const MISSILE_TARGET_MS = 1500;
 const MISSILE_IMPACT_MS = 220;
 const MISSILE_COOLDOWN_MS = 1700;
+// 12TH ROUND (items 20-24): world-space TARGET AREA base depth for the
+// MISSILE impact point (WORLD X / WORLD DEPTH(Z) -> project() -> screen),
+// shared with the shadow work items 60-75 build on top of. Offset by the
+// player's own current depthPos the same way PLAYER_DEPTH_SCALE_RANGE
+// scales the player sprite, so the target ellipse's apparent size responds
+// to the same shared depth state as the player and BARREL/structures.
+const MISSILE_TARGET_BASE_WORLD_Z = 130;
+const MISSILE_TARGET_WORLD_Z_RANGE = 40;
+// 12TH ROUND (items 60-75): the falling PROJECTILE's starting WORLD HEIGHT
+// above its locked impact point, and the fixed screen-space radius its
+// midair intercept hit-test uses (see updateBullets()) — a generous, easy-
+// to-hit target befitting "shoot it down" being a real, viable counter.
+const MISSILE_PROJECTILE_START_HEIGHT = 240;
+const MISSILE_PROJECTILE_HIT_RADIUS_PX = 26;
 const MISSILE_DAMAGE = 24;
 
 // 5TH ROUND PART 8/9/10: GABRIEL/ADAM's CLAW attack rebuilt into a real
@@ -686,6 +782,20 @@ const CLAW_HIT_RANGE_PX = 95;
 
 const ENEMY_TURN_COOLDOWN_MS = 850; // "heavy mech" — can't re-flip facing more often than this
 const ENEMY_TURN_HYSTERESIS_PX = 36; // player must cross this far past center before a flip is even considered
+
+// 12TH ROUND (items 36-40): per-type PLAYER-X-axis tracking speed
+// multiplier, applied to updateEnemyFacing()'s existing lane-follow rate —
+// DRONE/ADAM SPHERE (fast, small flying/floating) track quickly, ROID1/
+// ROID2 (giant mechs) stay at the original 1x baseline, GABRIEL/ADAM
+// (heavy melee humanoid) track slowly.
+const ENEMY_LANE_TRACK_MULT = {
+  drone: 1.8,
+  adamSphere: 1.8,
+  roid1: 1.0,
+  roid2: 1.0,
+  gabriel: 0.55,
+  adam: 0.55,
+};
 
 // 11TH ROUND (items 15-16, 34): investigated first — before this round,
 // EVERY non-claw type (roid1/roid2/adamSphere/drone) shared byte-identical
@@ -836,7 +946,12 @@ function r10DebugLog(text) {
   const t = performance.now();
   r10DebugState.log.push({ t, text });
   if (r10DebugState.log.length > 60) r10DebugState.log.shift();
-  console.log('[DEBUG ' + t.toFixed(0) + ']', text);
+  // 12TH ROUND (item 6): collection (the ring-buffer push above) is now
+  // always-on regardless of URL, but console.log itself stays gated on the
+  // VISUAL PANEL's own on/off state — a normal player who never opens
+  // PAUSE -> DEBUG DISPLAY should never see this game's internals flooding
+  // their browser console.
+  if (state.debugPanelVisible) console.log('[DEBUG ' + t.toFixed(0) + ']', text);
 }
 
 // ADDENDUM (COPY DEBUG): single source of truth for every field the panel
@@ -905,6 +1020,48 @@ function r10CollectSnapshot(ts) {
     input: { mode: d.inputMode, fireBtn: state.input.fireHeld,
       stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
       aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0) },
+    // 12TH ROUND (item 76): new field groups for the always-on background
+    // DEBUG collection — PLAYER/AIM/FOCUS/ENEMY/ATTACK/PROJECTILE. Built
+    // from the SAME functions the real gameplay logic already calls
+    // (getAimPoint(), getFlashlightCenter(), isAimOnEffectiveHit(),
+    // getEffectiveHitPoint(), getMissileProjectileVisual()) rather than
+    // re-deriving anything separately, so this can never drift from what
+    // actually happens on screen. Event-based collection cadence is
+    // unchanged (this whole snapshot fires on r10DebugLog()'s existing
+    // schedule, never a new per-rAF-frame hook).
+    r12: (() => {
+      const aim = getAimPoint();
+      const light = getFlashlightCenter();
+      const hot = isAimOnEffectiveHit();
+      const rect = computeEnemyDrawRect();
+      const hitPt = getEffectiveHitPoint(rect);
+      const isRoidType = e.type === 'roid1' || e.type === 'roid2';
+      const projLive = e.kind === 'missile' && e.attackState === 'target' && !e.missileDestroyed && e.missileHeight > 0.5;
+      const pv = projLive ? getMissileProjectileVisual(e) : null;
+      return {
+        player: { x: Math.round(p.strafeOffset), worldDepth: Number((p.depthPos || 0).toFixed(2)),
+          screenY: state.gameMode === 'escape' ? Math.round(state.cssH * 1.02 - (es.depthPos || 0) * ESCAPE_DEPTH_SCREEN_RANGE_PX) : Math.round(state.cssH * 1.02),
+          perspectiveScale: Number((state.gameMode === 'escape' ? perspectiveScaleFromDepth(es.depthPos || 0, ESCAPE_DEPTH_SCALE_RANGE) : (p.scale || 1)).toFixed(3)),
+          hp: p.hp, dashDirection: dashActive && ts < p.fwdDashUntil ? (p.fwdDashSign > 0 ? 'north' : 'south') : '-' },
+        aim: { x: Math.round(aim.x), y: Math.round(aim.y),
+          lightCenterX: Math.round(light.x), lightCenterY: Math.round(light.y),
+          lightRadius: FLASHLIGHT_BASE_RADIUS, effectiveHit: hot, aimColor: hot ? 'red' : 'white' },
+        focus: { targetType: isRoidType && rect.headX != null ? 'head' : 'body',
+          targetX: Math.round(hitPt.x), targetY: Math.round(hitPt.y),
+          effectiveDamagePoint: hitPt.x.toFixed(0) + ',' + hitPt.y.toFixed(0) },
+        enemy12: { type: e.type, x: Math.round(e.lane), z: Math.round(e.z),
+          tracking: Math.round(e.laneTarget || 0), facing: e.facing || e.zone || '-',
+          attackState: e.attackState, flyByState: '-', burstState: '-' },
+        attack: { targetWorldX: Math.round(e.missileTargetWorldX || 0), targetWorldZ: Math.round(e.missileTargetWorldZ || 0),
+          projectedX: Math.round(e.missileTargetX || 0), projectedY: Math.round(e.missileTargetY || 0), impactRadius: 62 },
+        projectile: { active: projLive, worldX: Math.round(e.missileTargetWorldX || 0),
+          worldZ: Math.round(e.missileTargetWorldZ || 0), height: Math.round(e.missileHeight || 0),
+          impactWorldX: Math.round(e.missileTargetWorldX || 0), impactWorldZ: Math.round(e.missileTargetWorldZ || 0),
+          projectedX: pv ? Math.round(pv.x) : 0, projectedY: pv ? Math.round(pv.y) : 0,
+          shadowX: pv ? Math.round(pv.shadowX) : 0, shadowY: pv ? Math.round(pv.shadowY) : 0,
+          interceptable: projLive, destroyed: !!e.missileDestroyed, impactState: e.attackState },
+      };
+    })(),
     // 9TH ROUND (item 39-43): CONTROLLER-only startup diagnostics.
     gamepad: {
       connected: state.gamepadConnected, index: state.gamepadIndex,
@@ -1774,7 +1931,8 @@ const state = {
     hp: PLAYER_MAX_HP,
     strafeOffset: 0,      // px from screen center, +east/-west
     scale: 1,              // depth pulse scale (north/south sync)
-    scaleTarget: 1,
+    scaleTarget: 1,         // 12TH ROUND: no longer written (see perspectiveScaleFromDepth()/depthPos below) — left in place, harmless, in case anything still reads it
+    depthPos: 0,            // 12TH ROUND (items 13-14): persistent PLAYER PERSPECTIVE lean, [-1,+1]
     facing: 'idle',        // 'idle' | 'walk' | 'fire' | 'aim'
     moveDirSouth: false,   // 9TH ROUND: true while the current WALK is a real south move (D-PAD/stick DOWN)
     walkFrame: 0,
@@ -1807,6 +1965,7 @@ const state = {
     // trims, unaffected either way.
     aimLiveX: 0, aimLiveY: 0,
     aimManualOffsetX: 0, aimManualOffsetY: 0,
+    lightFocusOffsetX: 0, lightFocusOffsetY: 0, // 12TH ROUND (items 57-58): see getFlashlightCenter()
     // PART 12/13 (3rd round): 0..1 smoothed "how deep in a barrel's touch
     // radius" state, driving the COVER visual (see renderPlayer()) —
     // smoothed the same dt-based way p.scale already is, so leaving cover
@@ -1929,6 +2088,10 @@ const state = {
     // continuously while ESCAPE is running, completely independent of
     // facing/moveX (see updateEscapePlayer()).
     runFrame: 0, runElapsedMs: 0,
+    // 12TH ROUND (items 15-18): free NORTH/SOUTH movement — see
+    // ESCAPE_DEPTH_SPEED's own comment for why this has NO auto-recovery,
+    // unlike COMBAT's p.depthPos.
+    depthPos: 0,
     // 11TH ROUND (items 6-8): DASH is now INSTANT (the full distance is
     // applied in the single frame the input arrives — no eased travel), so
     // strafeDashUntil/fwdDashUntil no longer drive any interpolation; kept
@@ -1972,6 +2135,12 @@ const state = {
   // shouldn't have the screen full of sticks/buttons); PAUSE toggles it.
   touchControlsVisible: false,
   paused: false,
+  // 12TH ROUND (items 6-9): the DEBUG VISUAL PANEL's own on/off state —
+  // decoupled from DEBUG_MODE (collection, now always-on) and from the
+  // URL. Seeded from the ORIGINAL ?debug=1 meaning (DEBUG_URL_FLAG) purely
+  // as a developer convenience; toggled from PAUSE MENU on ANY URL from
+  // here on (see the DEBUG DISPLAY button's handler).
+  debugPanelVisible: DEBUG_URL_FLAG,
   // 5TH ROUND PART 17/18: LOADING gate — see checkAssetsReady()/frame()'s
   // own gating. assetsReady flips once every required image + the BGM are
   // genuinely confirmed loaded; gameStarted flips on the first real
@@ -2111,7 +2280,13 @@ const AMBIENT_FLOOR_CRAWL_SPACING = { floorSeam: 95, grating: 210 };
 // how high it's set; kept comfortably under WALK_FORWARD_SPEED (150) so it
 // still doesn't read as literal player walking, while being clearly faster
 // than before.
-const AMBIENT_FLOOR_CRAWL_SPEED = 115; // was 70
+// 12TH ROUND (item 19): background/stage scroll roughly doubled again.
+// Still purely cosmetic/render-time-only (see comment above) — never
+// touches structures[].z/applyForwardDelta()/enemy z/barrel z, so this is
+// the correct lever for "faster background flow" that does NOT touch
+// WALK_FORWARD_SPEED (raw player input speed), per the explicit spec
+// instruction not to simply double player input speed.
+const AMBIENT_FLOOR_CRAWL_SPEED = 230; // was 115
 
 // ---------------------------------------------------------------------
 // BARRELS (drum-can COVER ZONE objects — PART 4). Alternating left/right
@@ -2375,6 +2550,17 @@ function pollGamepad(now) {
       else if (dpadRight && !dpadLeft) lateral = 1;
       else lateral = applyEscapeMoveCurve(gp.axes[0] || 0); // LEFT STICK — 11TH ROUND item 5: was applyLightCurve() (flashlight-tuned, too compressed for run/dodge); D-PAD above is unaffected either way (already binary)
       gpMove.x = lateral;
+      // 12TH ROUND (item 15): a continuous NORTH/SOUTH axis for ESCAPE's
+      // new free-roam depth movement — previously this branch left
+      // gpMove.y permanently at 0 (Y/N/S input only ever fired the DASH
+      // actions below). D-PAD UP(12)/DOWN(13) are binary like X's D-PAD
+      // pair above; LEFT STICK vertical otherwise, same curve as X.
+      const dpadUp = pressed(12), dpadDown = pressed(13);
+      let depthAxis;
+      if (dpadUp && !dpadDown) depthAxis = -1;
+      else if (dpadDown && !dpadUp) depthAxis = 1;
+      else depthAxis = applyEscapeMoveCurve(gp.axes[1] || 0);
+      gpMove.y = depthAxis;
 
       if (edge(4) || edge(2)) state.escape.actions.westDash = true;      // LB or X = WEST DASH
       if (edge(5) || edge(1)) state.escape.actions.eastDash = true;      // RB or B = EAST DASH
@@ -2660,6 +2846,22 @@ function setTouchControlsVisible(visible) {
 }
 setTouchControlsVisible(state.touchControlsVisible);
 
+// 12TH ROUND (items 6-9): DEBUG DISPLAY ON/OFF — toggles the VISUAL panels
+// (#debug-panel FPS bar + #r10-debug-panel) only; DEBUG COLLECTION
+// (DEBUG_MODE, r10DebugState) is always on regardless of this. Reachable
+// from PAUSE MENU on ANY URL now, not just ?debug=1 (see DEBUG_URL_FLAG).
+const pauseDebugToggleBtnEl = document.getElementById('pause-debug-toggle');
+const debugPanelEl = document.getElementById('debug-panel');
+function setDebugPanelVisible(visible) {
+  state.debugPanelVisible = visible;
+  debugPanelEl.hidden = !visible;
+  r10DebugPanelEl.hidden = !visible;
+  pauseDebugToggleBtnEl.textContent = 'DEBUG DISPLAY : ' + (visible ? 'ON' : 'OFF');
+  if (visible) r10DebugLog('DEBUG PANEL ACTIVE');
+}
+setDebugPanelVisible(state.debugPanelVisible);
+pauseDebugToggleBtnEl.addEventListener('pointerdown', (e) => { e.preventDefault(); setDebugPanelVisible(!state.debugPanelVisible); });
+
 // ---------------------------------------------------------------------
 // BGM — "AFTER THE LIMITS" (4th round follow-up, PART 29/30)
 // ---------------------------------------------------------------------
@@ -2789,21 +2991,22 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   // value each frame (same deterministic pattern as before, just a much
   // smaller total so it reads as a quick sidestep, never a screen-edge
   // teleport).
-  if (actions.westDash) { p.dashDir = -1; p.dashUntil = now + DASH_DURATION_MS; p.dashStrafeStart = p.strafeOffset; p.invincibleUntil = now + DASH_INVINCIBLE_MS; }
-  if (actions.eastDash) { p.dashDir = 1; p.dashUntil = now + DASH_DURATION_MS; p.dashStrafeStart = p.strafeOffset; p.invincibleUntil = now + DASH_INVINCIBLE_MS; }
+  if (actions.westDash) { p.dashDir = -1; p.dashUntil = now + DASH_DURATION_MS; p.dashStrafeStart = p.strafeOffset; p.invincibleUntil = now + DASH_INVINCIBLE_MS; const m = playerMarkerPos(); spawnDashStreak(m.x, m.y, -1, 0, now); }
+  if (actions.eastDash) { p.dashDir = 1; p.dashUntil = now + DASH_DURATION_MS; p.dashStrafeStart = p.strafeOffset; p.invincibleUntil = now + DASH_INVINCIBLE_MS; const m = playerMarkerPos(); spawnDashStreak(m.x, m.y, 1, 0, now); }
   if (now < p.dashUntil) {
     const tNorm = 1 - (p.dashUntil - now) / DASH_DURATION_MS;
     const eased = 1 - Math.pow(1 - tNorm, 2);
     p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.dashStrafeStart + p.dashDir * STRAFE_DASH_DISTANCE_PX * eased));
   }
 
-  // PART 11 (3rd round): barrel collision — clamp AFTER both the
-  // continuous move and any active dash have been applied this frame, so
-  // neither can walk/dash straight through a barrel. Uses the offset from
-  // the START of this frame to figure out which side we're approaching
-  // from (so the block lands at the correct edge, not always the same
-  // side).
-  p.strafeOffset = clampStrafeForBarrels(p.strafeOffset, strafeOffsetAtFrameStart);
+  // 12TH ROUND (items 12, 28-30): BARREL no longer blocks PLAYER movement
+  // at all — clampStrafeForBarrels() (kept defined, just unused for
+  // movement below per item 30's explicit "撤去" instruction) used to
+  // clamp strafeOffset to whichever barrel edge was closest, which is
+  // exactly the "特定X座標に引っかかる" complaint. isPlayerInCover() is a
+  // SEPARATE, still-fully-intact check (its own BARREL_TOUCH_RADIUS_PX/
+  // BARREL_TOUCH_Z_MAX proximity test, not this clamp) — see item 29's
+  // "通過可能 + COVER可能" requirement.
 
   // 5TH ROUND ROOT CAUSE FIX ("最初の攻撃ではダメージが入るが、その後
   // 何度撃ってもダメージが入らない"): live-repro testing (holding
@@ -2837,11 +3040,20 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     p.aimLiveX = clamp(p.aimLiveX - strafeDeltaThisFrame, -AIM_RANGE, AIM_RANGE);
   }
 
-  // NORTH/SOUTH world scroll + player scale sync
+  // NORTH/SOUTH world scroll (unchanged — the world still scrolls past a
+  // screen-fixed player, see applyForwardDelta()) + PLAYER PERSPECTIVE
+  // (12TH ROUND items 13-14): p.depthPos is now a genuinely PERSISTENT,
+  // continuously-driven lean position (was: an instant scaleTarget=
+  // 0.94/1.06/1.0 snap with no memory between frames) — moveY pushes it
+  // toward ±1 while held, and it eases back toward 0 on release (see
+  // PLAYER_DEPTH_RECOVER_PER_SEC) instead of the render-layer p.scale
+  // itself snapping straight to a fixed target. p.scale then eases toward
+  // perspectiveScaleFromDepth(p.depthPos) exactly as it always eased
+  // toward p.scaleTarget — same damping, smoother underlying source.
   let forwardDelta = 0;
-  if (moveY < 0) { forwardDelta += WALK_FORWARD_SPEED * dt; p.scaleTarget = 0.94; }
-  else if (moveY > 0) { forwardDelta -= WALK_BACK_SPEED * dt; p.scaleTarget = 1.06; }
-  else { p.scaleTarget = 1.0; }
+  if (moveY < 0) { forwardDelta += WALK_FORWARD_SPEED * dt; p.depthPos = Math.min(1, p.depthPos + PLAYER_DEPTH_RECOVER_PER_SEC * dt); }
+  else if (moveY > 0) { forwardDelta -= WALK_BACK_SPEED * dt; p.depthPos = Math.max(-1, p.depthPos - PLAYER_DEPTH_RECOVER_PER_SEC * dt); }
+  else { p.depthPos += (0 - p.depthPos) * Math.min(1, dt * PLAYER_DEPTH_RECOVER_PER_SEC); }
 
   // PART 1 fix: forward/back DASH now covers a fixed TOTAL world-z
   // distance over DASH_DURATION_MS, using the same "recompute absolute
@@ -2849,8 +3061,8 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   // strafe dash above (fwdDashCoveredZ tracks how much of the total has
   // already been applied) — framerate-independent, and no more coupled to
   // an arbitrary "*3.2" burst multiplier that let the old numbers balloon.
-  if (actions.northDash) { p.fwdDashSign = 1; p.fwdDashUntil = now + DASH_DURATION_MS; p.fwdDashCoveredZ = 0; p.invincibleUntil = now + DASH_INVINCIBLE_MS; }
-  if (actions.southDash) { p.fwdDashSign = -1; p.fwdDashUntil = now + DASH_DURATION_MS; p.fwdDashCoveredZ = 0; p.invincibleUntil = now + DASH_INVINCIBLE_MS; }
+  if (actions.northDash) { p.fwdDashSign = 1; p.fwdDashUntil = now + DASH_DURATION_MS; p.fwdDashCoveredZ = 0; p.invincibleUntil = now + DASH_INVINCIBLE_MS; const m = playerMarkerPos(); spawnDashStreak(m.x, m.y, 0, -1, now); }
+  if (actions.southDash) { p.fwdDashSign = -1; p.fwdDashUntil = now + DASH_DURATION_MS; p.fwdDashCoveredZ = 0; p.invincibleUntil = now + DASH_INVINCIBLE_MS; const m = playerMarkerPos(); spawnDashStreak(m.x, m.y, 0, 1, now); }
   if (now < p.fwdDashUntil) {
     const tNorm = 1 - (p.fwdDashUntil - now) / DASH_DURATION_MS;
     const eased = 1 - Math.pow(1 - tNorm, 2);
@@ -2858,10 +3070,10 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     const coveredNow = totalDist * eased;
     forwardDelta += p.fwdDashSign * (coveredNow - p.fwdDashCoveredZ);
     p.fwdDashCoveredZ = coveredNow;
-    p.scaleTarget = p.fwdDashSign > 0 ? 0.88 : 1.10;
+    p.depthPos = p.fwdDashSign > 0 ? 1 : -1;
   }
 
-  p.scale += (p.scaleTarget - p.scale) * Math.min(1, dt * 10);
+  p.scale += (perspectiveScaleFromDepth(p.depthPos, PLAYER_DEPTH_SCALE_RANGE) - p.scale) * Math.min(1, dt * 10);
 
   // toggle STEALTH — stealthToggledAt drives the enter/exit fade (PART 5)
   if (actions.stealth) { p.stealth = !p.stealth; p.stealthToggledAt = now; }
@@ -2939,14 +3151,33 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     // never an instant snap. Because this writes the SAME variable manual
     // AIM reads/writes, releasing LB leaves AIM exactly where AUTO AIM put
     // it — manual AIM simply resumes from there (PART 20), never resets.
+    // 12TH ROUND (items 54-59): snap to getEffectiveHitPoint() — the SAME
+    // real damage point isAimOnEffectiveHit()/updateBullets() use (the HEAD
+    // circle for roid1/roid2, never the raw sprite/body center) — so FOCUS
+    // can never pull AIM onto a spot that wouldn't actually register as a
+    // hit.
     const rect = computeEnemyDrawRect();
+    const hitPt = getEffectiveHitPoint(rect);
     const baseX = state.centerX + p.strafeOffset;
     const baseY = state.horizonY + state.cssH * 0.06;
-    const targetLiveX = clamp(rect.cx - baseX - p.aimManualOffsetX, -AIM_RANGE, AIM_RANGE);
-    const targetLiveY = clamp(rect.cy - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE);
+    const targetLiveX = clamp(hitPt.x - baseX - p.aimManualOffsetX, -AIM_RANGE, AIM_RANGE);
+    const targetLiveY = clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE);
     const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
     p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
     p.aimLiveY += (targetLiveY - p.aimLiveY) * approachT;
+    // items 57-58: LIGHT's own center follows the SAME hit point while
+    // FOCUS is active, via a persistent additive offset on top of the raw
+    // stick/touch light input (never overwrites it — releasing FOCUS simply
+    // leaves LIGHT wherever it ended up, same persistent-not-recenter
+    // philosophy as AIM's own aimLiveX/Y above), so AIM never gets clamped
+    // back to the LIGHT circle's edge by a LIGHT that didn't follow FOCUS's
+    // own target.
+    const rawLightX = state.centerX + clampAxis(state.input.lightX) * LIGHT_RANGE;
+    const rawLightY = state.horizonY + state.cssH * 0.06 + clampAxis(state.input.lightY) * LIGHT_RANGE;
+    const targetLightOffX = hitPt.x - rawLightX;
+    const targetLightOffY = hitPt.y - rawLightY;
+    p.lightFocusOffsetX += (targetLightOffX - p.lightFocusOffsetX) * approachT;
+    p.lightFocusOffsetY += (targetLightOffY - p.lightFocusOffsetY) * approachT;
   } else {
     // Manual AIM: stick input (already deadzoned/curved upstream by
     // applyAimCurve()) drives VELOCITY, not absolute position. Deadzone
@@ -3018,7 +3249,7 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
 // reuse: those two are generic world-scroll/collision math, not "LAB
 // control scheme").
 // ---------------------------------------------------------------------
-function updateEscapePlayer(dt, now, moveX, actions) {
+function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   const p = state.player; // strafeOffset is a generic on-screen-position field, reused as-is (see state.escape's own comment)
   const es = state.escape;
 
@@ -3031,6 +3262,15 @@ function updateEscapePlayer(dt, now, moveX, actions) {
   const maxOff = state.cssW * STRAFE_MAX_OFFSET; // reused: a generic screen-fraction clamp bound, not LAB-specific behavior
   p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset));
 
+  // 12TH ROUND (items 15-17): continuous NORTH/SOUTH — the SECOND free axis
+  // ("横一直線移動から解放"), read from the SAME moveY the shared MOVE
+  // pipeline already produces for touch (touchMove.y) and now also for
+  // gamepad (see pollGamepad()'s ESCAPE branch, which previously left
+  // gpMove.y at 0 always). moveY<0 (stick/D-PAD UP) = NORTH = away =
+  // es.depthPos toward +1; moveY>0 = SOUTH = toward -1. No auto-recovery —
+  // see ESCAPE_DEPTH_SPEED's own comment.
+  es.depthPos = Math.max(-1, Math.min(1, es.depthPos - moveY * ESCAPE_DEPTH_SPEED * dt));
+
   // 11TH ROUND (items 6-8, 32): DASH is now a true INSTANT teleport — the
   // full distance is applied in THIS single frame (no eased travel window
   // to accumulate across), and a short blink+invulnerability window starts
@@ -3042,10 +3282,12 @@ function updateEscapePlayer(dt, now, moveX, actions) {
   if (actions.westDash) {
     p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset - ESCAPE_STRAFE_DASH_DISTANCE_PX));
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
+    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, -1, 0, now);
   }
   if (actions.eastDash) {
     p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + ESCAPE_STRAFE_DASH_DISTANCE_PX));
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
+    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 1, 0, now);
   }
 
   // Continuous, automatic SOUTH-heading auto-scroll. 8TH ROUND (item 13,
@@ -3060,14 +3302,22 @@ function updateEscapePlayer(dt, now, moveX, actions) {
   // 11TH ROUND (items 6-8): SOUTH/NORTH DASH — same instant-teleport
   // treatment, applied to the world-scroll axis instead of screen-x (item
   // 8 explicitly allows different axes/distances per direction, since a
-  // literal x-pixel jump has no equivalent meaning in z-depth).
+  // literal x-pixel jump has no equivalent meaning in z-depth). 12TH ROUND:
+  // also nudges es.depthPos (a smaller, bounded push, not a snap to ±1 —
+  // items 16-17's screen-position/scale movement layered on top of the
+  // world-z burst) so the dash reads as a real forward/back lunge, not just
+  // a scroll-speed blip.
   if (actions.southDash) {
     forwardDelta += ESCAPE_DIR_SIGN * ESCAPE_SOUTH_DASH_DISTANCE_Z;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
+    es.depthPos = Math.max(-1, es.depthPos - ESCAPE_DEPTH_DASH_NUDGE);
+    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 0, 1, now);
   }
   if (actions.northBackstep) {
     forwardDelta += ESCAPE_DIR_SIGN * -ESCAPE_NORTH_BACKSTEP_DISTANCE_Z;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
+    es.depthPos = Math.min(1, es.depthPos + ESCAPE_DEPTH_DASH_NUDGE);
+    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 0, -1, now);
   }
 
   // 11TH ROUND (items 1-4): the always-on 5-frame RUN LOOP — cycles
@@ -3285,7 +3535,14 @@ function updateEnemyFacing(dt, now) {
   }
 
   e.laneTarget = clamp(diff * 0.12, -70, 70);
-  e.lane += (e.laneTarget - e.lane) * Math.min(1, dt * 0.8);
+  // 12TH ROUND (items 36-40): this diff-driven laneTarget/lane pair was
+  // ALREADY real PLAYER-X-axis tracking for every enemy type (this function
+  // runs unconditionally for all 6 in updateEnemy()) — what was missing was
+  // per-type SPEED differentiation. ENEMY_LANE_TRACK_MULT below is the only
+  // change: DRONE/ADAM SPHERE track fast, ROID1/ROID2 stay at the original
+  // baseline rate, GABRIEL/ADAM (heavy melee) track slow.
+  const trackMult = ENEMY_LANE_TRACK_MULT[e.type] || 1;
+  e.lane += (e.laneTarget - e.lane) * Math.min(1, dt * 0.8 * trackMult);
 }
 
 function resolveSniperImpact(now) {
@@ -3308,12 +3565,61 @@ function resolveSniperImpact(now) {
   }
 }
 
+// 12TH ROUND (items 20-24): world X/Z -> project() -> screen X/Y, recomputed
+// every tick while the TARGET AREA is live so the drawn ellipse and the
+// actual damage check (resolveMissileImpact(), below) always agree — the
+// world coords themselves (e.missileTargetWorldX/Z) never change after the
+// 'lockon'->'target' transition locks them, so this is a no-op in practice
+// unless centerX/horizonY themselves move (a resize), which is exactly the
+// case a screen-space-only cache would get wrong.
+// 12TH ROUND (items 20-24): the player's own floor-projected world position,
+// using the SAME worldX-solve-from-strafeOffset + depthPos-driven worldZ
+// formula the MISSILE lock uses (see the 'lockon'->'target' transition
+// above) — so the player's live position and the frozen TARGET AREA are
+// always compared in the SAME coordinate space. Using the old fixed
+// playerMarkerPos()-style reference here instead would silently desync the
+// hit-check from the visible ellipse (the ellipse now floats at a real
+// floor-projected Y, not the old constant cssH*0.9), breaking the "what's
+// drawn = what damages you" guarantee the TARGET AREA exists to provide.
+function currentPlayerFloorScreenPos() {
+  const pl = state.player;
+  const worldZ = MISSILE_TARGET_BASE_WORLD_Z - pl.depthPos * MISSILE_TARGET_WORLD_Z_RANGE;
+  const scaleAtZ = FOCAL / (FOCAL + Math.max(worldZ, 1));
+  const worldX = pl.strafeOffset / scaleAtZ;
+  return project(worldX, CORRIDOR_FLOOR_Y, worldZ);
+}
+
+function refreshMissileTargetScreenPos(e) {
+  const proj = project(e.missileTargetWorldX, CORRIDOR_FLOOR_Y, e.missileTargetWorldZ);
+  e.missileTargetX = proj.x;
+  e.missileTargetY = proj.y;
+  e.missileTargetScale = proj.scale;
+}
+
+// 12TH ROUND (items 60-75): the falling PROJECTILE's own screen position —
+// WORLD X/Z (same locked impact point as the shadow/TARGET AREA) with
+// WORLD HEIGHT subtracted from the floor's own worldY (CORRIDOR_FLOOR_Y),
+// so a bigger missileHeight pushes the object further UP the screen from
+// its shadow, never a raw 2D Y slide. Also returns the shadow's own
+// (height-independent) screen position and a perspective-scaled intercept
+// hit radius, so updateBullets()/renderEnemyAttack() share one calculation.
+function getMissileProjectileVisual(e) {
+  const shadow = project(e.missileTargetWorldX, CORRIDOR_FLOOR_Y, e.missileTargetWorldZ);
+  const body = project(e.missileTargetWorldX, CORRIDOR_FLOOR_Y - e.missileHeight, e.missileTargetWorldZ);
+  return {
+    shadowX: shadow.x, shadowY: shadow.y,
+    x: body.x, y: body.y, scale: body.scale,
+    hitRadius: MISSILE_PROJECTILE_HIT_RADIUS_PX * body.scale,
+  };
+}
+
 function resolveMissileImpact(now) {
   const e = state.enemy;
   const p = state.player;
   const invincible = now < p.invincibleUntil;
-  const playerScreenX = state.centerX + p.strafeOffset;
-  const playerScreenY = state.cssH * 0.9;
+  const playerFloorPos = currentPlayerFloorScreenPos();
+  const playerScreenX = playerFloorPos.x;
+  const playerScreenY = playerFloorPos.y;
   const dist = Math.hypot(playerScreenX - e.missileTargetX, playerScreenY - e.missileTargetY);
   // PART 9: cover does NOT block missile splash — only actually having
   // moved out of the (frozen, visible-in-advance) target ellipse does.
@@ -3449,6 +3755,25 @@ function spawnEnemy(type) {
   e.lockX = 0; e.lockY = 0;
   e.fireFromX = 0; e.fireFromY = 0; e.fireToX = 0; e.fireToY = 0;
   e.missileTargetX = 0; e.missileTargetY = 0;
+  // 12TH ROUND (items 20-24): world-space impact point (WORLD X / WORLD
+  // DEPTH(Z)) the TARGET AREA is projected from every frame — see
+  // updateEnemy()'s 'lockon'->'target' transition and renderEnemyAttack()'s
+  // 'target' branch. missileTargetX/Y above stay as the derived SCREEN
+  // coords (kept for resolveMissileImpact()'s existing distance check and
+  // the particle effects, which are unchanged).
+  e.missileTargetWorldX = 0; e.missileTargetWorldZ = 0; e.missileTargetScale = 1;
+  // 12TH ROUND (items 60-75): interceptable PROJECTILE — a real falling
+  // object with its own WORLD HEIGHT above the (same, locked) impact X/Z,
+  // never a 2D screen-Y slide. missileHeight ramps MISSILE_PROJECTILE_
+  // START_HEIGHT -> 0 across the SAME MISSILE_TARGET_MS window the TARGET
+  // AREA already uses (see updateEnemy()'s 'target' tick) — reaching 0
+  // exactly when the existing 'target'->'impact' transition fires, so the
+  // projectile visually merges into its own shadow right as the normal
+  // impact resolves. missileDestroyed is set only by a real midair
+  // interception (see updateBullets()) and short-circuits the normal
+  // 'target'->'impact' transition into a no-damage, no-floor-impact
+  // 'cooldown' instead.
+  e.missileHeight = 0; e.missileDestroyed = false;
   e.clawApproachStartZ = 0;
   e.deathState = 'alive';
   e.deathStartedAt = 0;
@@ -3762,14 +4087,35 @@ function updateEnemy(dt, now) {
   if (e.kind === 'missile') {
     if (e.attackState === 'lockon') {
       if (now >= e.attackUntil) {
-        // TARGET AREA begins: freeze the impact ellipse's position now, so
-        // the player can dodge by moving away from THIS fixed spot.
-        const m = playerMarkerPos();
-        e.missileTargetX = m.x; e.missileTargetY = m.y;
+        // 12TH ROUND (items 20-24): TARGET AREA begins — freeze the impact
+        // point's WORLD X/Z now (never re-tracks the player afterward), so
+        // the player can dodge by moving away from THIS fixed world spot.
+        // worldX is solved so project(worldX, ..., worldZ).x lands exactly
+        // on the player's current screen X (the same targeting instant the
+        // old screen-space version used), worldZ comes from the player's
+        // own current depthPos via the shared perspective range.
+        const pl = state.player;
+        const worldZ = MISSILE_TARGET_BASE_WORLD_Z - pl.depthPos * MISSILE_TARGET_WORLD_Z_RANGE;
+        const scaleAtZ = FOCAL / (FOCAL + Math.max(worldZ, 1));
+        e.missileTargetWorldX = pl.strafeOffset / scaleAtZ;
+        e.missileTargetWorldZ = worldZ;
+        refreshMissileTargetScreenPos(e);
+        // 12TH ROUND (items 60-75): arm the falling PROJECTILE fresh for
+        // this attack — see updateBullets() for the midair intercept and
+        // the height-driven tick below.
+        e.missileHeight = MISSILE_PROJECTILE_START_HEIGHT;
+        e.missileDestroyed = false;
         e.attackState = 'target';
         e.attackUntil = now + MISSILE_TARGET_MS;
       }
     } else if (e.attackState === 'target') {
+      refreshMissileTargetScreenPos(e);
+      // PROJECTILE HEIGHT ramps down across the SAME window as the TARGET
+      // AREA's own progress curve, reaching 0 exactly as this branch's own
+      // now>=attackUntil fires below — the falling object visually merges
+      // into its floor shadow right as impact resolves.
+      const fallProgress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
+      e.missileHeight = MISSILE_PROJECTILE_START_HEIGHT * (1 - fallProgress);
       if (now >= e.attackUntil) {
         e.attackState = 'impact';
         e.attackUntil = now + MISSILE_IMPACT_MS;
@@ -4044,6 +4390,30 @@ function spawnPlayerImpact(x, y, now) {
   }
 }
 
+// 12TH ROUND (item 47): the "white door frame" investigation (see
+// style.css's own comment) traced that report to a stray browser focus
+// ring, not any Canvas effect — but the underlying ask, "DASHの速度感は
+// 残す" (keep DASH's sense of speed), is real and independent of that fix.
+// A handful of short streak lines radiating from BEHIND the dash direction
+// (dirX/dirY is the direction of travel, so streaks trail opposite it),
+// fading fast — reuses the existing particle pool/render loop exactly like
+// every other effect in this file, no parallel one-off draw path.
+function spawnDashStreak(x, y, dirX, dirY, now) {
+  const mag = Math.hypot(dirX, dirY) || 1;
+  const ux = dirX / mag, uy = dirY / mag;
+  const n = 5;
+  for (let i = 0; i < n; i++) {
+    const spread = (i - (n - 1) / 2) * 0.16;
+    const cos = Math.cos(spread), sin = Math.sin(spread);
+    // rotate the trailing (behind-motion) unit vector by `spread` radians
+    const rx = -ux * cos + uy * sin, ry = -uy * cos - ux * sin;
+    spawnParticle({
+      type: 'dashstreak', x, y, x2: x + rx * (26 + Math.random() * 18), y2: y + ry * (26 + Math.random() * 18),
+      born: now, until: now + 140 + Math.random() * 60,
+    });
+  }
+}
+
 function updateBullets(now) {
   const e = state.enemy;
   for (const b of state.bullets) {
@@ -4053,6 +4423,28 @@ function updateBullets(now) {
     if (e.deathState !== 'alive') {
       if (DEBUG_MODE) r10DebugLog('SHOT RESOLVED: enemy not alive (deathState=' + e.deathState + ') — no hit-test run');
       continue; // PART 27: no damage while already dying/gone
+    }
+    // 12TH ROUND (items 60-75): PROJECTILE midair intercept — checked
+    // BEFORE the normal enemy-body hit-test below, since a shot that hits
+    // the falling projectile is resolved against IT, not the enemy's own
+    // body. Destroying it here causes NEITHER a floor impact NOR player
+    // damage (resolveMissileImpact() never runs — the state machine skips
+    // straight to 'cooldown', see updateEnemy()'s 'target' branch owner).
+    if (e.kind === 'missile' && e.attackState === 'target' && !e.missileDestroyed && e.missileHeight > 1) {
+      const pv = getMissileProjectileVisual(e);
+      const pdist = Math.hypot(b.x2 - pv.x, b.y2 - pv.y);
+      if (pdist <= pv.hitRadius) {
+        e.missileDestroyed = true;
+        spawnParticle({ type: 'explosionFlash', x: pv.x, y: pv.y, r: 20, born: now, until: now + 120 });
+        for (let i = 0; i < 3; i++) {
+          spawnParticle({ type: 'spark', x: pv.x + (i - 1) * 8, y: pv.y, born: now, until: now + 160 + i * 20 });
+        }
+        spawnParticle({ type: 'smoke', x: pv.x, y: pv.y, r: 16, born: now, until: now + 320 });
+        e.attackState = 'cooldown';
+        e.attackUntil = now + MISSILE_COOLDOWN_MS;
+        if (DEBUG_MODE) r10DebugLog('PROJECTILE INTERCEPTED midair (' + (ENEMY_LABEL[e.type] || e.type) + ') dist=' + pdist.toFixed(1) + '/r=' + pv.hitRadius.toFixed(1));
+        continue;
+      }
     }
     const rect = computeEnemyDrawRect();
     const hitRadius = enemyHitRadius(rect);
@@ -4172,7 +4564,15 @@ function updateParticles(dt) {
 function getFlashlightCenter() {
   const lx = clampAxis(state.input.lightX) * LIGHT_RANGE;
   const ly = clampAxis(state.input.lightY) * LIGHT_RANGE;
-  return { x: state.centerX + lx, y: state.horizonY + state.cssH * 0.06 + ly };
+  const p = state.player;
+  // 12TH ROUND (items 57-58): lightFocusOffsetX/Y is FOCUS's persistent
+  // pull toward the current effective-hit point (see updatePlayer()'s
+  // autoAimActive branch) — additive on top of the raw stick/touch light
+  // position, never overwriting manual control.
+  return {
+    x: state.centerX + lx + (p.lightFocusOffsetX || 0),
+    y: state.horizonY + state.cssH * 0.06 + ly + (p.lightFocusOffsetY || 0),
+  };
 }
 function clampAxis(v) { return Math.max(-1, Math.min(1, v)); }
 
@@ -4193,10 +4593,26 @@ function getAimPoint() {
   // 7TH ROUND PART 12: safety clamp on the FINAL resolved point only — see
   // AIM_SCREEN_SAFE_MARGIN_PX's own comment. This only ever engages near
   // the true canvas edge; everywhere else it's a no-op.
-  return {
-    x: clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX),
-    y: clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX),
-  };
+  let x = clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX);
+  let y = clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX);
+  // 12TH ROUND (items 52-53): AIM must never leave the LIGHT circle — the
+  // crosshair reading RED outside the lit area (or FIRE landing on
+  // something the player can't even see) was never physically consistent
+  // with "探す/照らす/狙う" gameplay. Clamped here, on the FINAL resolved
+  // point, against getFlashlightCenter()/FLASHLIGHT_BASE_RADIUS — the SAME
+  // live values renderFlashlight()/renderAimReticle() actually draw with
+  // this frame (no stale/old-radius copy), so the visible lit circle and
+  // this clamp can never disagree.
+  const light = getFlashlightCenter();
+  const dx = x - light.x, dy = y - light.y;
+  const dist = Math.hypot(dx, dy);
+  const maxDist = FLASHLIGHT_BASE_RADIUS - AIM_LIGHT_CLAMP_MARGIN_PX;
+  if (dist > maxDist && dist > 0) {
+    const k = maxDist / dist;
+    x = light.x + dx * k;
+    y = light.y + dy * k;
+  }
+  return { x, y };
 }
 
 // ---------------------------------------------------------------------
@@ -4886,7 +5302,12 @@ function renderEscapePlayer() {
   const es = state.escape;
   const now = performance.now();
   const cx = state.centerX + p.strafeOffset;
-  const bottomY = state.cssH * 1.02; // same foot/ground anchor line renderPlayer() uses for LAB
+  // 12TH ROUND (items 15-17): NORTH/SOUTH depth now moves the player's own
+  // screen Y anchor too (not just scale) — es.depthPos>0 (NORTH/far) lifts
+  // the anchor UP the screen (subtracts), es.depthPos<0 (SOUTH/near) drops
+  // it DOWN, matching the perspective sense computeEnemyDrawRect()/
+  // project() already use elsewhere (farther = higher on screen).
+  const bottomY = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
 
   // 11TH ROUND (items 1-4, 7): the 5-frame RUN LOOP replaces the old
   // facing-based (south/west/east) sprite selection entirely — moveX/
@@ -4905,7 +5326,14 @@ function renderEscapePlayer() {
   // rendered body height IDENTICAL (not just close) across all 5 frames —
   // comfortably inside item 4's ±2% cap without a separate breathing pulse
   // (removed — see below).
-  const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST;
+  // 12TH ROUND (items 15-18): the depth-based PERSPECTIVE SCALE is applied
+  // to the shared targetBodyHeightPx baseline BEFORE computeBodyVisualScale()
+  // normalizes each of the 5 frames to it — so every frame still lands on
+  // the SAME target height at the CURRENT depth (the ±2% cross-frame cap
+  // from the 11th round is preserved exactly; only the baseline itself now
+  // tracks es.depthPos).
+  const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST
+    * perspectiveScaleFromDepth(es.depthPos, ESCAPE_DEPTH_SCALE_RANGE);
   const bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
   // 11TH ROUND (item 4): the old SOUTH_PULSE_AMPLITUDE (~3%) "breathing"
   // scale pulse is REMOVED for this new loop — it existed only because the
@@ -4931,7 +5359,7 @@ function renderEscapePlayer() {
   // lose track of the player's position, per item 7's explicit "操作位置
   // が分からなくなるほど長時間消さないでください".
   const blinking = now < p.invincibleUntil;
-  if (blinking && Math.floor(now / 60) % 2 === 0) return; // skip this frame's draw — the "off" half of the blink
+  if (blinking && Math.floor(now / ESCAPE_DASH_BLINK_TOGGLE_MS) % 2 === 0) return; // skip this frame's draw — the "off" half of the blink
   ctx.drawImage(frame.img, dx, dy, drawW, drawH);
 }
 
@@ -5130,54 +5558,108 @@ function renderEnemyTelegraphs(theme) {
         ctx.restore();
       }
     } else if (e.attackState === 'target') {
-      // 8TH ROUND (items 19-20, real-device feedback): the old plain
-      // filled-white ellipse read flat/unclear on a real screen. Replaced
-      // with a Canvas-only "danger zone on the floor" treatment — a
-      // glowing radial-gradient fill (energy-concentrated center fading to
-      // the edge), a pulsing/intensifying outline, and a few short
-      // converging rim ticks — no new image assets, matching the game's
-      // existing dark SF/fortress palette (warm orange/red warning glow).
-      // The underlying trigger/geometry (frozen missileTargetX/Y, the same
-      // progress-driven growth curve, the same MISSILE_TARGET_MS timing)
-      // is completely unchanged — only the visual treatment is richer.
-      // Scoped to the 'missile' kind only (ROID1/ROID2/ADAM SPHERE, which
-      // share this code path) — GABRIEL/ADAM's own 'claw' telegraph above
-      // and SNIPER's lock-box/bolt telegraph are both untouched.
+      // 12TH ROUND (items 20-24): the old "yellow dotted rotating circle"
+      // (8 rim ticks spinning via now*0.0015, fixed screen-pixel radius) is
+      // gone. Replaced with a genuine floor-perspective TARGET AREA driven
+      // by e.missileTargetWorldX/Z -> project() -> e.missileTargetX/Y/Scale
+      // (refreshed every tick by refreshMissileTargetScreenPos(), called
+      // from updateEnemy() above) — radii scale with e.missileTargetScale
+      // so the ellipse reads as sitting ON THE FLOOR at a real world depth,
+      // not a fixed-size screen decal. Visual: semi-transparent glow
+      // ellipse + thin static rim (no rotation) + STATIC converging light
+      // rays pointing in at the impact point (never spinning), brightening
+      // — never flashing — as impact nears. Scoped to 'missile' kind only
+      // (ROID1/ROID2/ADAM SPHERE) — GABRIEL/ADAM's 'claw' telegraph and
+      // SNIPER's lock-box/bolt telegraph are both untouched.
       const progress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
-      const rx = 30 + progress * 28, ry = 12 + progress * 10; // same growth curve as before
-      const pulse = 0.55 + 0.45 * Math.sin(now * 0.012);
+      const sc = e.missileTargetScale || 1;
+      const rx = (30 + progress * 28) * sc, ry = (12 + progress * 10) * sc;
+      const brighten = 0.5 + 0.5 * progress; // ramps up smoothly toward impact, never flickers
       ctx.save();
       const grad = ctx.createRadialGradient(e.missileTargetX, e.missileTargetY, 0, e.missileTargetX, e.missileTargetY, rx);
-      grad.addColorStop(0, 'rgba(255,210,120,' + (0.55 * progress) + ')');
-      grad.addColorStop(0.55, 'rgba(255,110,40,' + (0.38 * progress) + ')');
+      grad.addColorStop(0, 'rgba(255,210,120,' + (0.55 * brighten) + ')');
+      grad.addColorStop(0.55, 'rgba(255,110,40,' + (0.38 * brighten) + ')');
       grad.addColorStop(1, 'rgba(255,60,30,0)');
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.strokeStyle = 'rgba(255,140,60,' + ((0.5 + progress * 0.5) * pulse) + ')';
-      ctx.lineWidth = 2 + progress * 2.5;
-      ctx.shadowColor = 'rgba(255,120,40,0.9)';
-      ctx.shadowBlur = 6 + progress * 10;
+      // Thin rim — static, brightening only.
+      ctx.strokeStyle = 'rgba(255,150,70,' + (0.45 + 0.4 * brighten) + ')';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = 'rgba(255,220,160,' + (0.5 + 0.5 * progress) + ')';
+      // Converging light rays — fixed angles (no now*speed rotation term),
+      // drawn from outside the rim inward toward the impact center, longer/
+      // brighter as impact nears.
+      ctx.strokeStyle = 'rgba(255,220,160,' + (0.35 + 0.5 * brighten) + ')';
       ctx.lineWidth = 1.5;
-      const tickCount = 8;
-      for (let i = 0; i < tickCount; i++) {
-        const ang = (i / tickCount) * Math.PI * 2 + now * 0.0015;
-        const ox = Math.cos(ang) * rx * 1.08, oy = Math.sin(ang) * ry * 1.08;
-        const ix = Math.cos(ang) * rx * 0.85, iy = Math.sin(ang) * ry * 0.85;
+      const rayCount = 6;
+      const rayReach = 1.5 + progress * 0.9;
+      for (let i = 0; i < rayCount; i++) {
+        const ang = (i / rayCount) * Math.PI * 2;
+        const ox = Math.cos(ang) * rx * rayReach, oy = Math.sin(ang) * ry * rayReach;
+        const ix = Math.cos(ang) * rx * 0.55, iy = Math.sin(ang) * ry * 0.55;
         ctx.beginPath();
         ctx.moveTo(e.missileTargetX + ox, e.missileTargetY + oy);
         ctx.lineTo(e.missileTargetX + ix, e.missileTargetY + iy);
         ctx.stroke();
       }
       ctx.restore();
+
+      // 12TH ROUND (items 60-75): the interceptable PROJECTILE + its own
+      // PROJECTILE SHADOW — visually DISTINCT from the TARGET AREA above
+      // (that's the weapon's broad danger-zone warning; this is the
+      // physical falling object and the sharp, dark ground shadow it casts
+      // directly beneath itself). Both use the SAME locked world X/Z, so
+      // they sit concentric with the TARGET AREA by construction. Skipped
+      // once the projectile has been shot down (missileDestroyed).
+      if (!e.missileDestroyed && e.missileHeight > 0.5) {
+        const pv = getMissileProjectileVisual(e);
+        const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
+        ctx.save();
+        // SHADOW: a tight, dark, perspective-correct ellipse (never the
+        // TARGET AREA's warm glow) — this is what tells the player exactly
+        // where the object will land if they don't shoot it down.
+        const shadowRx = 16 * pv.scale, shadowRy = 6 * pv.scale;
+        ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
+        ctx.beginPath();
+        ctx.ellipse(pv.shadowX, pv.shadowY, shadowRx, shadowRy, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // A thin connecting line between the object and its shadow reads
+        // the closing GAP as altitude drops — never drawn once they're
+        // effectively touching.
+        if (heightFrac > 0.03) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(pv.x, pv.y);
+          ctx.lineTo(pv.shadowX, pv.shadowY);
+          ctx.stroke();
+        }
+
+        // The falling object itself: a small glowing orb, subtly
+        // brightening/pulsing (never flashing) as impact nears.
+        const bodyR = 10 * pv.scale;
+        const bright = 0.6 + 0.4 * (1 - heightFrac);
+        const bodyGrad = ctx.createRadialGradient(pv.x, pv.y, 0, pv.x, pv.y, bodyR * 1.6);
+        bodyGrad.addColorStop(0, 'rgba(255,235,190,' + bright + ')');
+        bodyGrad.addColorStop(0.6, 'rgba(255,150,60,' + (0.7 * bright) + ')');
+        bodyGrad.addColorStop(1, 'rgba(255,90,40,0)');
+        ctx.fillStyle = bodyGrad;
+        ctx.beginPath();
+        ctx.arc(pv.x, pv.y, bodyR * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.beginPath();
+        ctx.arc(pv.x, pv.y, bodyR * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
     }
   }
 }
@@ -5229,6 +5711,17 @@ function renderParticles() {
       ctx.strokeStyle = 'rgba(255,160,70,' + (fadeAlpha * 0.85) + ')';
       ctx.lineWidth = 3 * fadeAlpha + 1;
       ctx.beginPath(); ctx.ellipse(pt.x, pt.y, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    } else if (pt.type === 'dashstreak') {
+      // 12TH ROUND (item 47): DASH motion trail — short fading light
+      // streaks from the player's position trailing opposite the dash
+      // direction, replacing no prior effect (see spawnDashStreak()).
+      ctx.strokeStyle = 'rgba(200,230,255,' + (fadeAlpha * 0.8) + ')';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pt.x, pt.y);
+      ctx.lineTo(pt.x2, pt.y2);
+      ctx.stroke();
     } else if (pt.type === 'ihit') {
       // PART 9 (2nd round): a short, bright, instant flash at the impact
       // core — "金属片が一瞬爆ぜた" — never a symmetric fixed-line burst.
@@ -5368,10 +5861,34 @@ function renderFlashlightMask() {
 // SAME hit region enemyHitRadius()/computeEnemyDrawRect() already resolve
 // bullets against (see enemyHitRadius()'s own comment for why no separate,
 // unfounded "weak point" hitbox is invented for any of the 3 enemy types).
+// 12TH ROUND (items 54-59): the SINGLE source of truth for "the real
+// effective-damage point on the current enemy" — for roid1/roid2 that's the
+// measured HEAD circle (rect.headX/Y, matching updateBullets()'s own
+// headHit check exactly, see below), for every other type it's the same
+// body-center circle SHOT already resolves against. isAimOnEffectiveHit()
+// (AIM->RED), the FOCUS auto-aim target (updatePlayer()), and LIGHT's own
+// follow-target (getFlashlightCenter()) all read from this ONE function —
+// they can never disagree about where "the hit point" is, per spec.
+function getEffectiveHitPoint(rect) {
+  const e = state.enemy;
+  if ((e.type === 'roid1' || e.type === 'roid2') && rect.headX != null) {
+    return { x: rect.headX, y: rect.headY };
+  }
+  return { x: rect.cx, y: rect.cy };
+}
 function isAimOnEffectiveHit() {
   const aim = getAimPoint();
   const rect = computeEnemyDrawRect();
   const e = state.enemy;
+  // 12TH ROUND (items 60-75, item f): the live falling PROJECTILE is its
+  // OWN independently-aimable effective-hit area — checked first so AIM
+  // turns RED over it exactly where updateBullets()'s own intercept
+  // hit-test (same getMissileProjectileVisual()) will actually register a
+  // hit, per the unified effective-hit rule.
+  if (e.kind === 'missile' && e.attackState === 'target' && !e.missileDestroyed && e.missileHeight > 1) {
+    const pv = getMissileProjectileVisual(e);
+    if (Math.hypot(aim.x - pv.x, aim.y - pv.y) <= pv.hitRadius) return true;
+  }
   // 11TH ROUND (items 17-19): for roid1/roid2, "effective hit" now means
   // the real measured HEAD circle specifically (a body-only hit deals no
   // damage — see updateBullets()), so the crosshair's white->red feedback
@@ -5422,12 +5939,14 @@ function updateHud() {
     p.lastAmmoBelowHpReloading = p.reloading;
   }
 
-  // 9TH ROUND (item 36): ESCAPE MODE's own TIME LEFT readout — M:SS,
-  // dirty-checked at whole-second granularity like every other HUD write.
+  // 9TH ROUND (item 36) / 12TH ROUND (items 48-49): ESCAPE MODE's own
+  // SURVIVE MM:SS readout (was "TIME LEFT") — same state.escape.timeLeftSec
+  // countdown and triggerClearSequence() trigger, label/format only.
+  // Dirty-checked at whole-second granularity like every other HUD write.
   if (state.gameMode === 'escape') {
     const secsLeft = Math.ceil(state.escape.timeLeftSec);
     if (secsLeft !== state.escape.lastTimeLeftDisplayedSec) {
-      const mm = Math.floor(secsLeft / 60);
+      const mm = String(Math.floor(secsLeft / 60)).padStart(2, '0');
       const ss = String(secsLeft % 60).padStart(2, '0');
       escapeTimeLeftValueEl.textContent = mm + ':' + ss;
       state.escape.lastTimeLeftDisplayedSec = secsLeft;
@@ -5698,8 +6217,8 @@ function frame(ts) {
       // does not require any new position/state bookkeeping — no separate
       // enemy state, no corruption risk.
       const escActions = consumeEscapeActions();
-      const forwardDelta = updateEscapePlayer(dt, ts, state.input.moveX, escActions);
-      applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
+      const forwardDelta = updateEscapePlayer(dt, ts, state.input.moveX, state.input.moveY, escActions);
+      applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
       updateEnemy(dt, ts);
       updateEscapeEnemyPursuit(ts);
       updateParticles(dt); // ESCAPE itself still spawns no particles directly, but the now-active enemy's own attack impacts do (spark/smoke/shockwave) — no longer a pure no-op
@@ -5713,7 +6232,7 @@ function frame(ts) {
       }
     } else {
       const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
-      applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
+      applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
       updateEnemy(dt, ts);
       updateBullets(ts);
       updateParticles(dt);
@@ -5799,7 +6318,7 @@ function frame(ts) {
 
   // 8TH ROUND: DEBUG MODE panel refresh — single top-level gate, so a
   // normal URL never even evaluates r10UpdateDebugPanel()'s body.
-  if (DEBUG_MODE) r10UpdateDebugPanel(ts);
+  if (state.debugPanelVisible) r10UpdateDebugPanel(ts);
 }
 
 function start() {
@@ -5827,13 +6346,10 @@ spawnEnemy(AUTO_SEQUENCE[0]);
 // concurrently with real gameplay and never touches state.player/state.enemy.
 startLoadingWalkAnimation();
 
-// 8TH ROUND: DEBUG MODE panel visibility — the ONLY place `hidden` is
-// touched for this element. False (normal URL): stays exactly as the HTML
-// declares it (hidden), never even considered again.
-if (DEBUG_MODE) {
-  r10DebugPanelEl.hidden = false;
-  r10DebugLog('DEBUG MODE ACTIVE (?debug=1)');
-}
+// 12TH ROUND (items 6-9): panel visibility is now set once, earlier, by
+// setDebugPanelVisible(state.debugPanelVisible) right after it's defined
+// (see the PAUSE MENU / DEBUG DISPLAY setup above) — nothing left to do
+// here.
 
 start();
 
@@ -5895,4 +6411,14 @@ window.__darkoutTps = {
   ESCAPE_DASH_BLINK_MS, ESCAPE_STRAFE_DASH_DISTANCE_PX,
   ESCAPE_SOUTH_DASH_DISTANCE_Z, ESCAPE_NORTH_BACKSTEP_DISTANCE_Z,
   FLASHLIGHT_BASE_RADIUS, FIRE_POSE_SCALE_BOOST,
+  // 12TH ROUND: PLAYER PERSPECTIVE, world-space TARGET AREA/PROJECTILE,
+  // effective-hit/FOCUS/LIGHT unification — exposed for automated testing
+  // only.
+  project, perspectiveScaleFromDepth, getEffectiveHitPoint,
+  getMissileProjectileVisual, currentPlayerFloorScreenPos,
+  refreshMissileTargetScreenPos, setDebugPanelVisible,
+  MAG_SIZE, RESERVE_MAX, PLAYER_MAX_HP,
+  MISSILE_TARGET_BASE_WORLD_Z, MISSILE_TARGET_WORLD_Z_RANGE,
+  MISSILE_PROJECTILE_START_HEIGHT, MISSILE_PROJECTILE_HIT_RADIUS_PX,
+  AMBIENT_FLOOR_CRAWL_SPEED, ENEMY_LANE_TRACK_MULT,
 };

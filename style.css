@@ -4,6 +4,24 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* 12TH ROUND (items 46-49): root-caused the "white door frame" reported
+   during DASH — no such effect exists anywhere in game.js's Canvas
+   rendering (confirmed via direct code search and live DASH screenshots,
+   COMBAT and ESCAPE, neither showed any rectangle). The real cause is the
+   browser's own default focus ring: `<button>` touch controls (DASH
+   buttons most of all, since they're tapped rapidly/repeatedly) receive
+   native focus on tap, and mobile Safari/WebKit's default focus outline
+   renders as a white rectangular box around the button — exactly matching
+   the reported "白い長方形フレーム" and confirmed by this session's own
+   probe (outlineColor computed as rgb(255,255,255) on these buttons even
+   though headless Chromium's own click() doesn't reproduce the visible
+   ring the way a real touchstart does). -webkit-tap-highlight-color above
+   only suppresses WebKit's tap-flash, a separate effect from this. Scoped
+   to `button` globally since every gameplay control (DASH, FIRE, PAUSE
+   MENU entries, etc.) is a <button> — never affects DASH's own distance/
+   timing/blink logic, only this unrelated browser-chrome artifact. */
+button { outline: none; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -454,6 +472,12 @@ html, body {
   align-items: stretch;
   gap: 10px;
   min-width: 220px;
+  max-width: min(90vw, 420px);
+  /* 12TH ROUND (items 1-10): the panel now hosts ENEMY SELECT/STAGE TYPE/
+     GAME MODE/DEBUG on top of what it already had — scrollable so it never
+     overflows a short mobile-landscape viewport. */
+  max-height: 88vh;
+  overflow-y: auto;
   padding: 20px 24px;
   background: rgba(15,18,22,0.92);
   border: 1px solid rgba(255,255,255,0.2);
@@ -522,6 +546,7 @@ html, body {
   color: #8fe38f;
 }
 #debug-panel span { color: #fff; }
+#debug-panel[hidden] { display: none; }
 
 /* 8TH ROUND: ?debug=1-only DEBUG MODE panel — [hidden] is the default
    (normal-URL) state, cleared only from game.js when DEBUG_MODE is true.
@@ -611,27 +636,18 @@ html, body {
   pointer-events: auto;
 }
 
+/* 12TH ROUND (items 1-4): these three rows now live INSIDE #pause-panel
+   (see index.html) instead of fixed-positioned directly on the normal
+   play screen — flow naturally in the panel's own column layout, wrap,
+   and center, rather than pinning to a screen corner. selectEnemy()/
+   setGameMode()/theme-btn click handlers are completely unchanged; only
+   this positioning (and the DOM location in index.html) moved. */
 #theme-switch, #gamemode-switch, #enemy-switch {
-  position: absolute;
-  z-index: 50;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+  justify-content: center;
 }
-#theme-switch { top: max(10px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); top: 40px; }
-/* 9TH ROUND: GAME MODE (COMBAT/ESCAPE) is now a second, independent
-   dev/test row directly under STAGE TYPE — see setGameMode() in game.js.
-   Reuses .theme-btn's own visual style via .gamemode-btn below. */
-#gamemode-switch { top: max(10px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); top: 66px; }
-/* 5TH ROUND PART 15: ENEMY SELECT/AUTO MODE panel moved from the top
-   (where it competed with the combat HUD) down to the controller panel's
-   bottom-right, per spec ("MODE表示...コントローラーパネル下部へ...上部
-   =戦闘情報、下部=操作/モード情報"). Positioned above #touch-buttons' own
-   footprint (bottom: max(20px,...) + ~3 rows ≈ 134px tall when visible) so
-   it never overlaps the touch controls even when toggled ON from PAUSE;
-   still wraps to 2 rows and right-aligns (7 buttons, unchanged from 4th
-   round) so it never overflows offscreen on a narrow landscape phone.
-   Only the POSITION changed — selectEnemy()/AUTO MODE logic is untouched. */
-#enemy-switch { bottom: 145px; right: max(14px, env(safe-area-inset-right)); max-width: 46vw; flex-wrap: wrap; justify-content: flex-end; }
 .theme-btn, .enemy-btn, .gamemode-btn {
   font-size: 9px;
   letter-spacing: 0.05em;
@@ -742,7 +758,8 @@ body.escape-mode .touch-escape-only { display: block; }
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
-  color: #e0e6ea;
+  /* 12TH ROUND (items 48-49): SURVIVE MM:SS readout — red, per spec. */
+  color: #ff3b3b;
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
 }
 body.escape-mode #escape-timeleft-readout { display: block; }

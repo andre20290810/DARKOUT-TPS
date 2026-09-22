@@ -87,8 +87,10 @@
       </div>
       <!-- 9TH ROUND (item 36): ESCAPE MODE's own TIME LIMIT readout — hidden
            in COMBAT MODE via CSS (body.escape-mode gate), shown only while
-           state.gameMode==='escape'. -->
-      <div id="escape-timeleft-readout">TIME LEFT <span id="escape-timeleft-value">1:30</span></div>
+           state.gameMode==='escape'. 12TH ROUND (items 48-49): relabeled
+           SURVIVE MM:SS in red — same underlying timer/CLEAR SEQUENCE, text
+           only. -->
+      <div id="escape-timeleft-readout">SURVIVE <span id="escape-timeleft-value">01:30</span></div>
     </div>
     <div id="hud-top-right">
       <div id="stealth-readout">STEALTH <span id="stealth-state">OFF</span></div>
@@ -129,7 +131,15 @@
   <!-- 4th round PART 6/7: PAUSE menu overlay — TOUCH CONTROLS ON/OFF toggle.
        7TH ROUND PART 11: CONTROLLER AIM SENSITIVITY (LOW/NORMAL/HIGH) added
        below it — CONTROLLER-only (see controllerAimSensitivity in game.js),
-       TOUCH AIM is managed independently and never reads this setting. -->
+       TOUCH AIM is managed independently and never reads this setting.
+       12TH ROUND (items 1-10): PAUSE MENU becomes the single home for every
+       dev/test control that previously sat directly on the normal play
+       screen — ENEMY SELECT/AUTO MODE, STAGE TYPE, GAME MODE, DEBUG
+       DISPLAY ON/OFF, COPY DEBUG. Every element below (#theme-switch/
+       #gamemode-switch/#enemy-switch/#r10-debug-panel's own COPY DEBUG
+       button) is the SAME node/id/click-handler that existed before this
+       round — only their DOM location + CSS positioning moved (see
+       style.css); no logic was duplicated or reimplemented. -->
   <div id="pause-menu" hidden>
     <div id="pause-panel">
       <div id="pause-title">PAUSE</div>
@@ -140,12 +150,46 @@
         <button type="button" data-sens="normal" class="pause-menu-btn aim-sens-btn active">NORMAL</button>
         <button type="button" data-sens="high" class="pause-menu-btn aim-sens-btn">HIGH</button>
       </div>
+
+      <div class="pause-menu-label">STAGE TYPE</div>
+      <div id="theme-switch">
+        <button type="button" data-theme="lab" class="theme-btn active">LAB</button>
+        <button type="button" data-theme="armored" class="theme-btn">ARMORED</button>
+        <button type="button" data-theme="escape" class="theme-btn">ESCAPE</button>
+      </div>
+
+      <div class="pause-menu-label">GAME MODE</div>
+      <div id="gamemode-switch">
+        <button type="button" data-gamemode="combat" class="gamemode-btn active">COMBAT MODE</button>
+        <button type="button" data-gamemode="escape" class="gamemode-btn">ESCAPE MODE</button>
+      </div>
+
+      <div class="pause-menu-label">ENEMY SELECT / AUTO MODE</div>
+      <div id="enemy-switch">
+        <button type="button" data-enemy="auto" class="enemy-btn active">AUTO</button>
+        <button type="button" data-enemy="drone" class="enemy-btn">DRONE</button>
+        <button type="button" data-enemy="roid1" class="enemy-btn">ROID 1</button>
+        <button type="button" data-enemy="roid2" class="enemy-btn">ROID 2</button>
+        <button type="button" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
+        <button type="button" data-enemy="adamSphere" class="enemy-btn">ADAM SPHERE</button>
+        <button type="button" data-enemy="adam" class="enemy-btn">ADAM</button>
+      </div>
+
+      <div class="pause-menu-label">DEBUG</div>
+      <button type="button" id="pause-debug-toggle" class="pause-menu-btn">DEBUG DISPLAY : OFF</button>
+      <div id="r10-dbg-copy-row">
+        <button type="button" id="r10-dbg-copy-btn" class="pause-menu-btn">COPY DEBUG</button>
+        <span id="r10-dbg-copy-status"></span>
+      </div>
+
       <button type="button" id="pause-resume-btn" class="pause-menu-btn">RESUME</button>
     </div>
   </div>
 
-  <!-- Debug / FPS panel -->
-  <div id="debug-panel">
+  <!-- Debug / FPS panel — 12TH ROUND (item 5): no longer always-visible on
+       the normal play screen; shown only while state.debugPanelVisible
+       (see the DEBUG DISPLAY toggle above), same as #r10-debug-panel. -->
+  <div id="debug-panel" hidden>
     <div>FPS <span id="dbg-fps">--</span></div>
     <div>FRAME <span id="dbg-frametime">--</span>ms</div>
     <div>DPR <span id="dbg-dpr">--</span></div>
@@ -153,29 +197,17 @@
     <div>STATE <span id="dbg-state">--</span></div>
   </div>
 
-  <!-- 8TH ROUND: real-device DEBUG MODE panel — only ever shown when the
-       page was loaded with ?debug=1 (see DEBUG_MODE in game.js). `hidden`
-       here is the default/normal-URL state; game.js clears it only when
-       DEBUG_MODE is true, and every field inside is only ever written
-       while DEBUG_MODE is true — a normal URL never touches this element
-       at all after the initial hidden-check. Deliberately compact/small
-       (own scroll region, small font) so it cannot obstruct mobile-
-       landscape gameplay; positioned bottom-left, away from the existing
-       top-center #debug-panel and the bottom-right #enemy-switch/
-       #touch-buttons. -->
+  <!-- 8TH ROUND: real-device DEBUG MODE panel. 12TH ROUND (items 6-9):
+       visibility now follows state.debugPanelVisible (toggled from PAUSE
+       MENU's DEBUG DISPLAY button above, on ANY URL) instead of only
+       ?debug=1 — see DEBUG_MODE/DEBUG_URL_FLAG in game.js. `hidden` here is
+       still the default. Deliberately compact/small (own scroll region,
+       small font) so it cannot obstruct mobile-landscape gameplay;
+       positioned bottom-left. Its own COPY DEBUG button now lives in the
+       PAUSE MENU instead (moved above) — this element keeps every OTHER
+       field (GAME/PLAYER/AMMO/FIRE/SHOT/ENEMY/INPUT/EVENT LOG). -->
   <div id="r10-debug-panel" hidden>
-    <div id="r10-dbg-title">DEBUG (?debug=1)</div>
-    <!-- ADDENDUM: COPY DEBUG — copies a full plaintext snapshot (GAME/
-         PLAYER/FIRE/SHOT/ENEMY/INPUT + full event log) to the clipboard so
-         it can be pasted straight into ChatGPT etc. from an iPhone. Fixed
-         at the top of the panel (reachable without scrolling past a long
-         event log). This is the only element inside #r10-debug-panel with
-         pointer-events re-enabled (see style.css) — the rest of the panel
-         stays pass-through so it never blocks gameplay touches. -->
-    <div id="r10-dbg-copy-row">
-      <button type="button" id="r10-dbg-copy-btn">COPY DEBUG</button>
-      <span id="r10-dbg-copy-status"></span>
-    </div>
+    <div id="r10-dbg-title">DEBUG</div>
     <div id="r10-dbg-game"></div>
     <div id="r10-dbg-player"></div>
     <div id="r10-dbg-ammo"></div>
@@ -185,42 +217,6 @@
     <div id="r10-dbg-input"></div>
     <div id="r10-dbg-log-title">EVENT LOG</div>
     <div id="r10-dbg-log"></div>
-  </div>
-
-  <!-- Theme switch (dev/test control, always visible in this prototype).
-       9TH ROUND: STAGE TYPE (this button row) and GAME MODE (the new
-       #gamemode-switch row below) are now independently selectable —
-       state.theme (LAB/ARMORED/ESCAPE, purely cosmetic corridor/world
-       appearance) no longer forces state.gameMode (COMBAT/ESCAPE, which
-       PLAYER control scheme + win condition apply). Clicking a STAGE TYPE
-       button here now changes ONLY the visuals; GAME MODE stays whatever
-       #gamemode-switch was last set to. -->
-  <div id="theme-switch">
-    <button type="button" data-theme="lab" class="theme-btn active">LAB</button>
-    <button type="button" data-theme="armored" class="theme-btn">ARMORED</button>
-    <button type="button" data-theme="escape" class="theme-btn">ESCAPE</button>
-  </div>
-  <div id="gamemode-switch">
-    <button type="button" data-gamemode="combat" class="gamemode-btn active">COMBAT MODE</button>
-    <button type="button" data-gamemode="escape" class="gamemode-btn">ESCAPE MODE</button>
-  </div>
-
-  <!-- 4th round PART 10/11: ENEMY SELECT — extends the previous ROID1/
-       ROID2/GABRIEL-only BOSS TEST panel with AUTO + all 6 requested
-       identities. 5TH ROUND PART 7: ADAM/ADAM SPHERE went real. 10TH ROUND
-       (items 37-39): DRONE goes real too — a working implementation was
-       found in andre20290810/ACTION-GAME (real directional assets, ported
-       into the shared sniper attack machinery — see ENEMY_IMPLEMENTED's
-       comment in game.js) — so its button drops the "unimplemented" class
-       and behaves exactly like every other real enemy now. -->
-  <div id="enemy-switch">
-    <button type="button" data-enemy="auto" class="enemy-btn active">AUTO</button>
-    <button type="button" data-enemy="drone" class="enemy-btn">DRONE</button>
-    <button type="button" data-enemy="roid1" class="enemy-btn">ROID 1</button>
-    <button type="button" data-enemy="roid2" class="enemy-btn">ROID 2</button>
-    <button type="button" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
-    <button type="button" data-enemy="adamSphere" class="enemy-btn">ADAM SPHERE</button>
-    <button type="button" data-enemy="adam" class="enemy-btn">ADAM</button>
   </div>
 
   <!-- On-screen touch fallback controls (for testing without a controller).
