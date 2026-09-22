@@ -85,19 +85,12 @@
         <div id="hp-label">HP</div>
         <div id="hp-bar-track"><div id="hp-bar-fill"></div></div>
       </div>
-      <!-- 9TH ROUND (items 4/6): magazine-vs-capacity readout directly under
-           LIFE, so a player can tell at a glance whether they're about to
-           run dry (separate concept from #ammo-readout's own current/
-           RESERVE-POOL pairing at top-right, which is untouched). -->
-      <div id="ammo-below-hp-readout">AMMO <span id="ammo-below-hp-count">12</span>/<span id="ammo-below-hp-mag">12</span></div>
-      <div id="ammo-below-hp-reloading" hidden>RELOADING...</div>
       <!-- 9TH ROUND (item 36): ESCAPE MODE's own TIME LIMIT readout — hidden
            in COMBAT MODE via CSS (body.escape-mode gate), shown only while
            state.gameMode==='escape'. -->
       <div id="escape-timeleft-readout">TIME LEFT <span id="escape-timeleft-value">1:30</span></div>
     </div>
     <div id="hud-top-right">
-      <div id="ammo-readout">AMMO <span id="ammo-count">12</span>/<span id="ammo-reserve">48</span></div>
       <div id="stealth-readout">STEALTH <span id="stealth-state">OFF</span></div>
     </div>
     <!-- 4th round PART 23: enemy HP gauge — did not exist before this
@@ -112,6 +105,17 @@
     <div id="focus-hud">
       <div id="focus-label">FOCUS</div>
       <div id="focus-bar-track"><div id="focus-bar-fill"></div></div>
+    </div>
+    <!-- 10TH ROUND (items 25-27): AMMO now lives in exactly ONE place —
+         directly under FOCUS (the old top-right #ammo-readout and the 9TH
+         ROUND under-HP readout are both removed). current/MAGAZINE
+         CAPACITY (not the old RESERVE-POOL pairing) is what matters for
+         moment-to-moment play; #ammo-hud-reserve-total surfaces the
+         internal reserve pool too since it still exists and appears in
+         DEBUG. -->
+    <div id="ammo-hud">
+      <div id="ammo-hud-readout">AMMO <span id="ammo-hud-count">12</span>/<span id="ammo-hud-mag">12</span></div>
+      <div id="ammo-hud-reloading" hidden>RELOADING...</div>
     </div>
     <div id="hud-center-warning" hidden></div>
     <div id="theme-label" class="hud-bottom-center">LAB / EXPERIMENT AREA</div>
@@ -203,15 +207,15 @@
 
   <!-- 4th round PART 10/11: ENEMY SELECT — extends the previous ROID1/
        ROID2/GABRIEL-only BOSS TEST panel with AUTO + all 6 requested
-       identities. 5TH ROUND PART 7: ADAM/ADAM SPHERE are now real
-       (assets found + investigated in ACTION-GAME, wired into existing
-       attack-family state machines) — only DRONE remains unimplemented
-       (no asset/AI/code anywhere in this repo); its button stays marked
-       visually disabled, clicking it shows a "NOT IMPLEMENTED" notice
-       instead of faking a fight (see selectEnemy() in game.js). -->
+       identities. 5TH ROUND PART 7: ADAM/ADAM SPHERE went real. 10TH ROUND
+       (items 37-39): DRONE goes real too — a working implementation was
+       found in andre20290810/ACTION-GAME (real directional assets, ported
+       into the shared sniper attack machinery — see ENEMY_IMPLEMENTED's
+       comment in game.js) — so its button drops the "unimplemented" class
+       and behaves exactly like every other real enemy now. -->
   <div id="enemy-switch">
     <button type="button" data-enemy="auto" class="enemy-btn active">AUTO</button>
-    <button type="button" data-enemy="drone" class="enemy-btn enemy-btn-unimplemented">DRONE</button>
+    <button type="button" data-enemy="drone" class="enemy-btn">DRONE</button>
     <button type="button" data-enemy="roid1" class="enemy-btn">ROID 1</button>
     <button type="button" data-enemy="roid2" class="enemy-btn">ROID 2</button>
     <button type="button" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>

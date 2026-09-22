@@ -88,7 +88,16 @@ const STRAFE_MAX_OFFSET = 0.30; // fraction of canvas width from center
 // backward, the opposite of a high-speed escape).
 const ESCAPE_AUTO_SCROLL_SPEED = 170;
 const ESCAPE_STRAFE_SPEED = 300;             // px/sec continuous lateral dodge (left stick + D-PAD, unified)
-const ESCAPE_STRAFE_DASH_DISTANCE_PX = 32.5;  // 8TH ROUND: was 130 — real-device feedback said WEST/EAST dash traveled too far; reduced to ~25%. NORTH BACKSTEP/SOUTH DASH (Z-axis, below) are explicitly NOT touched.
+// 10TH ROUND (items 33-36): investigated current value first, per spec —
+// 8TH ROUND had cut this from 130 to 32.5 (~25%) after "dash travels too
+// far" feedback, but real-device play now reports the opposite problem:
+// 32.5px is too short to actually dodge an enemy attack. Target per this
+// round's explicit instruction is "roughly half of the original 130px",
+// i.e. ~65 — splitting the difference between the two real-device
+// complaints rather than picking either extreme again. NORTH BACKSTEP/
+// SOUTH DASH (Z-axis, separate constants below) are untouched, matching
+// both the 8th and 10th round's own scoping.
+const ESCAPE_STRAFE_DASH_DISTANCE_PX = 65; // was 32.5 (8th round), was 130 originally
 const ESCAPE_STRAFE_DASH_DURATION_MS = 200;
 const ESCAPE_SOUTH_DASH_DISTANCE_Z = 260;    // A — accelerate further in the direction of travel
 const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 200; // Y — brief backstep against the direction of travel
@@ -187,6 +196,23 @@ const ADAM_NORMAL_Z_MIN = 260;
 // of instantly snapping (the old bug: applyForwardDelta()'s per-frame floor
 // used to yank GABRIEL back to 260 the instant 'approach' ended, mid-swing).
 const CLAW_RECOVERY_MS = 900;
+// 10TH ROUND (items 19-21): 9TH ROUND's SOUTH WALK LOOP only ever changed
+// which IMAGE was shown during idle — it never touched e.z, so GABRIEL/ADAM
+// spawned (and recovered) already sitting exactly at their own
+// *_NORMAL_Z_MIN floor, leaving zero room to visibly "walk closer": the
+// walk-frames cycled but the boss never actually got nearer, reading as
+// marching in place on real devices. STALK_Z is a second, slightly farther
+// floor bosses now spawn at AND ease back out to after RECOVERY; idle-state
+// autonomous creep (see updateEnemy()) then closes that gap down to
+// *_NORMAL_Z_MIN on its own, at CLAW_STALK_SPEED, independent of the
+// player's own forward movement — giving the walk loop real ground to
+// cover. *_NORMAL_Z_MIN itself is UNCHANGED and still the hard floor
+// (idle-state creep and the player's own applyForwardDelta() push both
+// still stop there) — only ATTACK's own 'approach' sub-state still goes
+// closer than this, exactly as 9TH ROUND left it.
+const GABRIEL_STALK_Z = GABRIEL_NORMAL_Z_MIN + 180;
+const ADAM_STALK_Z = ADAM_NORMAL_Z_MIN + 180;
+const CLAW_STALK_SPEED = 40; // world-z units/sec of autonomous idle approach
 const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, never actually reached in practice
 // Enemy sprite height expressed in the SAME world-unit space the corridor
 // projection uses (see project()), so proj.scale converts it to pixels
@@ -218,6 +244,12 @@ const ADAM_WORLD_HEIGHT = 560;
 // SAME uniform scale factor as height, for whichever real source image is
 // actually drawn.
 const ADAM_SPHERE_WORLD_HEIGHT = ROID_WORLD_HEIGHT / 2.5; // = 280
+// 10TH ROUND (items 37-39): DRONE's real on-screen size relative to other
+// enemies, derived from ACTION-GAME's own real constants rather than
+// guessed — its SECURITY_ROBOT_DRAW_D (DRONE diameter) is exactly HALF of
+// ADAM_SPHERE_TARGET_DIAMETER there (`SECURITY_ROBOT_DRAW_D * 2`), so DRONE
+// here is sized at half of this project's own ADAM_SPHERE_WORLD_HEIGHT.
+const DRONE_WORLD_HEIGHT = ADAM_SPHERE_WORLD_HEIGHT / 2; // = 140
 // 7TH ROUND PART 7 ("常時回転しているように見せる"): continuous rotation
 // cadence for ADAM SPHERE's own 4 real frames (adam_sphere_01..04.png) —
 // independent of ROID_FIRE_FRAME_MS (which only ever applies to ROID1/
@@ -479,6 +511,18 @@ const BULLET_DAMAGE = 12;
 // entity this constant applies to IS a boss fight, so tripling it here
 // cannot accidentally also triple some other, non-boss enemy's HP.
 const ENEMY_MAX_HP = 100 * 3; // was 100
+// 10TH ROUND (item 40): ROID1/ROID2 specifically doubled (300->600) — real-
+// device feedback said they were "too weak" compared to GABRIEL/ADAM/ADAM
+// SPHERE, which all keep the shared ENEMY_MAX_HP (300) unchanged.
+const ROID_MAX_HP = ENEMY_MAX_HP * 2;
+// 10TH ROUND (items 41-48): ROID1/ROID2 counter-phase system. Crossing each
+// of these remaining-HP fractions (checked high-to-low, descending) once
+// triggers ONE invulnerable counter-phase — e.triggeredThresholds tracks
+// which have already fired so straddling/multi-hit frames can never
+// double-trigger the same threshold (item 43's explicit requirement).
+const ROID_COUNTER_THRESHOLDS = [0.8, 0.6, 0.4, 0.2];
+const ROID_COUNTER_PHASE_MS = 5000; // invulnerable window — long enough for ~1-2 real attack cycles via the EXISTING sniper/missile attack machinery, reused unchanged
+const ROID_COUNTER_BLINK_MS = 700; // reuses the existing hit-flash brightness pulse, not a new visual system
 
 // ---------------------------------------------------------------------
 // STEALTH — matched to ACTION-GAME's actual DARK OUT implementation
@@ -601,7 +645,13 @@ const THEMES = {
     wall: '#4a5058',
     wallDark: '#20242a',
     accent: '#9fc8ff',
-    warn: '#ff8a3b',
+    // 10TH ROUND item 12: ARMORED's warning lights must read as RED
+    // ("赤色警告灯") — was orange (#ff8a3b), which is what the shared
+    // warningLight structure kind (below) was drawing them as. warningLight
+    // already does everything item 12 asks for structurally (small lights
+    // at the left/right edges, blinking randomly/periodically via a
+    // per-instance phase offset) — the only thing wrong was the color.
+    warn: '#ff3b3b',
     floor: '#14171b',
   },
   escape: {
@@ -623,14 +673,17 @@ const canvas = document.getElementById('scene-canvas');
 const ctx = canvas.getContext('2d');
 
 const hpFillEl = document.getElementById('hp-bar-fill');
-const ammoCountEl = document.getElementById('ammo-count');
-const ammoReserveEl = document.getElementById('ammo-reserve');
-const ammoBelowHpReadoutEl = document.getElementById('ammo-below-hp-readout');
-const ammoBelowHpCountEl = document.getElementById('ammo-below-hp-count');
-const ammoBelowHpMagEl = document.getElementById('ammo-below-hp-mag');
-const ammoBelowHpReloadingEl = document.getElementById('ammo-below-hp-reloading');
+// 10TH ROUND (items 25-27): AMMO consolidated to ONE readout, #ammo-hud
+// (below #focus-hud) — the old top-right #ammo-readout (current/RESERVE)
+// and the 9TH ROUND under-HP readout (current/MAGAZINE) both duplicated
+// this same information in two other places; both DOM nodes are gone from
+// index.html now, replaced by this single set.
+const ammoHudReadoutEl = document.getElementById('ammo-hud-readout');
+const ammoHudCountEl = document.getElementById('ammo-hud-count');
+const ammoHudMagEl = document.getElementById('ammo-hud-mag');
+const ammoHudReloadingEl = document.getElementById('ammo-hud-reloading');
 const escapeTimeLeftValueEl = document.getElementById('escape-timeleft-value');
-ammoBelowHpMagEl.textContent = MAG_SIZE; // static — magazine capacity never changes mid-game
+ammoHudMagEl.textContent = MAG_SIZE; // static — magazine capacity never changes mid-game
 const stealthReadoutEl = document.getElementById('stealth-readout');
 const stealthStateEl = document.getElementById('stealth-state');
 const centerWarningEl = document.getElementById('hud-center-warning');
@@ -727,7 +780,12 @@ function r10CollectSnapshot(ts) {
     escapeTimer: { timeLeftSec: Math.max(0, Math.ceil(state.escape.timeLeftSec)), limitSec: ESCAPE_TIME_LIMIT_SEC },
     clearSeq: { active: state.clearSequence.active, phase: state.clearSequence.phase, reason: state.clearSequence.reason || '-' },
     player: { x: Math.round(p.strafeOffset), facing: p.facing, hp: p.hp, maxHp: PLAYER_MAX_HP,
-      cover: isPlayerInCover(), coverFacing: p.coverFacing, dash: dashActive },
+      cover: isPlayerInCover(), coverFacing: p.coverFacing, dash: dashActive,
+      // 10TH ROUND (item 56): move direction/walk frame/dash direction + which
+      // BARREL CLUSTER (if any) is providing COVER right now.
+      moveDirSouth: !!p.moveDirSouth, walkFrame: p.walkFrame,
+      dashDir: dashActive && ts < p.fwdDashUntil ? (p.fwdDashSign > 0 ? 'north' : 'south') : '-',
+      coverCluster: r10DebugCoverClusterId().clusterId },
     // 9TH ROUND (item 5): AMMO/RELOAD diagnostics.
     ammo: { current: p.ammo, magazine: MAG_SIZE, reserve: p.reserve,
       reloading: p.reloading, reloadType: p.reloadType || '-',
@@ -740,7 +798,16 @@ function r10CollectSnapshot(ts) {
       lastTgt: d.lastTarget ? d.lastTarget.x.toFixed(0) + ',' + d.lastTarget.y.toFixed(0) : '-',
       lastTest: d.lastHitTestResult },
     enemy: { type: e.type, hp: e.hp, maxHp: e.maxHp, lastDmg: d.lastDamage,
-      lastDmgAt: Math.round(d.lastDamageAt), hits: d.hitCount, miss: d.missCount },
+      lastDmgAt: Math.round(d.lastDamageAt), hits: d.hitCount, miss: d.missCount,
+      invulnerable: !!e.invulnerable, counterPhaseRemainMs: e.invulnerable ? Math.max(0, Math.round(e.counterPhaseUntil - ts)) : 0,
+      triggeredThresholds: (e.triggeredThresholds || []).map((t) => Math.round(t * 100)).join(','),
+      // 10TH ROUND (item 56): real world z + normal/stalking state — only
+      // meaningful for GABRIEL/ADAM's two-tier approach (see STALK_Z/
+      // NORMAL_Z_MIN); '-' for every other type rather than a misleading 0.
+      z: Math.round(e.z),
+      approachState: (e.type === 'gabriel' || e.type === 'adam')
+        ? (e.z > (e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : ADAM_NORMAL_Z_MIN) ? 'stalking' : 'normal')
+        : '-' },
     input: { mode: d.inputMode, fireBtn: state.input.fireHeld,
       stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
       aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0) },
@@ -777,7 +844,9 @@ function r10UpdateDebugPanel(ts) {
   r10DbgPlayerEl.textContent = 'PLAYER x=' + s.player.x + ' facing=' + s.player.facing +
     ' hp=' + s.player.hp + '/' + s.player.maxHp +
     ' cover=' + s.player.cover + '(' + s.player.coverFacing + ')' +
-    ' dash=' + s.player.dash;
+    ' dash=' + s.player.dash +
+    '\n moveDirSouth=' + s.player.moveDirSouth + ' walkFrame=' + s.player.walkFrame +
+    ' dashDir=' + s.player.dashDir + ' coverCluster=' + s.player.coverCluster;
 
   r10DbgAmmoEl.textContent = 'AMMO ' + s.ammo.current + '/' + s.ammo.magazine + ' reserve=' + s.ammo.reserve +
     '\n reloading=' + s.ammo.reloading + '(' + s.ammo.reloadType + ')' +
@@ -795,7 +864,10 @@ function r10UpdateDebugPanel(ts) {
 
   r10DbgEnemyEl.textContent = 'ENEMY ' + s.enemy.type + ' hp=' + s.enemy.hp + '/' + s.enemy.maxHp +
     '\n lastDmg=' + s.enemy.lastDmg + '@' + s.enemy.lastDmgAt +
-    ' hits=' + s.enemy.hits + ' miss=' + s.enemy.miss;
+    ' hits=' + s.enemy.hits + ' miss=' + s.enemy.miss +
+    '\n invuln=' + s.enemy.invulnerable + ' counterRemain=' + s.enemy.counterPhaseRemainMs +
+    ' thresholds=' + (s.enemy.triggeredThresholds || '-') +
+    '\n z=' + s.enemy.z + ' approach=' + s.enemy.approachState;
 
   r10DbgInputEl.textContent = 'INPUT mode=' + s.input.mode + ' fireBtn=' + s.input.fireBtn +
     '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim +
@@ -830,6 +902,10 @@ function r10FormatDebugText(s) {
   lines.push('hp: ' + s.player.hp + '/' + s.player.maxHp);
   lines.push('cover: ' + s.player.cover + ' (' + s.player.coverFacing + ')');
   lines.push('dash: ' + s.player.dash);
+  lines.push('moveDirSouth: ' + s.player.moveDirSouth);
+  lines.push('walkFrame: ' + s.player.walkFrame);
+  lines.push('dashDir: ' + s.player.dashDir);
+  lines.push('coverCluster: ' + s.player.coverCluster);
   lines.push('');
   lines.push('AMMO');
   lines.push('current: ' + s.ammo.current);
@@ -864,6 +940,11 @@ function r10FormatDebugText(s) {
   lines.push('lastDamageTime: ' + s.enemy.lastDmgAt);
   lines.push('hitCount: ' + s.enemy.hits);
   lines.push('missCount: ' + s.enemy.miss);
+  lines.push('invulnerable: ' + s.enemy.invulnerable);
+  lines.push('counterPhaseRemainingMs: ' + s.enemy.counterPhaseRemainMs);
+  lines.push('triggeredThresholds: ' + (s.enemy.triggeredThresholds || '-'));
+  lines.push('z: ' + s.enemy.z);
+  lines.push('approachState: ' + s.enemy.approachState);
   lines.push('');
   lines.push('INPUT');
   lines.push('mode: ' + s.input.mode);
@@ -1094,6 +1175,46 @@ const ADAM_SPHERE_SPRITES = {
     spriteFrame('assets/adam_sphere/adam_sphere_04.png', 0.1023, 0.8864),
   ],
 };
+// 10TH ROUND (items 37-39): DRONE investigated directly in
+// andre20290810/ACTION-GAME (available locally at /home/user/action-game).
+// Real implementation found there under the "SECURITY DRONE"/`securityRobot`
+// identifiers (buildSecurityDrone(), ~5500 lines of PATROL/SCAN/SNIPER attack
+// logic) with 3 REAL directional images — assets/security/security_robot_
+// {south,west,east}.png — copied read-only into assets/drone/, same as every
+// other enemy's art in this file. No north-facing DRONE asset exists in
+// ACTION-GAME either (the security camera/corridor framing never needs one),
+// so none is fabricated here. bodyTopFrac/bodyBottomFrac below are this
+// project's OWN alpha-channel row-coverage measurement of the 3 real PNGs
+// (same coverage-threshold method the ROID1_SPRITES comment describes —
+// verified with Python/Pillow, not guessed): all 3 are near-full-bleed
+// (topFrac≈0.003-0.004, bottomFrac≈0.996).
+//
+// ACTION-GAME's DRONE has no dedicated "firing" pose art either (its SNIPER
+// attack — red box -> yellow box -> fast bolt -> impact — is a HUD/telegraph
+// effect drawn separately from the body, not a body-pose change); DARKOUT-
+// TPS already has that exact telegraph sequence built for ROID1/ROID2's own
+// sniper attack (see isRoidActivelyFiring()/resolveSniperImpact()), so DRONE
+// reuses it as-is via the shared e.kind='sniper' state machine (see
+// spawnEnemy()) rather than inventing a new attack. search[] mirrors
+// ROID_FACE_FRAME's {right:1, center:2, left:3} index layout so
+// computeEnemyDrawRect()'s existing zone-based selection needs no DRONE-
+// specific branch; center->south (facing the player), right->east,
+// left->west — the 3 real directional frames, used honestly instead of a
+// single reused image. fire[] reuses the same south frame (no animation —
+// there is no second real "fire" pose to ping-pong between).
+const DRONE_SPRITES = {
+  search: [
+    spriteFrame('assets/drone/security_robot_south.png', 0.0039, 0.9961),
+    spriteFrame('assets/drone/security_robot_east.png', 0.0039, 0.9961),  // 1 = right
+    spriteFrame('assets/drone/security_robot_south.png', 0.0039, 0.9961), // 2 = center
+    spriteFrame('assets/drone/security_robot_west.png', 0.0031, 0.9961),  // 3 = left
+    spriteFrame('assets/drone/security_robot_south.png', 0.0039, 0.9961),
+  ],
+  fire: [
+    spriteFrame('assets/drone/security_robot_south.png', 0.0039, 0.9961),
+  ],
+};
+
 // zone -> search-frame-index, copied verbatim from ACTION-GAME's own
 // ROID1_FACE_FRAME/ROID2_FACE_FRAME (game.js ~L5059-5060) — both bosses
 // share the same zone->index layout in the reference game.
@@ -1121,10 +1242,18 @@ const ROID_FACE_FRAME = { right: 1, center: 2, left: 3 };
 // are simplifications of ACTION-GAME's own fuller DEFENSE/counter and
 // double-shot/blockade systems (out of this round's scope) — see the
 // completion report for the honest accounting of what was and wasn't
-// ported. DRONE remains false: no asset/AI/code for it exists anywhere in
-// this repo (re-checked this round, unchanged from prior rounds).
+// ported.
+// 10TH ROUND (items 37-39): DRONE flips to TRUE — this repo's own prior
+// "no asset/AI/code for it exists anywhere" note was true only of THIS
+// repo; ACTION-GAME (now available locally, not checked in prior rounds)
+// has a real, working "SECURITY DRONE" (`securityRobot`/`buildSecurityDrone`)
+// implementation with 3 real directional images (see DRONE_SPRITES). It
+// reuses the SAME sniper state machine ROID1/ROID2 already use (e.kind
+// defaults to 'sniper' for every non-claw type — see spawnEnemy()) rather
+// than a new one, matching ACTION-GAME's own DRONE having no unique attack
+// beyond the ranged sniper telegraph DARKOUT-TPS already ported.
 const ENEMY_IMPLEMENTED = {
-  drone: false, roid1: true, roid2: true, gabriel: true, adamSphere: true, adam: true,
+  drone: true, roid1: true, roid2: true, gabriel: true, adamSphere: true, adam: true,
 };
 const ENEMY_LABEL = {
   drone: 'DRONE', roid1: 'ROID 1', roid2: 'ROID 2', gabriel: 'GABRIEL', adamSphere: 'ADAM SPHERE', adam: 'ADAM',
@@ -1174,10 +1303,14 @@ const ASSETS = {
     // Scoped to NORMAL walk only — BACKSTEP (the special south-facing-
     // camera-away lunge action) is untouched and still uses dashN.
     southWalk: loadImg('assets/player/player_dash_south.png'),
-    // NORTH DASH and SOUTH BACKSTEP both use this same forward-facing
-    // lunge pose (PART 1 fix): the protagonist never turns to face south
-    // in this game, so dash_south.png (a genuine front-on pose, confirmed
-    // by viewing the ACTION-GAME source art) is never used here anymore.
+    // 10TH ROUND (items 1-2): re-investigated assets/player/ — there is
+    // still only ONE south-facing player image on disk
+    // (player_dash_south.png). Per this round's explicit instruction, a
+    // south DASH must now show the player FACING south, not the old
+    // north-facing "BACKSTEP" lunge — so it reuses the SAME south asset
+    // southWalk already uses (this is the only real south art that
+    // exists; nothing was fabricated). dashN is kept for NORTH dash only.
+    dashS: loadImg('assets/player/player_dash_south.png'),
     dashN: loadImg('assets/player/player_dash_north.png'),
     // EAST/WEST DASH: real direction-specific ACTION-GAME art
     // (right_dash.png / left_dash.png), copied read-only — PART 1.
@@ -1199,6 +1332,7 @@ const ASSETS = {
   },
   roid1: ROID1_SPRITES,
   roid2: ROID2_SPRITES,
+  drone: DRONE_SPRITES, // 10TH ROUND items 37-39 — see DRONE_SPRITES comment
   gabriel: {
     idle: loadImg('assets/gabriel/gabriel_idle.png'),
     windup: loadImg('assets/gabriel/gabriel_claw_windup.png'),
@@ -1782,10 +1916,22 @@ const STRUCTURE_KINDS = [
   // (see each case's own guard) — real per-theme equipment/signage
   // silhouettes layered onto the shared corridor skeleton, not a second
   // color filter over the same 8 generic shapes.
-  { kind: 'labTank', spacing: 340 },     // LAB only: cylindrical experiment tank along the wall
+  // 10TH ROUND items 6-9: labTank redesigned from a thin thin/flat ellipse
+  // into a real CAP/GLASS-CYLINDER-LIQUID/BASE structure (see the case
+  // below) — spacing tightened 340->240 so multiple large tanks are
+  // visibly lined up down the corridor at once, per item 8.
+  { kind: 'labTank', spacing: 240 },     // LAB only: cylindrical culture tank along the wall
   { kind: 'labConsole', spacing: 260 },  // LAB only: wall-mounted monitor/console glow
-  { kind: 'armorPlate', spacing: 220 },  // ARMORED only: riveted bulkhead reinforcement band
-  { kind: 'armorHatch', spacing: 300 },  // ARMORED only: recessed blast-hatch panel
+  // 10TH ROUND items 10-12: the old 'armorPlate' (a horizontal bar spanning
+  // the full corridor width at every spacing — the "bridge cross-bar"
+  // clutter from item 11) and 'armorHatch' (a square-with-an-X badge — the
+  // unwanted object from item 10) are REMOVED and replaced by a single new
+  // 'armorGate' kind: a lattice/grid-pattern GATE frame receding into the
+  // distance, per item 12's "暗い回廊 + 格子状GATE" spec. The existing
+  // shared 'warningLight' kind above already provides the "small red
+  // warning lights at the left/right edges, blinking randomly/periodically"
+  // part of item 12 — see THEMES.armored.warn (now red) for the fix there.
+  { kind: 'armorGate', spacing: 330 },   // ARMORED only: lattice GATE/FRAME receding into the corridor
   { kind: 'escapeArrow', spacing: 190 }, // ESCAPE only: floor directional chevron toward the exit
   { kind: 'escapeStrip', spacing: 130 }, // ESCAPE only: emergency edge-lighting strip
 ];
@@ -1827,12 +1973,31 @@ const AMBIENT_FLOOR_CRAWL_SPEED = 115; // was 70
 // "ステージ全体を安全地帯だらけにしないでください"). Recycled the exact
 // same way structures are (see applyForwardDelta), so they keep appearing
 // as the player advances instead of being a one-time, exhaustible set.
-// ---------------------------------------------------------------------
+//
+// 10TH ROUND (items 14-18): a single lone barrel never read as convincing
+// physical cover on real devices ("影に入っただけ" — visually weak even
+// after 9TH ROUND's shadow-sync work). Redesigned as a BARREL CLUSTER: each
+// anchor point below now spawns 2-3 real drum-can entries (own z/lane,
+// close together) instead of one. Every existing per-barrel system —
+// isPlayerInCover(), clampStrafeForBarrels(), clampForwardDeltaForBarrels(),
+// drawOneBarrel()/renderBarrels()/renderBarrelForeground() — is reused
+// completely UNCHANGED and just iterates a few more entries: this is
+// deliberate, so the visual cluster and the COVER judgment can never drift
+// apart (item 17's explicit requirement) — there is no separate "cluster"
+// concept for logic to disagree with, only more of the exact same barrel
+// objects the whole COVER system already trusted before this round.
+const BARREL_CLUSTER_OFFSETS = [
+  { dLane: 0, dZ: 0 },
+  { dLane: 34, dZ: 6 },
+  { dLane: 14, dZ: 52 }, // "少し奥に1本"
+];
 const barrels = [];
 {
   let side = -1;
   for (let z = Z_NEAR + BARREL_SPACING_Z * 0.5; z < Z_FAR; z += BARREL_SPACING_Z) {
-    barrels.push({ z, lane: side * BARREL_LANE_OFFSET });
+    for (const off of BARREL_CLUSTER_OFFSETS) {
+      barrels.push({ z: z + off.dZ, lane: side * BARREL_LANE_OFFSET + off.dLane * side });
+    }
     side *= -1;
   }
 }
@@ -2153,12 +2318,20 @@ function pollGamepad(now) {
     if (edge(2)) state.actions.westDash = true;       // X = WEST DASH
     if (edge(1)) state.actions.eastDash = true;       // B = EAST DASH
     if (edge(0)) state.actions.southDash = true;      // A = SOUTH DASH / BACKSTEP
-    // RELOAD isn't named anywhere in the button spec (every face/shoulder/
-    // trigger button is spoken for by MOVE/AIM/DASH/FIRE/FOCUS/STEALTH/AIM
-    // trim) — left stick click (L3) is the one remaining unused
-    // standard-mapping button, so RELOAD stays there. Touch's own RELOAD
-    // button is unaffected.
-    if (edge(10)) state.actions.reload = true;        // L3 = RELOAD
+    // 10TH ROUND (items 28-29): investigated the real button allocation —
+    // RELOAD had ended up on L3 (left-stick click) because a much earlier
+    // round's comment ("every face/shoulder/trigger is spoken for") treated
+    // LB as fully claimed by FOCUS/AUTO AIM. This round's explicit
+    // instruction is to make LB the PRIMARY controller RELOAD in COMBAT
+    // MODE. LB is a HELD button for FOCUS but a rising EDGE for RELOAD —
+    // the two are not mutually exclusive at the input layer (pressing LB
+    // starts a reload once AND keeps FOCUS active for as long as it's held
+    // afterward), so this adds LB as an edge-triggered RELOAD trigger
+    // without removing FOCUS. L3 is kept working too (harmless — reload is
+    // idempotent while already reloading/full), so no existing muscle
+    // memory breaks, but LB is now the one this round's spec asks for.
+    if (edge(4)) state.actions.reload = true;         // LB = RELOAD (primary, 10TH ROUND)
+    if (edge(10)) state.actions.reload = true;        // L3 = RELOAD (legacy, kept working)
     // 4th round: Start/Menu (standard mapping button 9) toggles PAUSE —
     // previously unused. Touch's own on-screen PAUSE button is unaffected.
     if (edge(9)) state.actions.pauseToggle = true;
@@ -2544,28 +2717,46 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   if (actions.stealth) { p.stealth = !p.stealth; p.stealthToggledAt = now; }
 
   // RELOAD — 9TH ROUND (items 3-5): AMMO=0 now starts an AUTO RELOAD on its
-  // own, in addition to the existing manual RELOAD button (L3/touch-reload,
-  // unchanged). Root cause of the old permanent NO-AMMO lock: this block
-  // previously had NO branch that could ever start a reload except
-  // `actions.reload` itself — see AUTO_RELOAD_MS's own comment.
-  if (p.ammo <= 0 && !p.reloading && p.reserve > 0) {
+  // own, in addition to the existing manual RELOAD button. 10TH ROUND
+  // (items 28/30/31) real-device report: after several magazines the
+  // player permanently stopped being able to fire again, and MANUAL RELOAD
+  // appeared to do nothing. Root-caused by tracing the FULL input->refill
+  // path: both trigger conditions here required `p.reserve > 0` — once
+  // p.reserve (finite, RESERVE_MAX=48) hit exactly 0, NEITHER AUTO nor
+  // MANUAL reload could ever START again (the gate itself excluded it), so
+  // the magazine could never be topped up again — a genuine permanent
+  // lockout, not a one-off fluke. Per this round's explicit "MAGAZINEは
+  // 有限だが弾薬総量が尽きて永久に撃てなくなる状態は避けたい" requirement:
+  // the reserve>0 gate is removed from both triggers (a reload can always
+  // at least attempt to start), and the completion step below resupplies
+  // p.reserve back to RESERVE_MAX BEFORE computing this reload's own
+  // refill amount whenever it would otherwise be empty — so the magazine
+  // loop (fire -> empty -> reload -> full again) can never permanently
+  // break, while reserve still ticks down and matters during normal play.
+  if (actions.reload && DEBUG_MODE) r10DebugLog('RELOAD INPUT');
+  if (p.ammo <= 0 && !p.reloading) {
     p.reloading = true;
     p.reloadType = 'auto';
     p.reloadUntil = now + AUTO_RELOAD_MS;
-    if (DEBUG_MODE) r10DebugLog('AUTO RELOAD START');
-  } else if (actions.reload && !p.reloading && p.ammo < MAG_SIZE && p.reserve > 0) {
+    if (DEBUG_MODE) r10DebugLog('AUTO RELOAD START (ammo=0 reserve=' + p.reserve + ')');
+  } else if (actions.reload && !p.reloading && p.ammo < MAG_SIZE) {
     p.reloading = true;
     p.reloadType = 'manual';
     p.reloadUntil = now + RELOAD_MS;
-    if (DEBUG_MODE) r10DebugLog('MANUAL RELOAD START');
+    if (DEBUG_MODE) r10DebugLog('MANUAL RELOAD START (ammo=' + p.ammo + ' reserve=' + p.reserve + ')');
+  } else if (actions.reload && DEBUG_MODE) {
+    r10DebugLog('RELOAD BLOCKED: ' + (p.reloading ? 'ALREADY RELOADING' : 'MAGAZINE FULL'));
   }
   if (p.reloading && now >= p.reloadUntil) {
+    if (p.reserve <= 0) p.reserve = RESERVE_MAX; // auto-resupply — see comment above
+    const ammoBefore = p.ammo, reserveBefore = p.reserve;
     const need = MAG_SIZE - p.ammo;
     const take = Math.min(need, p.reserve);
     p.ammo += take;
     p.reserve -= take;
     p.reloading = false;
-    if (DEBUG_MODE) r10DebugLog((p.reloadType === 'auto' ? 'AUTO' : 'MANUAL') + ' RELOAD COMPLETE (ammo=' + p.ammo + ')');
+    if (DEBUG_MODE) r10DebugLog((p.reloadType === 'auto' ? 'AUTO' : 'MANUAL') + ' RELOAD COMPLETE (ammo ' +
+      ammoBefore + '->' + p.ammo + ', reserve ' + reserveBefore + '->' + p.reserve + ')');
   }
 
   // 4th round: FOCUS / AUTO AIM (LB / touch-focus), replacing FLASH. Held +
@@ -2888,6 +3079,27 @@ function isPlayerInCover() {
   return false;
 }
 
+// 10TH ROUND (item 56): DEBUG-only — which BARREL CLUSTER is currently
+// providing cover, if any. Deliberately a read-only re-scan of the exact
+// same barrels/radius isPlayerInCover() already uses (never a second
+// judgment source); clusterIndex is derived from the array position only
+// (BARREL_CLUSTER_OFFSETS emits exactly 3 entries per anchor point, see
+// the barrels[] build loop), so this can never disagree with the real
+// COVER judgment above.
+function r10DebugCoverClusterId() {
+  const playerScreenX = state.centerX + state.player.strafeOffset;
+  for (let i = 0; i < barrels.length; i++) {
+    const b = barrels[i];
+    if (b.z > BARREL_TOUCH_Z_MAX) continue;
+    const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
+    const radius = BARREL_TOUCH_RADIUS_PX * proj.scale + COVER_TOUCH_SLOP_PX;
+    if (Math.abs(proj.x - playerScreenX) < radius) {
+      return { barrelIndex: i, clusterId: Math.floor(i / BARREL_CLUSTER_OFFSETS.length) };
+    }
+  }
+  return { barrelIndex: -1, clusterId: -1 };
+}
+
 function showCenterMsg(text, color) {
   centerWarningEl.textContent = text;
   centerWarningEl.hidden = false;
@@ -3071,12 +3283,12 @@ function spawnEnemy(type) {
   // generic z=900 as ROID1/ROID2/ADAM SPHERE — since e.z<900 gates their own
   // idle->attack roll (see updateEnemy()), a static spawn AT 900 meant they
   // could never even begin an attack cycle without the player first walking
-  // forward, and read as "tiny and far away" at battle start. Spawn them
-  // directly at their own NORMAL/STALKING floor instead — the same baseline
-  // distance they settle back to after every attack (GABRIEL_NORMAL_Z_MIN /
-  // ADAM_NORMAL_Z_MIN), per the user's "初期位置と通常時の基準距離を統一"
-  // request. ROID1/ROID2/ADAM SPHERE's own 900 spawn is untouched.
-  e.z = type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (type === 'adam' ? ADAM_NORMAL_Z_MIN : 900);
+  // forward, and read as "tiny and far away" at battle start.
+  // 10TH ROUND (item 20): spawn at STALK_Z (not NORMAL_Z_MIN directly) —
+  // still much closer than the old 900, but leaves real room for the new
+  // idle-state autonomous approach (see updateEnemy()) to visibly close the
+  // distance down to NORMAL_Z_MIN instead of starting already pinned there.
+  e.z = type === 'gabriel' ? GABRIEL_STALK_Z : (type === 'adam' ? ADAM_STALK_Z : 900);
   e.lane = 0;
   e.laneTarget = 0;
   e.facing = 'east';
@@ -3086,8 +3298,18 @@ function spawnEnemy(type) {
   e.attackUntil = 0;
   e.nextIdleCheckAt = 0;
   e.kind = (type === 'gabriel' || type === 'adam') ? 'claw' : 'sniper';
-  e.hp = ENEMY_MAX_HP;
-  e.maxHp = ENEMY_MAX_HP;
+  // 10TH ROUND (item 40): per-type max HP — ROID1/ROID2 get ROID_MAX_HP
+  // (600), every other type keeps the shared ENEMY_MAX_HP (300).
+  const spawnMaxHp = (type === 'roid1' || type === 'roid2') ? ROID_MAX_HP : ENEMY_MAX_HP;
+  e.hp = spawnMaxHp;
+  e.maxHp = spawnMaxHp;
+  // 10TH ROUND (items 41-48): ROID1/ROID2 counter-phase state — reset fresh
+  // on every spawn so a new instance never inherits a previous one's
+  // already-triggered thresholds or a stuck invulnerable flag. Harmless,
+  // unused fields for every other enemy type.
+  e.triggeredThresholds = [];
+  e.invulnerable = false;
+  e.counterPhaseUntil = 0;
   e.hitFlashUntil = 0;
   e.roidFireFrame = 0;
   e.roidFireDir = 1;
@@ -3208,6 +3430,15 @@ function updateEnemy(dt, now) {
   updateEnemyFacing(dt, now);
   updateRoidAnimation(dt, now);
 
+  // 10TH ROUND (items 45/47): ends the counter-phase invulnerability window
+  // on its own fixed timer (ROID_COUNTER_PHASE_MS) — independent of
+  // whatever attackState the existing sniper/missile machinery happens to
+  // be in when the window closes, so it can never get stuck open.
+  if (e.invulnerable && now >= e.counterPhaseUntil) {
+    e.invulnerable = false;
+    if (DEBUG_MODE) r10DebugLog('COUNTER PHASE END (' + (ENEMY_LABEL[e.type] || e.type) + ')');
+  }
+
   if (e.attackState === 'idle') {
     // 9TH ROUND (item 30): advance GABRIEL's south-walk-loop frame timer
     // whenever NORMAL/STALKING (idle) — mirrors the player's own
@@ -3222,6 +3453,20 @@ function updateEnemy(dt, now) {
       if (e.clawWalkElapsedMs > 160) {
         e.clawWalkElapsedMs = 0;
         e.clawWalkFrame = (e.clawWalkFrame + 1) % 3;
+      }
+      // 10TH ROUND (items 19-21): autonomous idle-state approach —
+      // previously ONLY the player's own forward movement (via
+      // applyForwardDelta()) ever changed e.z during idle; standing still
+      // meant GABRIEL/ADAM's walk-loop animation played with zero actual
+      // motion ("足踏み" — marching in place, confirmed via real-device
+      // report). This closes the STALK_Z -> NORMAL_Z_MIN gap on its own at
+      // CLAW_STALK_SPEED, entirely independent of player input, and never
+      // goes below NORMAL_Z_MIN (the same hard floor applyForwardDelta()'s
+      // own idle-only gate already enforces) — ATTACK's own 'approach'
+      // sub-state is still the only thing that ever closes past that floor.
+      const stalkFloor = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : ADAM_NORMAL_Z_MIN;
+      if (e.z > stalkFloor) {
+        e.z = Math.max(stalkFloor, e.z - CLAW_STALK_SPEED * dt);
       }
     }
     if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500;
@@ -3325,7 +3570,12 @@ function updateEnemy(dt, now) {
         e.clawApproachStartZ = e.z;
       }
     } else if (e.attackState === 'recovery') {
-      const targetZ = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : ADAM_NORMAL_Z_MIN;
+      // 10TH ROUND (items 19-24): eases back out to STALK_Z (not straight to
+      // NORMAL_Z_MIN) — "back off after the attack, then resume walking
+      // closer" per this round's explicit approach/attack/recovery/re-
+      // approach loop, rather than snapping straight back to the closest
+      // normal-state distance with nothing left to visibly walk through.
+      const targetZ = e.type === 'gabriel' ? GABRIEL_STALK_Z : ADAM_STALK_Z;
       const tNorm = clamp(1 - (e.attackUntil - now) / CLAW_RECOVERY_MS, 0, 1);
       const eased = 1 - Math.pow(1 - tNorm, 2);
       e.z = e.clawApproachStartZ + (targetZ - e.clawApproachStartZ) * eased;
@@ -3487,7 +3737,7 @@ function computeEnemyDrawRect() {
     : (isRoidActivelyFiring(performance.now()) ? sprites.fire[e.roidFireFrame] : sprites.search[ROID_FACE_FRAME[e.zone] != null ? ROID_FACE_FRAME[e.zone] : 2]);
   const img = frame.img;
 
-  const targetBodyHeightPx = (e.type === 'adamSphere' ? ADAM_SPHERE_WORLD_HEIGHT : ROID_WORLD_HEIGHT) * proj.scale;
+  const targetBodyHeightPx = (e.type === 'adamSphere' ? ADAM_SPHERE_WORLD_HEIGHT : e.type === 'drone' ? DRONE_WORLD_HEIGHT : ROID_WORLD_HEIGHT) * proj.scale;
   const ready = imgReady(img);
   const scale = ready ? computeBodyVisualScale(frame, targetBodyHeightPx) : targetBodyHeightPx / 900;
   const nativeW = ready ? img.naturalWidth : 640;
@@ -3675,19 +3925,49 @@ function updateBullets(now) {
       // itself never decreased — not a gauge-only display bug (no gauge
       // existed at all yet either, see the new #enemy-hud markup/updateHud()
       // below). This is the actual fix: apply real damage here.
-      const hpBefore = e.hp;
-      e.hp = Math.max(0, e.hp - BULLET_DAMAGE);
-      e.hitFlashUntil = now + 120;
-      spawnPlayerImpact(b.x2, b.y2, now);
-      if (DEBUG_MODE) {
-        r10DebugState.hitCount++;
-        r10DebugState.lastHitTestResult = 'HIT dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
-        r10DebugState.lastDamage = BULLET_DAMAGE;
-        r10DebugState.lastDamageAt = now;
-        r10DebugLog('HIT ' + (ENEMY_LABEL[e.type] || e.type) + ' dist=' + dist.toFixed(1) + ' r=' + hitRadius.toFixed(1));
-        r10DebugLog('DAMAGE ' + BULLET_DAMAGE + ' HP ' + hpBefore + '->' + e.hp);
+      // 10TH ROUND (items 45/48): ROID1/ROID2 counter-phase invulnerability
+      // — a real hit still spawns the impact spark (visual confirmation the
+      // shot landed) but HP is untouched while e.invulnerable is true.
+      if (e.invulnerable) {
+        spawnPlayerImpact(b.x2, b.y2, now);
+        if (DEBUG_MODE) r10DebugLog('DAMAGE BLOCKED: INVULNERABLE (' + (ENEMY_LABEL[e.type] || e.type) + ')');
+      } else {
+        const hpBefore = e.hp;
+        e.hp = Math.max(0, e.hp - BULLET_DAMAGE);
+        e.hitFlashUntil = now + 120;
+        spawnPlayerImpact(b.x2, b.y2, now);
+        if (DEBUG_MODE) {
+          r10DebugState.hitCount++;
+          r10DebugState.lastHitTestResult = 'HIT dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
+          r10DebugState.lastDamage = BULLET_DAMAGE;
+          r10DebugState.lastDamageAt = now;
+          r10DebugLog('HIT ' + (ENEMY_LABEL[e.type] || e.type) + ' dist=' + dist.toFixed(1) + ' r=' + hitRadius.toFixed(1));
+          r10DebugLog('DAMAGE ' + BULLET_DAMAGE + ' HP ' + hpBefore + '->' + e.hp);
+        }
+        // 10TH ROUND (items 41-48): ROID1/ROID2 20%-threshold counter phase.
+        // Checked high-to-low so a single large/overlapping hit that crosses
+        // more than one threshold in one frame only ever triggers the
+        // HIGHEST untriggered one (still exactly one trigger this frame —
+        // the others remain available for later hits, never skipped or
+        // double-fired). e.triggeredThresholds permanently marks each one
+        // used so revisiting the same HP% later (impossible for HP, but
+        // defensive) can never refire it.
+        if ((e.type === 'roid1' || e.type === 'roid2') && e.hp > 0) {
+          const pct = e.hp / e.maxHp;
+          for (const t of ROID_COUNTER_THRESHOLDS) {
+            if (pct <= t && !e.triggeredThresholds.includes(t)) {
+              e.triggeredThresholds.push(t);
+              e.invulnerable = true;
+              e.counterPhaseUntil = now + ROID_COUNTER_PHASE_MS;
+              e.hitFlashUntil = now + ROID_COUNTER_BLINK_MS; // reuses the existing hit-flash blink — no new visual system
+              e.nextIdleCheckAt = now; // force the next attack roll immediately, so the counter phase reads as a real reprisal, not a coincidence
+              if (DEBUG_MODE) r10DebugLog('COUNTER PHASE START (' + (ENEMY_LABEL[e.type] || e.type) + ' @' + Math.round(t * 100) + '%)');
+              break;
+            }
+          }
+        }
+        if (e.hp <= 0) startEnemyDeath(now);
       }
-      if (e.hp <= 0) startEnemyDeath(now);
     } else if (DEBUG_MODE) {
       r10DebugState.missCount++;
       r10DebugState.lastHitTestResult = 'MISS dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
@@ -3835,16 +4115,27 @@ function renderStructure(s, theme) {
       break;
     }
     case 'warningLight': {
+      // 10TH ROUND item 12 ("赤い光が暗い回廊を部分的に照らす"): the lamp
+      // itself already existed (left/right edges, blink via per-instance
+      // phase) — added a soft low-alpha glow behind it so it visibly
+      // spills a little light into the dark corridor instead of just
+      // being a bare dot. Color still comes entirely from theme.warn, so
+      // this stays red for ARMORED without a theme-specific branch.
       const side = s.phase > Math.PI ? 1 : -1;
       const pt = project(side * half * 0.96, CORRIDOR_CEIL_Y * 0.55, s.z);
       const blink = Math.sin(state.timeSec * 6 + s.phase) > 0.4;
       if (blink) {
+        ctx.save();
         ctx.fillStyle = theme.warn;
+        ctx.globalAlpha = Math.min(0.35, pt.scale * 0.5);
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, Math.max(4, 14 * pt.scale), 0, Math.PI * 2);
+        ctx.fill();
         ctx.globalAlpha = Math.min(1, pt.scale * 1.6);
         ctx.beginPath();
         ctx.arc(pt.x, pt.y, Math.max(1.5, 4 * pt.scale), 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 1;
+        ctx.restore();
       }
       break;
     }
@@ -3853,22 +4144,91 @@ function renderStructure(s, theme) {
     // STRUCTURE_KINDS comment for why these are in the same shared pool
     // but each only ever draws under its own theme.
     case 'labTank': {
+      // 10TH ROUND items 6-8: was a single flat ellipse ("細長い楕円" —
+      // read as a capsule, not a tank). Rebuilt as the explicit structure
+      // the spec requires: TOP CAP (thick mechanical cap) / GLASS CYLINDER
+      // filled with culture LIQUID (+ rising bubbles + a highlight streak)
+      // / BASE UNIT (thick mechanical base), stacked vertically. top/bot
+      // share the same world z, so they project to the same x/scale —
+      // this is a true vertical column, not an ellipse.
       if (state.theme !== 'lab') break;
       const side = s.phase > Math.PI ? 1 : -1;
-      const top = project(side * half * 0.9, CORRIDOR_CEIL_Y * 0.55, s.z);
-      const bot = project(side * half * 0.9, CORRIDOR_FLOOR_Y * 0.85, s.z);
-      const rx = Math.max(2, 16 * top.scale);
-      const cy = (top.y + bot.y) / 2;
-      const ry = Math.max(4, (bot.y - top.y) / 2);
+      const top = project(side * half * 0.88, CORRIDOR_CEIL_Y * 0.62, s.z);
+      const bot = project(side * half * 0.88, CORRIDOR_FLOOR_Y * 0.92, s.z);
+      const scale = top.scale;
+      const totalH = bot.y - top.y;
+      if (scale < 0.02 || totalH < 3) break; // too far / degenerate — skip
+      const bodyW = Math.max(3, 22 * scale);
+      const capH = Math.max(2, totalH * 0.14);
+      const baseH = Math.max(2, totalH * 0.16);
+      const glassH = Math.max(1, totalH - capH - baseH);
+      const cx = top.x;
+      const capY = top.y;
+      const glassY = capY + capH;
+      const baseY = glassY + glassH;
+      const alpha = Math.min(1, scale * 1.6);
+
       ctx.save();
-      ctx.globalAlpha = 0.55;
+      ctx.globalAlpha = alpha;
+
+      // BASE UNIT (thick mechanical base)
       ctx.fillStyle = theme.wallDark;
-      ctx.beginPath(); ctx.ellipse(top.x, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
-      const pulse = 0.4 + 0.35 * (0.5 + 0.5 * Math.sin(state.timeSec * 2 + s.phase));
-      ctx.globalAlpha = pulse * Math.min(1, top.scale * 1.5);
-      ctx.strokeStyle = theme.accent;
-      ctx.lineWidth = Math.max(1, 2 * top.scale);
-      ctx.beginPath(); ctx.ellipse(top.x, cy, rx * 0.6, ry * 0.85, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillRect(cx - bodyW * 0.62, baseY, bodyW * 1.24, baseH);
+
+      // GLASS CYLINDER: faint glass tint, then culture LIQUID fill with a
+      // gently wobbling level so it doesn't read as a static drawing.
+      const liquidTopFrac = 0.18 + 0.05 * Math.sin(state.timeSec * 1.3 + s.phase);
+      const liquidTopY = glassY + glassH * liquidTopFrac;
+      ctx.globalAlpha = alpha * 0.35;
+      ctx.fillStyle = theme.wallDark;
+      ctx.fillRect(cx - bodyW / 2, glassY, bodyW, glassH);
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.fillStyle = theme.accent;
+      ctx.fillRect(cx - bodyW / 2, liquidTopY, bodyW, baseY - liquidTopY);
+
+      // rising bubbles through the liquid
+      ctx.globalAlpha = alpha * 0.85;
+      for (let i = 0; i < 3; i++) {
+        const bp = (state.timeSec * 0.35 + s.phase + i / 3) % 1;
+        const by = baseY - bp * (baseY - liquidTopY);
+        if (by < liquidTopY) continue;
+        const bx = cx + Math.sin(i * 2.1 + s.phase) * bodyW * 0.22;
+        ctx.beginPath();
+        ctx.arc(bx, by, Math.max(0.6, 1.4 * scale), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // glass highlight streak + cylinder outline
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(0.5, 1.4 * scale);
+      ctx.beginPath();
+      ctx.moveTo(cx - bodyW * 0.28, glassY + glassH * 0.08);
+      ctx.lineTo(cx - bodyW * 0.28, baseY - glassH * 0.06);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.strokeStyle = theme.wallDark;
+      ctx.lineWidth = Math.max(0.6, 1.2 * scale);
+      ctx.strokeRect(cx - bodyW / 2, glassY, bodyW, glassH);
+
+      // TOP CAP (thick mechanical cap) + small indicator + thin piping
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = theme.wallDark;
+      ctx.fillRect(cx - bodyW * 0.58, capY, bodyW * 1.16, capH);
+      if (Math.sin(state.timeSec * 2.4 + s.phase) > 0.3) {
+        ctx.fillStyle = theme.accent;
+        ctx.beginPath();
+        ctx.arc(cx, capY + capH * 0.5, Math.max(0.8, 1.6 * scale), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = alpha * 0.55;
+      ctx.strokeStyle = theme.wallDark;
+      ctx.lineWidth = Math.max(0.5, 1 * scale);
+      ctx.beginPath();
+      ctx.moveTo(cx, capY);
+      ctx.lineTo(cx, Math.max(0, capY - capH * 1.6));
+      ctx.stroke();
+
       ctx.restore();
       break;
     }
@@ -3888,38 +4248,47 @@ function renderStructure(s, theme) {
       ctx.restore();
       break;
     }
-    case 'armorPlate': {
+    case 'armorGate': {
+      // 10TH ROUND items 10-12: replaces the removed 'armorPlate' (a
+      // full-width horizontal bar at every spacing — read as "bridge
+      // cross-bars" clutter) and 'armorHatch' (an unwanted square-with-an-X
+      // badge). Restored to the simpler, previously-intended ARMORED look:
+      // a lattice/grid-pattern GATE FRAME spanning the full corridor
+      // cross-section, receding into the distance — outer frame + a few
+      // vertical lattice bars + a single mid-height cross-brace, nothing
+      // more. The red warning lights are the separate, shared
+      // 'warningLight' kind above (see THEMES.armored.warn).
       if (state.theme !== 'armored') break;
-      const l = project(-half, CORRIDOR_FLOOR_Y * 0.15, s.z);
-      const r = project(half, CORRIDOR_FLOOR_Y * 0.15, s.z);
+      const topL = project(-half * 0.98, CORRIDOR_CEIL_Y * 0.92, s.z);
+      const topR = project(half * 0.98, CORRIDOR_CEIL_Y * 0.92, s.z);
+      const botL = project(-half * 0.98, CORRIDOR_FLOOR_Y * 0.92, s.z);
+      const botR = project(half * 0.98, CORRIDOR_FLOOR_Y * 0.92, s.z);
+      const scale = topL.scale;
+      if (scale < 0.015) break;
+      const alpha = Math.min(1, scale * 2.2);
       ctx.save();
+      ctx.globalAlpha = alpha;
       ctx.strokeStyle = theme.wallDark;
-      ctx.lineWidth = Math.max(2, 7 * l.scale);
-      ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(r.x, r.y); ctx.stroke();
-      const rivets = 5;
-      ctx.fillStyle = theme.accent;
-      ctx.globalAlpha = 0.8;
-      for (let i = 1; i < rivets; i++) {
-        const rx = l.x + ((r.x - l.x) * i) / rivets;
-        const ry = l.y + ((r.y - l.y) * i) / rivets;
-        ctx.beginPath(); ctx.arc(rx, ry, Math.max(1, 2 * l.scale), 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.restore();
-      break;
-    }
-    case 'armorHatch': {
-      if (state.theme !== 'armored') break;
-      const side = s.phase > Math.PI ? 1 : -1;
-      const a = project(side * half * 0.97, CORRIDOR_CEIL_Y * 0.45, s.z);
-      const size = Math.max(3, 30 * a.scale);
-      ctx.save();
-      ctx.strokeStyle = theme.warn;
-      ctx.lineWidth = Math.max(1, 2 * a.scale);
-      ctx.globalAlpha = 0.75;
-      ctx.strokeRect(a.x - size / 2, a.y - size / 2, size, size);
+      ctx.lineWidth = Math.max(1, 6 * scale);
       ctx.beginPath();
-      ctx.moveTo(a.x - size / 2, a.y - size / 2); ctx.lineTo(a.x + size / 2, a.y + size / 2);
-      ctx.moveTo(a.x + size / 2, a.y - size / 2); ctx.lineTo(a.x - size / 2, a.y + size / 2);
+      ctx.moveTo(botL.x, botL.y); ctx.lineTo(topL.x, topL.y); ctx.lineTo(topR.x, topR.y); ctx.lineTo(botR.x, botR.y);
+      ctx.stroke();
+      // lattice: a few vertical bars inside the frame
+      ctx.lineWidth = Math.max(0.6, 2 * scale);
+      ctx.globalAlpha = alpha * 0.8;
+      const bars = 5;
+      for (let i = 1; i < bars; i++) {
+        const f = i / bars;
+        const tx = topL.x + (topR.x - topL.x) * f, ty = topL.y + (topR.y - topL.y) * f;
+        const bx = botL.x + (botR.x - botL.x) * f, by = botL.y + (botR.y - botL.y) * f;
+        ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(bx, by); ctx.stroke();
+      }
+      // single mid-height cross-brace (not a repeating wall of bars)
+      ctx.lineWidth = Math.max(0.8, 3 * scale);
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.beginPath();
+      ctx.moveTo((topL.x + botL.x) / 2, (topL.y + botL.y) / 2);
+      ctx.lineTo((topR.x + botR.x) / 2, (topR.y + botR.y) / 2);
       ctx.stroke();
       ctx.restore();
       break;
@@ -4196,16 +4565,18 @@ function renderPlayer(theme) {
   // 置き換わるため（FIRE_POSE_SCALE_BOOSTの二重適用を避ける）。
   let fireScaleBoost = (firing && !usingCoverPose) ? FIRE_POSE_SCALE_BOOST : 1;
 
-  // PART 1: NORTH DASH and SOUTH BACKSTEP both use the same north-facing
-  // lunge pose — the character never turns to face south in this game, so
-  // BACKSTEP no longer shows a front-on image. EAST/WEST DASH use real
-  // direction-specific art so the dash direction actually reads visually.
-  // DASH always wins over the fire-pose boost — it already has its own
-  // distinct pose, no need to also enlarge it. (usingCoverPose is already
-  // guaranteed false here whenever dashActive is true, so this never
-  // fights the COVER branch above.)
+  // 10TH ROUND (items 1-2): SOUTH dash (fwdDashSign<0, the old "BACKSTEP")
+  // now shows the real south-facing pose instead of the north-facing lunge
+  // — unifies with normal SOUTH walk and SOUTH COVER, which already face
+  // south (per this round's explicit "南方向の入力なら常にSOUTHを向く"
+  // rule). NORTH dash (fwdDashSign>0) is unchanged. EAST/WEST DASH use
+  // real direction-specific art so the dash direction actually reads
+  // visually. DASH always wins over the fire-pose boost — it already has
+  // its own distinct pose, no need to also enlarge it. (usingCoverPose is
+  // already guaranteed false here whenever dashActive is true, so this
+  // never fights the COVER branch above.)
   if (nowTs < p.fwdDashUntil) {
-    img = ASSETS.player.dashN;
+    img = p.fwdDashSign > 0 ? ASSETS.player.dashN : ASSETS.player.dashS;
     fireScaleBoost = 1;
   } else if (nowTs < p.dashUntil) {
     img = p.dashDir > 0 ? ASSETS.player.dashE : ASSETS.player.dashW;
@@ -4254,6 +4625,19 @@ function renderPlayer(theme) {
     drawW = img.naturalWidth * baseScale * p.scale;
     dx = cx - drawW / 2;
     dy = bottomY - drawH;
+    // 10TH ROUND (items 3-4): SOUTH WALK has only ONE real south-facing
+    // image on disk (see ASSETS.player.southWalk/dashS above) — no 3-frame
+    // cycle like NORTH's walk[] exists, so holding D-PAD/STICK DOWN used
+    // to show a single frozen picture instead of reading as walking.
+    // Rather than fabricate frames or fake it with an unrelated pose swap,
+    // this applies a small Canvas-only body-bob (foot-anchored: only dy
+    // moves, drawH/dx stay fixed so the feet never visibly slide off the
+    // ground plane) synced to the SAME p.walkTimer/walkFrame cadence NORTH's
+    // own walk cycle already uses, so the footstep rhythm matches exactly.
+    if (img === ASSETS.player.southWalk) {
+      const walkPhase = (p.walkFrame + p.walkTimer / 0.14) / 3;
+      dy += Math.sin(walkPhase * Math.PI * 2) * (drawH * 0.012);
+    }
   }
   // 5TH ROUND PART 12: short damage-blink — a brief brightness flash on the
   // player sprite the instant real damage lands (see PLAYER_HIT_FLASH_MS /
@@ -4792,19 +5176,17 @@ function updateHud() {
   const pct = Math.round((p.hp / PLAYER_MAX_HP) * 100);
   if (pct !== p.lastHpFillPct) { hpFillEl.style.width = pct + '%'; p.lastHpFillPct = pct; }
 
-  const ammoText = String(p.reloading ? '...' : p.ammo);
-  if (ammoText !== p.lastAmmoText) { ammoCountEl.textContent = ammoText; p.lastAmmoText = ammoText; }
-  ammoReserveEl.textContent = p.reserve;
-
-  // 9TH ROUND (items 4/6): AMMO readout directly under LIFE — current/
-  // MAGAZINE CAPACITY (not the reserve pool ammoReserveEl already shows),
-  // plus a "RELOADING..." line while reloading so 0-ammo is never a silent
-  // dead end on screen.
+  // 10TH ROUND (items 25-26): single AMMO readout, current/MAGAZINE
+  // CAPACITY, directly under FOCUS — plus a "RELOADING..." line while
+  // reloading so 0-ammo is never a silent dead end on screen. p.reserve is
+  // no longer shown in the main HUD (still tracked internally and visible
+  // in DEBUG) since a player only ever needs to reason about the
+  // magazine during normal play.
   if (p.ammo !== p.lastAmmoBelowHpCount || p.reloading !== p.lastAmmoBelowHpReloading) {
-    ammoBelowHpCountEl.textContent = p.ammo;
-    ammoBelowHpReloadingEl.hidden = !p.reloading;
-    ammoBelowHpReadoutEl.classList.toggle('empty', p.ammo <= 0);
-    ammoBelowHpReadoutEl.classList.toggle('low', p.ammo > 0 && p.ammo <= Math.ceil(MAG_SIZE * 0.25));
+    ammoHudCountEl.textContent = p.ammo;
+    ammoHudReloadingEl.hidden = !p.reloading;
+    ammoHudReadoutEl.classList.toggle('empty', p.ammo <= 0);
+    ammoHudReadoutEl.classList.toggle('low', p.ammo > 0 && p.ammo <= Math.ceil(MAG_SIZE * 0.25));
     p.lastAmmoBelowHpCount = p.ammo;
     p.lastAmmoBelowHpReloading = p.reloading;
   }
@@ -5263,4 +5645,9 @@ window.__darkoutTps = {
   // 9TH ROUND: STAGE TYPE / GAME MODE independence — exposed for automated
   // testing only.
   setGameMode,
+  // 10TH ROUND: real player-bullet-vs-enemy damage path — exposed for
+  // automated testing only, so the ROID counter-phase threshold logic can
+  // be exercised through the actual code path it lives in (updateBullets())
+  // instead of a test faking the resulting state directly.
+  updateBullets,
 };

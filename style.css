@@ -292,8 +292,8 @@ html, body {
   letter-spacing: 0.05em;
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
 }
-#ammo-readout { color: #e0e6ea; margin-bottom: 3px; }
-#ammo-count { font-weight: 700; }
+/* 10TH ROUND (items 25-27): AMMO removed from here — it now lives in
+   exactly ONE place, #ammo-hud below #focus-hud (see its own rule). */
 #stealth-readout { color: #7fd3ff; opacity: 0.85; }
 #stealth-readout.active #stealth-state { color: #7fffb0; font-weight: 700; }
 
@@ -390,13 +390,42 @@ html, body {
   transition: width 0.1s ease-out;
 }
 
-/* 4th round: PAUSE button — always visible regardless of touch-controls
-   visibility (spec: never hide the minimum UI needed to progress the
-   game). Placed below #focus-hud so it never overlaps #hud-top-right or
-   #enemy-hud above it. */
-#pause-btn {
+/* 10TH ROUND (items 25-27): AMMO now stacks directly below #focus-hud
+   (real-device report: it used to be duplicated at top-right AND under
+   LIFE, and PAUSE sat right where AMMO needed to go). Same right-aligned
+   column, same font treatment as the old under-HP readout it replaces. */
+#ammo-hud {
   position: absolute;
   top: 128px;
+  right: max(14px, env(safe-area-inset-right));
+  text-align: right;
+  z-index: 45;
+}
+#ammo-hud-readout {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #e0e6ea;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+#ammo-hud-readout.low { color: #ffb85e; }
+#ammo-hud-readout.empty { color: #ff6b6b; }
+#ammo-hud-reloading {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #ffcf5c;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+
+/* 4th round: PAUSE button — always visible regardless of touch-controls
+   visibility (spec: never hide the minimum UI needed to progress the
+   game). 10TH ROUND: pushed further down the same right-hand column, below
+   the new #ammo-hud, so it no longer sits where AMMO needs to be and stays
+   less likely to be brushed by accident while reading AMMO/FOCUS. */
+#pause-btn {
+  position: absolute;
+  top: 164px;
   right: max(14px, env(safe-area-inset-right));
   z-index: 55;
   font-size: 9px;
@@ -717,9 +746,7 @@ body.escape-mode .touch-escape-only { display: block; }
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
 }
 body.escape-mode #escape-timeleft-readout { display: block; }
-body.escape-mode #ammo-readout,
-body.escape-mode #ammo-below-hp-readout,
-body.escape-mode #ammo-below-hp-reloading,
+body.escape-mode #ammo-hud,
 body.escape-mode #stealth-readout,
 body.escape-mode #enemy-hud,
 body.escape-mode #focus-hud,
