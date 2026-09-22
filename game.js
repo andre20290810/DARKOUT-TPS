@@ -94,6 +94,40 @@ const ESCAPE_SOUTH_DASH_DISTANCE_Z = 260;    // A — accelerate further in the 
 const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 200; // Y — brief backstep against the direction of travel
 const ESCAPE_FWD_DASH_DURATION_MS = 220;
 const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval between SOUTH/WEST/EAST frames (WEST/EAST only as of 8TH ROUND — see updateEscapePlayer())
+// 9TH ROUND (item 36-38): ESCAPE MODE had no time-limit clear condition at
+// all before this round — investigated first, confirmed no existing
+// constant of this kind anywhere in the file, so per spec introduced as its
+// own new, independently-tunable value rather than a silently-decided
+// balance number. Counts down real elapsed seconds (state.escape.timeLeftSec,
+// reset by setGameMode() whenever ESCAPE MODE is (re-)entered), reaching 0
+// triggers the shared CLEAR SEQUENCE (see triggerClearSequence()).
+const ESCAPE_TIME_LIMIT_SEC = 90;
+// 9TH ROUND (item 37): ESCAPE-exclusive enemy pursuit. Round 8 already
+// diagnosed WHY plain enemy z never becomes attack-eligible in ESCAPE: its
+// reversed background-scroll direction feeds applyForwardDelta() a negative
+// forwardDelta, which (per the SAME unconditional zMin-floor math COMBAT
+// relies on) only ever pushes enemy z UP toward ENEMY_Z_MAX, away from the
+// z<900 attack-eligibility gate updateEnemy() shares with COMBAT. Rather
+// than touch that shared gate or applyForwardDelta() (both must stay exactly
+// as COMBAT needs them), ESCAPE gets its own separate, additive pursuit
+// oscillation (see updateEscapeEnemyPursuit()) that only ever runs when
+// state.gameMode==='escape' and only while the enemy's own attack sequence
+// isn't already driving z itself (attackState==='idle') — a real
+// pursue-closer / fall-back cycle, not a raw "always close" hack, so the
+// player genuinely gets alternating danger/breathing-room windows to dodge.
+const ESCAPE_ENEMY_PURSUIT_MIN_Z = 500;
+const ESCAPE_ENEMY_PURSUIT_MAX_Z = 1100;
+const ESCAPE_ENEMY_PURSUIT_PERIOD_MS = 6000;
+// 9TH ROUND (item 30-35): CLEAR SEQUENCE phase durations — real elapsed-time
+// budgets, not frame counts (see updateClearSequence()). Named/tunable
+// rather than inline magic numbers, same convention as every other timing
+// constant in this file.
+const CLEAR_GATE_APPEAR_MS = 900;
+const CLEAR_GATE_OPEN_MS = 1100;
+const CLEAR_PLAYER_RUN_MS = 1400;
+const CLEAR_LIGHT_EXPAND_MS = 900;
+const CLEAR_WHITEOUT_MS = 700;
+const CLEAR_HOLD_WHITE_MS = 400; // brief full-white hold before fading back, so the cut never feels like a single-frame flash
 // 8TH ROUND (item 16): SOUTH's single-static-image "breathing" pulse — see renderEscapePlayer().
 const SOUTH_PULSE_PERIOD_MS = 420;
 const SOUTH_PULSE_AMPLITUDE = 0.03; // scale ranges [1.0, 1.03] — spec cap "must never exceed ~103%"
@@ -140,6 +174,19 @@ const GABRIEL_NORMAL_Z_MIN = 260;
 // no real signal it should differ and this project's rule is never to
 // invent numbers without a reason.
 const ADAM_Z_MIN = 145;
+// 9TH ROUND (item 26): ADAM previously had NO normal-state floor of its own
+// (applyForwardDelta() fell through to ADAM_Z_MIN=145 for type==='adam'),
+// so ADAM never recovered to a mid "stalking" distance after an attack and
+// stayed pinned at its closest possible range permanently — the real-device
+// "ADAMが近づいたまま戻らない" complaint. Given its own floor at parity with
+// GABRIEL_NORMAL_Z_MIN per the user's "可能なら同じ基準値を" guidance (an
+// explicit judgment call, noted honestly since no exact number was mandated).
+const ADAM_NORMAL_Z_MIN = 260;
+// 9TH ROUND (item 33): eases GABRIEL/ADAM's z back from their close
+// CLAW_Z_MIN out to their own NORMAL_Z_MIN after an attack completes, instead
+// of instantly snapping (the old bug: applyForwardDelta()'s per-frame floor
+// used to yank GABRIEL back to 260 the instant 'approach' ended, mid-swing).
+const CLAW_RECOVERY_MS = 900;
 const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, never actually reached in practice
 // Enemy sprite height expressed in the SAME world-unit space the corridor
 // projection uses (see project()), so proj.scale converts it to pixels
@@ -151,7 +198,14 @@ const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, neve
 // for GABRIEL to read closer to human scale.
 const ROID_WORLD_HEIGHT = 700; // unchanged value from round 1 (was ENEMY_WORLD_HEIGHT)
 const GABRIEL_WORLD_HEIGHT = 480;
-const ADAM_WORLD_HEIGHT = 480; // 5TH ROUND PART 7: seeded at GABRIEL's own value (same human scale), independently tunable
+// 9TH ROUND (item 29): was 480 (identical to GABRIEL_WORLD_HEIGHT), which
+// read as "ADAM looks the same size as GABRIEL" on real devices — bumped
+// ~15% larger. computeEnemyDrawRect() derives drawH directly from this
+// constant via proj.scale (screen-anchored to the shared proj.y ground
+// point, with the same anchorFrac foot-correction GABRIEL already uses), so
+// this is real anchor-aware scaling, not a raw canvas magnification hack —
+// ADAM's foot/attack position does not drift from this change.
+const ADAM_WORLD_HEIGHT = 560;
 // 7TH ROUND PART 5 ("ADAM SPHEREが約2.5倍大きすぎる"): ADAM SPHERE went
 // through the SAME ROID-style render branch as ROID1/ROID2 in
 // computeEnemyDrawRect(), which used to target ROID_WORLD_HEIGHT (700) for
@@ -226,7 +280,11 @@ const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
 // LIGHT_RANGE/AIM_RANGE are each the max px the flashlight/aim can be
 // pushed from their own resting point at full stick deflection — PART 4
 // cuts both by 20% from round 2's shared 190px (190*0.8=152).
-const FLASHLIGHT_BASE_RADIUS = 150;
+// 9TH ROUND (item 21): was 150 — reported per the user's "state current value
+// before changing" requirement. Shrunk ~30% so a boss's whole body is never
+// trivially visible without aiming the light at it (verified against
+// GABRIEL/ADAM draw sizes at NORMAL distance during this round's testing).
+const FLASHLIGHT_BASE_RADIUS = 105;
 const LIGHT_RANGE = 152; // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 const AIM_RANGE = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 
@@ -289,6 +347,21 @@ const FIRE_COOLDOWN_MS = 130;
 const MAG_SIZE = 12;
 const RESERVE_MAX = 48;
 const RELOAD_MS = 950;
+// 9TH ROUND (items 3-5): real-device DEBUG log showed a genuine
+// permanent-lock bug — investigation of updatePlayer()'s RELOAD block
+// confirmed there was NO existing "AUTO RELOAD" trigger anywhere in the
+// codebase at all (only `actions.reload`, the manual RELOAD button, ever
+// started a reload). Once ammo hit 0 without the player pressing RELOAD
+// themselves, nothing ever started a reload again — this is the actual
+// root cause of the observed calls:1043/success:12/reject:1031 NO AMMO
+// lock. Since no prior "AUTO RELOAD = 5s" constant existed anywhere in
+// code (contrary to the assumption in this round's request), this is a
+// NEW, explicitly-named, independently-tunable constant — never silently
+// reusing RELOAD_MS's identity for a different, undocumented meaning.
+// Currently equal to RELOAD_MS (950ms) since the manual reload's own
+// duration was already tuned and nothing suggested it should differ; kept
+// as its own constant so it CAN be tuned independently later.
+const AUTO_RELOAD_MS = RELOAD_MS;
 // FOLLOWUP FIX (PART 3): the player's own shot is a fast traveling bullet
 // resolved on arrival, not an instant full-length line.
 const BULLET_TRAVEL_MS = 55;
@@ -552,6 +625,12 @@ const ctx = canvas.getContext('2d');
 const hpFillEl = document.getElementById('hp-bar-fill');
 const ammoCountEl = document.getElementById('ammo-count');
 const ammoReserveEl = document.getElementById('ammo-reserve');
+const ammoBelowHpReadoutEl = document.getElementById('ammo-below-hp-readout');
+const ammoBelowHpCountEl = document.getElementById('ammo-below-hp-count');
+const ammoBelowHpMagEl = document.getElementById('ammo-below-hp-mag');
+const ammoBelowHpReloadingEl = document.getElementById('ammo-below-hp-reloading');
+const escapeTimeLeftValueEl = document.getElementById('escape-timeleft-value');
+ammoBelowHpMagEl.textContent = MAG_SIZE; // static — magazine capacity never changes mid-game
 const stealthReadoutEl = document.getElementById('stealth-readout');
 const stealthStateEl = document.getElementById('stealth-state');
 const centerWarningEl = document.getElementById('hud-center-warning');
@@ -584,6 +663,7 @@ const dbgStateEl = document.getElementById('dbg-state');
 const r10DebugPanelEl = document.getElementById('r10-debug-panel');
 const r10DbgGameEl = document.getElementById('r10-dbg-game');
 const r10DbgPlayerEl = document.getElementById('r10-dbg-player');
+const r10DbgAmmoEl = document.getElementById('r10-dbg-ammo');
 const r10DbgFireEl = document.getElementById('r10-dbg-fire');
 const r10DbgShotEl = document.getElementById('r10-dbg-shot');
 const r10DbgEnemyEl = document.getElementById('r10-dbg-enemy');
@@ -643,8 +723,15 @@ function r10CollectSnapshot(ts) {
   return {
     ts,
     game: { mode: state.gameMode, theme: state.theme, started: state.gameStarted, paused: state.paused },
+    // 9TH ROUND (item 36): ESCAPE MODE's own TIME LIMIT state.
+    escapeTimer: { timeLeftSec: Math.max(0, Math.ceil(state.escape.timeLeftSec)), limitSec: ESCAPE_TIME_LIMIT_SEC },
+    clearSeq: { active: state.clearSequence.active, phase: state.clearSequence.phase, reason: state.clearSequence.reason || '-' },
     player: { x: Math.round(p.strafeOffset), facing: p.facing, hp: p.hp, maxHp: PLAYER_MAX_HP,
       cover: isPlayerInCover(), coverFacing: p.coverFacing, dash: dashActive },
+    // 9TH ROUND (item 5): AMMO/RELOAD diagnostics.
+    ammo: { current: p.ammo, magazine: MAG_SIZE, reserve: p.reserve,
+      reloading: p.reloading, reloadType: p.reloadType || '-',
+      reloadRemainingMs: p.reloading ? Math.max(0, Math.round(p.reloadUntil - ts)) : 0 },
     fire: { held: state.input.fireHeld, calls: d.fireCallCount, ok: d.fireSuccessCount,
       rej: d.fireRejectCount, rejReason: d.fireRejectReason, lastAt: Math.round(d.lastFireAt),
       cdLeft: Math.max(0, Math.round(p.fireCooldownUntil - ts)), nextOk: Math.round(d.nextFireAllowedAt) },
@@ -657,6 +744,18 @@ function r10CollectSnapshot(ts) {
     input: { mode: d.inputMode, fireBtn: state.input.fireHeld,
       stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
       aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0) },
+    // 9TH ROUND (item 39-43): CONTROLLER-only startup diagnostics.
+    gamepad: {
+      connected: state.gamepadConnected, index: state.gamepadIndex,
+      id: (() => { const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+        const g = state.gamepadIndex !== null ? pads[state.gamepadIndex] : null;
+        return g && g.id ? g.id.slice(0, 30) : '-'; })(),
+      pollingActive: state.assetsReady, uiInputEnabled: !state.gameStarted && state.assetsReady,
+      gameplayInputEnabled: state.gameStarted,
+      settleActive: ts < state.gamepadSettleUntil,
+      lastButton: state.lastGamepadButtonIndex, lastInputAt: Math.round(state.lastGamepadInputAt),
+      touchGestureAt: Math.round(state.touchGestureReceivedAt), audioUnlockedAt: Math.round(state.audioUnlockedAt),
+    },
     // ADDENDUM item 9: the FULL ring buffer (up to 60 entries), oldest
     // first — COPY DEBUG must never truncate this, unlike the on-screen
     // panel's own last-16 display slice below.
@@ -671,12 +770,18 @@ function r10UpdateDebugPanel(ts) {
   const s = r10CollectSnapshot(ts);
 
   r10DbgGameEl.textContent = 'GAME mode=' + s.game.mode + ' theme=' + s.game.theme +
-    ' started=' + s.game.started + ' paused=' + s.game.paused;
+    ' started=' + s.game.started + ' paused=' + s.game.paused +
+    (s.game.mode === 'escape' ? ' escT=' + s.escapeTimer.timeLeftSec + '/' + s.escapeTimer.limitSec : '') +
+    (s.clearSeq.active ? ' CLEAR=' + s.clearSeq.phase : '');
 
   r10DbgPlayerEl.textContent = 'PLAYER x=' + s.player.x + ' facing=' + s.player.facing +
     ' hp=' + s.player.hp + '/' + s.player.maxHp +
     ' cover=' + s.player.cover + '(' + s.player.coverFacing + ')' +
     ' dash=' + s.player.dash;
+
+  r10DbgAmmoEl.textContent = 'AMMO ' + s.ammo.current + '/' + s.ammo.magazine + ' reserve=' + s.ammo.reserve +
+    '\n reloading=' + s.ammo.reloading + '(' + s.ammo.reloadType + ')' +
+    ' remain=' + s.ammo.reloadRemainingMs + 'ms';
 
   r10DbgFireEl.textContent = 'FIRE held=' + s.fire.held +
     ' calls=' + s.fire.calls + ' ok=' + s.fire.ok +
@@ -693,7 +798,12 @@ function r10UpdateDebugPanel(ts) {
     ' hits=' + s.enemy.hits + ' miss=' + s.enemy.miss;
 
   r10DbgInputEl.textContent = 'INPUT mode=' + s.input.mode + ' fireBtn=' + s.input.fireBtn +
-    '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim;
+    '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim +
+    '\nGAMEPAD conn=' + s.gamepad.connected + ' idx=' + s.gamepad.index + ' id=' + s.gamepad.id +
+    '\n poll=' + s.gamepad.pollingActive + ' uiIn=' + s.gamepad.uiInputEnabled + ' playIn=' + s.gamepad.gameplayInputEnabled +
+    ' settle=' + s.gamepad.settleActive +
+    '\n lastBtn=' + s.gamepad.lastButton + '@' + s.gamepad.lastInputAt +
+    ' touch@' + s.gamepad.touchGestureAt + ' audio@' + s.gamepad.audioUnlockedAt;
 
   const lines = s.log.slice(-16).reverse().map((en) => en.t.toFixed(0) + ' ' + en.text);
   r10DbgLogEl.textContent = lines.join('\n');
@@ -711,6 +821,8 @@ function r10FormatDebugText(s) {
   lines.push('theme: ' + s.game.theme);
   lines.push('started: ' + s.game.started);
   lines.push('paused: ' + s.game.paused);
+  if (s.game.mode === 'escape') lines.push('escapeTimeLeftSec: ' + s.escapeTimer.timeLeftSec + '/' + s.escapeTimer.limitSec);
+  lines.push('clearSequence: active=' + s.clearSeq.active + ' phase=' + s.clearSeq.phase + ' reason=' + s.clearSeq.reason);
   lines.push('');
   lines.push('PLAYER');
   lines.push('position: x=' + s.player.x);
@@ -718,6 +830,14 @@ function r10FormatDebugText(s) {
   lines.push('hp: ' + s.player.hp + '/' + s.player.maxHp);
   lines.push('cover: ' + s.player.cover + ' (' + s.player.coverFacing + ')');
   lines.push('dash: ' + s.player.dash);
+  lines.push('');
+  lines.push('AMMO');
+  lines.push('current: ' + s.ammo.current);
+  lines.push('magazine: ' + s.ammo.magazine);
+  lines.push('reserve: ' + s.ammo.reserve);
+  lines.push('reloading: ' + s.ammo.reloading);
+  lines.push('reloadType: ' + s.ammo.reloadType);
+  lines.push('reloadRemainingMs: ' + s.ammo.reloadRemainingMs);
   lines.push('');
   lines.push('FIRE');
   lines.push('input: ' + s.fire.held);
@@ -750,6 +870,19 @@ function r10FormatDebugText(s) {
   lines.push('fireButton: ' + s.input.fireBtn);
   lines.push('rightStick: ' + s.input.stickR);
   lines.push('aim: ' + s.input.aim);
+  lines.push('');
+  lines.push('GAMEPAD');
+  lines.push('connected: ' + s.gamepad.connected);
+  lines.push('index: ' + s.gamepad.index);
+  lines.push('id: ' + s.gamepad.id);
+  lines.push('pollingActive: ' + s.gamepad.pollingActive);
+  lines.push('uiInputEnabled: ' + s.gamepad.uiInputEnabled);
+  lines.push('gameplayInputEnabled: ' + s.gamepad.gameplayInputEnabled);
+  lines.push('settleActive: ' + s.gamepad.settleActive);
+  lines.push('lastButton: ' + s.gamepad.lastButton);
+  lines.push('lastInputAt: ' + s.gamepad.lastInputAt);
+  lines.push('touchGestureAt: ' + s.gamepad.touchGestureAt);
+  lines.push('audioUnlockedAt: ' + s.gamepad.audioUnlockedAt);
   lines.push('');
   lines.push('=== EVENT LOG (' + s.log.length + ' entries) ===');
   if (s.log.length === 0) {
@@ -1027,6 +1160,20 @@ const ASSETS = {
       loadImg('assets/player/player_north_walk_2.png'),
       loadImg('assets/player/player_north_walk_3.png'),
     ],
+    // 9TH ROUND (items 7-8): real-device testing found normal SOUTH
+    // movement (D-PAD DOWN / LEFT STICK DOWN) kept showing the north-facing
+    // walk frames. Investigation found this was actually a DELIBERATE
+    // decision from a much earlier round (see dashN's own comment: "the
+    // protagonist never turns to face south in this game") — but per this
+    // round's explicit instruction, normal SOUTH movement now gets a real
+    // south-facing sprite. Reuses the EXISTING, already-copied, currently
+    // UNUSED player_dash_south.png (a genuine front-on running pose,
+    // same 384x340 canvas/padding as every other player_*.png here, so it
+    // needs no separate alpha-measured anchor like COVER/ESCAPE's frames
+    // do — the plain centered/bottom-anchored draw path already works).
+    // Scoped to NORMAL walk only — BACKSTEP (the special south-facing-
+    // camera-away lunge action) is untouched and still uses dashN.
+    southWalk: loadImg('assets/player/player_dash_south.png'),
     // NORTH DASH and SOUTH BACKSTEP both use this same forward-facing
     // lunge pose (PART 1 fix): the protagonist never turns to face south
     // in this game, so dash_south.png (a genuine front-on pose, confirmed
@@ -1056,6 +1203,14 @@ const ASSETS = {
     idle: loadImg('assets/gabriel/gabriel_idle.png'),
     windup: loadImg('assets/gabriel/gabriel_claw_windup.png'),
     release: loadImg('assets/gabriel/gabriel_claw_release.png'),
+    // 9TH ROUND (item 30): a real 3-frame walk cycle already existed on disk
+    // but was never wired into ASSETS — used for the new continuous
+    // south-facing WALK LOOP during NORMAL/STALKING (see renderEnemy()).
+    walk: [
+      loadImg('assets/gabriel/gabriel_walk_1.png'),
+      loadImg('assets/gabriel/gabriel_walk_2.png'),
+      loadImg('assets/gabriel/gabriel_walk_3.png'),
+    ],
   },
   // 5TH ROUND PART 7: ADAM — real ACTION-GAME asset, copied read-only, same
   // as every other character here. ADAM shares GABRIEL's own attack FAMILY
@@ -1348,6 +1503,7 @@ const state = {
     scale: 1,              // depth pulse scale (north/south sync)
     scaleTarget: 1,
     facing: 'idle',        // 'idle' | 'walk' | 'fire' | 'aim'
+    moveDirSouth: false,   // 9TH ROUND: true while the current WALK is a real south move (D-PAD/stick DOWN)
     walkFrame: 0,
     walkTimer: 0,
     dashUntil: 0,          // ms timestamp; screen-space strafe dash pulse
@@ -1363,6 +1519,8 @@ const state = {
     reserve: RESERVE_MAX,
     reloading: false,
     reloadUntil: 0,
+    reloadType: null, // 9TH ROUND: 'auto' | 'manual' | null — which RELOAD trigger is currently active, for HUD/DEBUG
+    lastAmmoBelowHpCount: -1, lastAmmoBelowHpReloading: false, // dirty-check state for the new below-HP AMMO HUD
     fireCooldownUntil: 0,
     lastShotAt: -Infinity, // 7TH ROUND PART 15 — timestamp of the last REAL shot, drives the enlarged fire pose window (see FIRE_POSE_HOLD_MS)
     lastHpFillPct: -1,
@@ -1434,6 +1592,15 @@ const state = {
     // (same recompute-from-a-stored-start pattern the player's own DASH
     // uses) rather than a raw per-frame velocity step.
     clawApproachStartZ: 0,
+    // 9TH ROUND (item 30-31): GABRIEL/ADAM's own continuous "walking toward
+    // camera" loop while in NORMAL/STALKING (attackState==='idle'). GABRIEL
+    // reuses a real, previously-unused 3-frame walk cycle already on disk
+    // (gabriel_walk_1/2/3.png); ADAM has no such asset (confirmed via a
+    // fresh `ls assets/adam/` this round — only idle/attack art exists), so
+    // ADAM instead gets a Canvas-only body-bob (see renderEnemy()) rather
+    // than a fabricated or unnaturally-alternating frame swap.
+    clawWalkFrame: 0,
+    clawWalkElapsedMs: 0,
     // 4th round: real max HP (enemy.hp was previously declared but never
     // actually compared against a max anywhere — see PHASE 9 root-cause
     // report) + death-sequence state. 'alive' -> ('exploding'|'burning') ->
@@ -1491,6 +1658,12 @@ const state = {
     // consumeEscapeActions() — separate from state.actions above so an
     // ESCAPE dash can never be misread as a LAB dash or vice versa.
     actions: { westDash: false, eastDash: false, northBackstep: false, southDash: false },
+    // 9TH ROUND (item 36): counts down from ESCAPE_TIME_LIMIT_SEC in real
+    // elapsed seconds (see frame()'s ESCAPE branch); reset by setGameMode()
+    // whenever ESCAPE MODE is (re-)entered so a stale value from a previous
+    // run can never leak into a fresh one.
+    timeLeftSec: ESCAPE_TIME_LIMIT_SEC,
+    lastTimeLeftDisplayedSec: -1,
   },
 
   gamepadConnected: false,
@@ -1501,6 +1674,18 @@ const state = {
   // returns neutral input but keeps re-syncing prevButtons so no stale/
   // noisy pre-settle state can leak in as a real input once settle ends.
   gamepadSettleUntil: 0,
+  // 9TH ROUND (item 39-43): pure diagnostic fields for the CONTROLLER-only
+  // startup investigation — never read by any gameplay/control-flow logic,
+  // only written for ?debug=1 visibility. lastGamepadButtonIndex/-At track
+  // the most recent raw button edge pollGamepad() saw (any state, including
+  // pre-gameStarted); touchGestureReceivedAt/audioUnlockedAt are stamped by
+  // their own unrelated code paths (see the new 'pointerdown' listener and
+  // tryStartBgm()) so the DEBUG panel can show, side by side, whether a
+  // gamepad or a touch gesture happened first on a real device.
+  lastGamepadButtonIndex: -1,
+  lastGamepadInputAt: 0,
+  touchGestureReceivedAt: 0,
+  audioUnlockedAt: 0,
 
   // 4th round: touch UI is OFF by default (spec item 6 — Gamepad play
   // shouldn't have the screen full of sticks/buttons); PAUSE toggles it.
@@ -1518,6 +1703,19 @@ const state = {
   // is AUTO_SEQUENCE's own index (only ever points at an implemented type).
   enemySelect: 'auto',
   autoMode: { active: true, index: 0 },
+
+  // 9TH ROUND (item 30-35): the shared "escape the darkness" CLEAR
+  // SEQUENCE — gate appears -> opens -> player runs through -> light
+  // expands -> WHITE OUT -> complete. Driven by real elapsed time
+  // (phaseStartedAt), never raw frame counts, so it plays at the same
+  // speed regardless of device refresh rate. Reachable from BOTH COMBAT
+  // (boss defeated) and ESCAPE (TIME LIMIT hit 0) — see triggerClearSequence().
+  clearSequence: {
+    active: false,
+    phase: 'idle', // 'idle'|'gateAppear'|'gateOpen'|'playerRun'|'lightExpand'|'whiteOut'|'complete'
+    phaseStartedAt: 0,
+    reason: null, // 'combat' | 'escape' — which mode triggered it, for the completion handler
+  },
 
   particles: [], // muzzle flash / tracer / hit spark, fixed pool
 
@@ -1685,7 +1883,24 @@ resize();
 // stuck "held" forever.
 // ---------------------------------------------------------------------
 
-window.addEventListener('gamepadconnected', () => { /* poll handles adoption; this is just a hint */ });
+window.addEventListener('gamepadconnected', () => {
+  // poll handles actual adoption; this is just a hint/diagnostic.
+  if (DEBUG_MODE) r10DebugLog('GAMEPAD CONNECTED (browser event)');
+});
+// 9TH ROUND (item 39-43): pure diagnostic — stamps the first real touch
+// anywhere on the page, completely independent of any gamepad/audio logic
+// (never read by pollGamepad()/handleModeSelect()/tryStartBgm() themselves).
+// Exists so a real-device DEBUG session can show, side by side, whether
+// gpInput ever went non-empty BEFORE this timestamp — the concrete way to
+// confirm/deny the suspected root cause: some mobile browsers (notably
+// Safari) do not report ANY connected gamepad via navigator.getGamepads()
+// until the page has received a user gesture, a platform-level restriction
+// this app cannot bypass from script.
+window.addEventListener('pointerdown', () => {
+  if (state.touchGestureReceivedAt) return;
+  state.touchGestureReceivedAt = performance.now();
+  if (DEBUG_MODE) r10DebugLog('TOUCH GESTURE (first pointerdown)');
+}, { once: true, passive: true });
 window.addEventListener('gamepaddisconnected', (e) => {
   if (e.gamepad && e.gamepad.index === state.gamepadIndex) {
     state.gamepadIndex = null;
@@ -1747,6 +1962,7 @@ function pollGamepad(now) {
       state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
       state.prevButtons = [];
       console.log('[gamepad] adopted index', candidateIndex, 'id=', candidate.id, 'mapping=', candidate.mapping || '(non-standard)', 'axes=', candidate.axes.length, 'buttons=', candidate.buttons.length);
+      if (DEBUG_MODE) r10DebugLog('GAMEPAD DETECTED: idx=' + candidateIndex + ' id=' + (candidate.id || '?').slice(0, 24));
       // 5TH ROUND ("スティックが効かない" investigation): LEFT STICK/RIGHT
       // STICK are read from axes[0..3] (W3C Standard Gamepad layout — the
       // layout the vast majority of consumer pads, including non-standard-
@@ -1788,6 +2004,13 @@ function pollGamepad(now) {
     const prev = state.prevButtons;
     const pressed = (i) => !!(b[i] && b[i].pressed);
     const edge = (i) => pressed(i) && !prev[i];
+    // 9TH ROUND (item 39-43): cheap diagnostic-only field writes (no
+    // console/log spam) — records the most recent raw button edge for the
+    // DEBUG panel, regardless of gameStarted/mode. Never read by any
+    // control-flow logic.
+    for (let i = 0; i < b.length; i++) {
+      if (pressed(i) && !prev[i]) { state.lastGamepadButtonIndex = i; state.lastGamepadInputAt = now || 0; break; }
+    }
 
     // 6TH ROUND PART 9 fix: the mode-select trigger (any first button press
     // while !state.gameStarted, see below) used to be checked LAST in this
@@ -1812,8 +2035,10 @@ function pollGamepad(now) {
         const triggerSnapshot = new Array(b.length);
         for (let i = 0; i < b.length; i++) triggerSnapshot[i] = pressed(i);
         state.prevButtons = triggerSnapshot;
+        if (DEBUG_MODE) r10DebugLog('GAMEPAD UI INPUT -> CONTROL MODE SELECTED (controller)');
         handleModeSelect('controller');
         state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
+        if (DEBUG_MODE) r10DebugLog('GAMEPLAY INPUT ENABLED');
         return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
       }
     }
@@ -2040,21 +2265,43 @@ wireButton('touch-dash-s', () => {
 wireButton('touch-dash-w', () => { if (state.gameMode === 'escape') state.escape.actions.westDash = true; });
 wireButton('touch-dash-e', () => { if (state.gameMode === 'escape') state.escape.actions.eastDash = true; });
 
+// 9TH ROUND (item 0-2): STAGE TYPE (state.theme — cosmetic world/background
+// only) and GAME MODE (state.gameMode — control scheme + win condition)
+// are now set from two SEPARATE button rows, each touching only its own
+// field. Neither handler infers the other's value anymore — the old
+// `state.gameMode = state.theme === 'escape' ? 'escape' : 'combat'` hard
+// coupling in the STAGE TYPE handler is gone. setGameMode() below is the
+// one shared place that applies a GAME MODE change's side effects (the
+// escape-mode body class LIGHT/HUD CSS reads), called from both the new
+// #gamemode-switch buttons AND (for backward compatibility with anyone
+// still driving mode purely via the old ESCAPE stage button in existing
+// test scripts) nowhere else — the two are now genuinely independent.
+function setGameMode(mode) {
+  state.gameMode = mode;
+  document.body.classList.toggle('escape-mode', mode === 'escape');
+  document.querySelectorAll('.gamemode-btn').forEach((b) => b.classList.toggle('active', b.dataset.gamemode === mode));
+  // 9TH ROUND (item 36): fresh TIME LIMIT every time ESCAPE MODE is
+  // (re-)entered, so a stale countdown from a previous run never carries
+  // over. Never touches state.player/state.enemy — LAB's own RELOAD/HP/etc.
+  // are completely unaffected by switching GAME MODE.
+  if (mode === 'escape') {
+    state.escape.timeLeftSec = ESCAPE_TIME_LIMIT_SEC;
+    state.clearSequence.active = false;
+    state.clearSequence.phase = 'idle';
+  }
+}
+
 document.querySelectorAll('.theme-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.theme-btn').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     state.theme = btn.dataset.theme;
     themeLabelEl.textContent = THEMES[state.theme].label;
-    // ESCAPE-exclusive GAMEPLAY mode switch, reusing this SAME existing
-    // button (no new UI) — but kept as its OWN state.gameMode field, never
-    // inferred from state.theme at read-time elsewhere in the code, so
-    // theme (cosmetic corridor palette) and gameMode (PLAYER/input/combat
-    // behavior) stay two genuinely separate concepts. LAB/ARMORED both map
-    // to 'combat' (their existing, completely unchanged behavior).
-    state.gameMode = state.theme === 'escape' ? 'escape' : 'combat';
-    document.body.classList.toggle('escape-mode', state.gameMode === 'escape');
+    // STAGE TYPE no longer touches state.gameMode at all (see setGameMode()).
   });
+});
+document.querySelectorAll('.gamemode-btn').forEach((btn) => {
+  btn.addEventListener('click', () => setGameMode(btn.dataset.gamemode));
 });
 // PART 10/11 (4th round): ENEMY SELECT — extends the existing BOSS TEST
 // panel (previously ROID1/ROID2/GABRIEL only) with AUTO + all 6 requested
@@ -2110,7 +2357,18 @@ function tryStartBgm() {
   if (bgmStarted || !bgmAudioEl) return;
   const p = bgmAudioEl.play();
   if (p && p.catch) p.catch(() => {}); // autoplay rejected (no gesture yet) — silently retry on the next one
-  if (!bgmAudioEl.paused) bgmStarted = true;
+  if (!bgmAudioEl.paused) {
+    bgmStarted = true;
+    // 9TH ROUND (item 39-43): stamped only on a REAL successful play() —
+    // diagnostic-only, deliberately separate from any gamepad-input gating
+    // (see the pointerdown/gamepadconnected comments above) so the DEBUG
+    // panel can show audio-unlock timing without ever conflating "audio
+    // needs a gesture" with "gamepad input needs a gesture."
+    if (!state.audioUnlockedAt) {
+      state.audioUnlockedAt = performance.now();
+      if (DEBUG_MODE) r10DebugLog('AUDIO UNLOCKED');
+    }
+  }
 }
 
 // 6TH ROUND PART 7/8/9/10: replaces the 5th round's "any input starts the
@@ -2285,10 +2543,21 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   // toggle STEALTH — stealthToggledAt drives the enter/exit fade (PART 5)
   if (actions.stealth) { p.stealth = !p.stealth; p.stealthToggledAt = now; }
 
-  // RELOAD
-  if (actions.reload && !p.reloading && p.ammo < MAG_SIZE && p.reserve > 0) {
+  // RELOAD — 9TH ROUND (items 3-5): AMMO=0 now starts an AUTO RELOAD on its
+  // own, in addition to the existing manual RELOAD button (L3/touch-reload,
+  // unchanged). Root cause of the old permanent NO-AMMO lock: this block
+  // previously had NO branch that could ever start a reload except
+  // `actions.reload` itself — see AUTO_RELOAD_MS's own comment.
+  if (p.ammo <= 0 && !p.reloading && p.reserve > 0) {
     p.reloading = true;
+    p.reloadType = 'auto';
+    p.reloadUntil = now + AUTO_RELOAD_MS;
+    if (DEBUG_MODE) r10DebugLog('AUTO RELOAD START');
+  } else if (actions.reload && !p.reloading && p.ammo < MAG_SIZE && p.reserve > 0) {
+    p.reloading = true;
+    p.reloadType = 'manual';
     p.reloadUntil = now + RELOAD_MS;
+    if (DEBUG_MODE) r10DebugLog('MANUAL RELOAD START');
   }
   if (p.reloading && now >= p.reloadUntil) {
     const need = MAG_SIZE - p.ammo;
@@ -2296,6 +2565,7 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     p.ammo += take;
     p.reserve -= take;
     p.reloading = false;
+    if (DEBUG_MODE) r10DebugLog((p.reloadType === 'auto' ? 'AUTO' : 'MANUAL') + ' RELOAD COMPLETE (ammo=' + p.ammo + ')');
   }
 
   // 4th round: FOCUS / AUTO AIM (LB / touch-focus), replacing FLASH. Held +
@@ -2365,6 +2635,13 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     p.walkTimer += dt;
     if (p.walkTimer > 0.14) { p.walkTimer = 0; p.walkFrame = (p.walkFrame + 1) % 3; }
     p.facing = 'walk';
+    // 9TH ROUND (items 7-8): track REAL south movement (D-PAD DOWN/LEFT
+    // STICK DOWN, moveY>0 per the same sign convention applyForwardDelta()
+    // uses) separately from the pose-state `p.facing` above — this is
+    // ONLY consulted by renderPlayer() for the normal WALK sprite choice,
+    // never by BACKSTEP (which keeps using dashN unconditionally, see its
+    // own comment) or any other special action.
+    p.moveDirSouth = moveY > 0.05;
   } else {
     p.facing = 'idle';
   }
@@ -2566,8 +2843,23 @@ function applyForwardDelta(forwardDelta) {
   // larger GABRIEL_NORMAL_Z_MIN — the CLAW attack sequence still closes the
   // rest of the distance down to the original (unchanged) GABRIEL_Z_MIN on
   // its own, separate from this player-driven clamp (see updateEnemy()).
-  const zMin = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (e.type === 'adam' ? ADAM_Z_MIN : approachZMinForRoid());
-  e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
+  // 9TH ROUND (item 21-26 fix): while a CLAW attack sequence is in progress
+  // (anything but 'idle'), the attack's OWN z-management (see updateEnemy(),
+  // 'approach'/'recovery' sub-states) must have exclusive control — this
+  // per-frame player-driven floor used to unconditionally win every frame
+  // (it runs BEFORE updateEnemy() in frame()), snapping GABRIEL back out to
+  // 260 the instant 'approach' ended, before its swing/telegraph ever
+  // rendered at the intended close distance. Only the player's own forward
+  // walking is gated by this floor now; ROID/ADAM SPHERE (non-claw types)
+  // are unaffected, matching their unchanged existing behavior.
+  const isClawIdle = (e.type === 'gabriel' || e.type === 'adam') ? e.attackState === 'idle' : true;
+  if (isClawIdle) {
+    const zMin = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (e.type === 'adam' ? ADAM_NORMAL_Z_MIN : approachZMinForRoid());
+    e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
+  } else if (e.type !== 'gabriel' && e.type !== 'adam') {
+    const zMin = approachZMinForRoid();
+    e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
+  }
 }
 
 // PART 12 (3rd round): COVER is now purely "is the player physically
@@ -2775,7 +3067,16 @@ function updateRoidAnimation(dt, now) {
 function spawnEnemy(type) {
   const e = state.enemy;
   e.type = type;
-  e.z = 900;
+  // 9TH ROUND (item 25/27-28): GABRIEL/ADAM used to spawn at the same
+  // generic z=900 as ROID1/ROID2/ADAM SPHERE — since e.z<900 gates their own
+  // idle->attack roll (see updateEnemy()), a static spawn AT 900 meant they
+  // could never even begin an attack cycle without the player first walking
+  // forward, and read as "tiny and far away" at battle start. Spawn them
+  // directly at their own NORMAL/STALKING floor instead — the same baseline
+  // distance they settle back to after every attack (GABRIEL_NORMAL_Z_MIN /
+  // ADAM_NORMAL_Z_MIN), per the user's "初期位置と通常時の基準距離を統一"
+  // request. ROID1/ROID2/ADAM SPHERE's own 900 spawn is untouched.
+  e.z = type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (type === 'adam' ? ADAM_NORMAL_Z_MIN : 900);
   e.lane = 0;
   e.laneTarget = 0;
   e.facing = 'east';
@@ -2891,6 +3192,14 @@ function updateEnemy(dt, now) {
   if (e.deathState !== 'alive') {
     if (now >= e.deathUntil) {
       e.deathState = 'gone';
+      // 9TH ROUND (item 30-35): COMBAT MODE's clear condition (item 38) is
+      // BOSS HP=0 — trigger the shared CLEAR SEQUENCE here, but only for
+      // real play (not AUTO MODE's own continuous QA rotation loop, which
+      // must keep cycling enemies uninterrupted for testing, per its own
+      // existing PART 12 design — see advanceEnemyRotation() below).
+      if (state.gameMode === 'combat' && !state.autoMode.active) {
+        triggerClearSequence(now, 'combat');
+      }
       advanceEnemyRotation(now);
     }
     return;
@@ -2900,6 +3209,21 @@ function updateEnemy(dt, now) {
   updateRoidAnimation(dt, now);
 
   if (e.attackState === 'idle') {
+    // 9TH ROUND (item 30): advance GABRIEL's south-walk-loop frame timer
+    // whenever NORMAL/STALKING (idle) — mirrors the player's own
+    // walkFrame/p.walkTimer cadence pattern. Must live HERE, not further
+    // down in the e.kind==='claw' block below: this 'idle' branch always
+    // returns before reaching that block, so a walk-frame advance placed
+    // there would be permanently dead code (caught via Playwright — the
+    // frame index never moved off 0 until this fix). No-op for ADAM (no
+    // walk asset; see the body-bob comment in renderEnemy()) but harmless.
+    if (e.type === 'gabriel' || e.type === 'adam') {
+      e.clawWalkElapsedMs += dt * 1000;
+      if (e.clawWalkElapsedMs > 160) {
+        e.clawWalkElapsedMs = 0;
+        e.clawWalkFrame = (e.clawWalkFrame + 1) % 3;
+      }
+    }
     if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500;
     if (now >= e.nextIdleCheckAt && e.z < 900) {
       const stealthMul = p.stealth ? 1.8 : 1.0;
@@ -2990,7 +3314,26 @@ function updateEnemy(dt, now) {
         }
       }
     } else if (e.attackState === 'impact') {
-      if (now >= e.attackUntil) { e.attackState = 'cooldown'; e.attackUntil = now + CLAW_COOLDOWN_MS; }
+      if (now >= e.attackUntil) {
+        // 9TH ROUND (item 21-26): ease back out to the type's own NORMAL
+        // floor instead of jumping straight to 'cooldown' at the close
+        // CLAW_Z_MIN — this is the new state that actually returns
+        // GABRIEL/ADAM to their mid "stalking" distance after an attack,
+        // rather than leaving them parked at melee range forever.
+        e.attackState = 'recovery';
+        e.attackUntil = now + CLAW_RECOVERY_MS;
+        e.clawApproachStartZ = e.z;
+      }
+    } else if (e.attackState === 'recovery') {
+      const targetZ = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : ADAM_NORMAL_Z_MIN;
+      const tNorm = clamp(1 - (e.attackUntil - now) / CLAW_RECOVERY_MS, 0, 1);
+      const eased = 1 - Math.pow(1 - tNorm, 2);
+      e.z = e.clawApproachStartZ + (targetZ - e.clawApproachStartZ) * eased;
+      if (now >= e.attackUntil) {
+        e.z = targetZ;
+        e.attackState = 'cooldown';
+        e.attackUntil = now + CLAW_COOLDOWN_MS;
+      }
     } else if (e.attackState === 'cooldown') {
       if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + 900 + Math.random() * 1400; }
     }
@@ -3099,9 +3442,18 @@ function computeEnemyDrawRect() {
     // GABRIEL is untouched — isGabriel short-circuits this before it ever
     // reads e.adamAttackVariantIndex.
     const inAttackPose = e.attackState === 'telegraph' || e.attackState === 'impact';
+    // 9TH ROUND (item 30-31): while NORMAL/STALKING (attackState==='idle'),
+    // GABRIEL cycles its own real 3-frame walk loop (see updateEnemy()'s
+    // clawWalkFrame advance) instead of a single static idle pose. ADAM has
+    // no walk-cycle asset (verified this round), so it keeps its single
+    // idle image here — its "alive" motion cue is a Canvas-only body-bob
+    // applied in renderEnemy() instead, never a fabricated/alternating hack.
+    const isWalking = e.attackState === 'idle';
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
-      : (e.attackState === 'telegraph' ? set.windup : (e.attackState === 'impact' ? set.release : set.idle));
+      : (e.attackState === 'telegraph' ? set.windup
+        : (e.attackState === 'impact' ? set.release
+        : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle)));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 2.6;
     const drawH = worldHeight * proj.scale * closeBoost;
@@ -3211,6 +3563,20 @@ function fireWeapon(now) {
   // false short-circuits every line below before r10DebugState — which is
   // null — is ever touched).
   if (DEBUG_MODE) { r10DebugState.fireCallCount++; r10DebugLog('FIRE INPUT'); }
+  // 9TH ROUND (item 9): FIRE is now blocked entirely while the player is
+  // actively using COVER (checked before the reload/ammo guards below, so
+  // a COVER-blocked attempt never consumes ammo or starts a reload either)
+  // — reuses the EXISTING isPlayerInCover(), same gate renderPlayer()
+  // already uses to pick the crouched sprite, so "COVER sprite showing"
+  // and "FIRE disabled" can never disagree.
+  if (isPlayerInCover()) {
+    if (DEBUG_MODE) {
+      r10DebugState.fireRejectCount++;
+      r10DebugState.fireRejectReason = 'COVER';
+      r10DebugLog('FIRE BLOCKED: COVER');
+    }
+    return;
+  }
   if (p.reloading || p.ammo <= 0) {
     if (DEBUG_MODE) {
       r10DebugState.fireRejectCount++;
@@ -3625,22 +3991,67 @@ function renderCorridor(theme) {
 // diegetic stage, which doesn't fit this game's world or its TPS framing.
 // COVER feedback now lives ENTIRELY on the player's own sprite (PART 13,
 // see renderPlayer()); the barrel here is just the physical object itself.
+// 9TH ROUND (item 10-14): re-adds a floor shadow under each barrel, but as a
+// soft, natural, dim ellipse (never a bright/game-UI circle, no outline, no
+// text) whose radius is computed with the EXACT SAME formula isPlayerInCover()
+// uses (BARREL_TOUCH_RADIUS_PX * proj.scale + COVER_TOUCH_SLOP_PX), so the
+// visible shadow always equals the real cover-eligible area — "if you can see
+// the shadow reach you, you are in cover." Drawing itself is factored into
+// drawOneBarrel() so the COVER-time foreground occlusion pass (see
+// renderBarrelForeground(), called after renderPlayer()) can reuse the exact
+// same barrel art/fallback logic without duplicating it.
+function barrelCoverRadiusPx(proj) {
+  return BARREL_TOUCH_RADIUS_PX * proj.scale + COVER_TOUCH_SLOP_PX;
+}
+
+function drawOneBarrel(b, proj) {
+  const drawH = BARREL_DRAW_H * proj.scale;
+  if (drawH < 1.5) return;
+
+  if (b.z <= BARREL_TOUCH_Z_MAX) {
+    const shadowR = barrelCoverRadiusPx(proj);
+    const inCover = isPlayerInCover();
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(proj.x, proj.y - 2, shadowR, shadowR * 0.4, 0, 0, Math.PI * 2);
+    ctx.fillStyle = inCover ? 'rgba(10,10,14,0.55)' : 'rgba(8,8,10,0.38)';
+    ctx.filter = 'blur(3px)';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  const img = ASSETS.barrel;
+  if (imgReady(img)) {
+    const aspect = img.naturalWidth / img.naturalHeight;
+    const drawW = drawH * aspect;
+    ctx.drawImage(img, proj.x - drawW / 2, proj.y - drawH, drawW, drawH);
+  } else {
+    ctx.fillStyle = '#6b2a20';
+    ctx.fillRect(proj.x - drawH * 0.28, proj.y - drawH, drawH * 0.56, drawH);
+  }
+}
+
 function renderBarrels() {
   const sorted = barrels.slice().sort((a, b) => b.z - a.z);
   for (const b of sorted) {
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
-    const drawH = BARREL_DRAW_H * proj.scale;
-    if (drawH < 1.5) continue;
+    drawOneBarrel(b, proj);
+  }
+}
 
-    const img = ASSETS.barrel;
-    if (imgReady(img)) {
-      const aspect = img.naturalWidth / img.naturalHeight;
-      const drawW = drawH * aspect;
-      ctx.drawImage(img, proj.x - drawW / 2, proj.y - drawH, drawW, drawH);
-    } else {
-      ctx.fillStyle = '#6b2a20';
-      ctx.fillRect(proj.x - drawH * 0.28, proj.y - drawH, drawH * 0.56, drawH);
-    }
+// 9TH ROUND (item 14): renderBarrels() runs BEFORE renderPlayer() in frame(),
+// so the player sprite always drew on top of the barrel and never looked
+// hidden behind it. This redraws only the specific barrel(s) currently
+// providing cover, on top of the (already-drawn) player, to create real
+// depth/occlusion — never touches barrels the player isn't using.
+function renderBarrelForeground() {
+  if (!isPlayerInCover()) return;
+  const playerScreenX = state.centerX + state.player.strafeOffset;
+  for (const b of barrels) {
+    if (b.z > BARREL_TOUCH_Z_MAX) continue;
+    const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
+    const radius = barrelCoverRadiusPx(proj);
+    if (Math.abs(proj.x - playerScreenX) < radius) drawOneBarrel(b, proj);
   }
 }
 
@@ -3778,6 +4189,7 @@ function renderPlayer(theme) {
   if (usingCoverPose) img = coverFrame.img; // readiness checked below before this is ever flipped/drawn
   else if (p.reloading) img = ASSETS.player.aim;
   else if (firing) img = ASSETS.player.aim;
+  else if (p.facing === 'walk' && p.moveDirSouth) img = ASSETS.player.southWalk;
   else if (p.facing === 'walk') img = ASSETS.player.walk[p.walkFrame];
   else img = ASSETS.player.aim;
   // COVER中はFIRE演出の拡大ポーズを適用しない — 画像そのものがCOVER専用に
@@ -4022,11 +4434,25 @@ function renderEnemy(theme) {
     return;
   }
 
+  // 9TH ROUND (item 30-31): ADAM has no real walk-cycle asset (confirmed —
+  // see ASSETS.adam / renderer comment above), so rather than fabricate
+  // frames or force an unnatural alternating-pose swap, it gets a small,
+  // Canvas-only vertical bob + width pulse while NORMAL/STALKING, just
+  // enough to read as "alive and approaching" rather than a frozen billboard.
+  // GABRIEL needs no such trick — it uses its own real walk[] frames above.
+  let bobY = 0, bobScale = 1;
+  if (e.type === 'adam' && e.attackState === 'idle') {
+    const phase = (now % 700) / 700;
+    bobY = Math.sin(phase * Math.PI * 2) * (rect.h * 0.012);
+    bobScale = 1 + Math.sin(phase * Math.PI * 2) * 0.012;
+  }
   if (imgReady(rect.img)) {
-    ctx.drawImage(rect.img, rect.x, rect.y, rect.w, rect.h);
+    const w = rect.w * bobScale;
+    const h = rect.h;
+    ctx.drawImage(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
   } else {
     ctx.fillStyle = '#334';
-    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.fillRect(rect.x, rect.y + bobY, rect.w, rect.h);
   }
   ctx.restore();
 }
@@ -4305,16 +4731,27 @@ function renderFlashlightMask() {
   darkCtx.arc(center.x, center.y, FLASHLIGHT_BASE_RADIUS, 0, Math.PI * 2);
   darkCtx.fill();
 
-  // a soft, wide ambient glow around the player so the near-ground isn't pure black
+  // 9TH ROUND (item 22) BUG FIX: this "soft glow near the player's own feet"
+  // never reset globalCompositeOperation back to 'source-over' after the
+  // flashlight circle above set it to 'destination-out' — so it was ALSO
+  // erasing darkness, at a cssW*0.55 radius (nearly the whole phone-landscape
+  // screen), regardless of where the flashlight actually pointed. That is
+  // the real, verified root cause of "boss/barrels visible without aiming
+  // the light at them." Kept as destination-out (it's still meant to soften
+  // pure black right at the player's own footing), but shrunk drastically —
+  // to roughly the barrel/COVER interaction scale, not screen scale — so it
+  // only ever affects the player's immediate footing.
+  const ambientR = BARREL_TOUCH_RADIUS_PX * 2.2;
   const ambient = darkCtx.createRadialGradient(
-    state.centerX, state.cssH * 0.95, 0,
-    state.centerX, state.cssH * 0.95, state.cssW * 0.55
+    state.centerX, state.cssH * 0.97, 0,
+    state.centerX, state.cssH * 0.97, ambientR
   );
-  ambient.addColorStop(0, 'rgba(0,0,0,0.55)');
+  ambient.addColorStop(0, 'rgba(0,0,0,0.35)');
   ambient.addColorStop(1, 'rgba(0,0,0,0)');
+  darkCtx.globalCompositeOperation = 'destination-out';
   darkCtx.fillStyle = ambient;
   darkCtx.beginPath();
-  darkCtx.arc(state.centerX, state.cssH * 0.95, state.cssW * 0.55, 0, Math.PI * 2);
+  darkCtx.arc(state.centerX, state.cssH * 0.97, ambientR, 0, Math.PI * 2);
   darkCtx.fill();
 
   ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
@@ -4359,6 +4796,31 @@ function updateHud() {
   if (ammoText !== p.lastAmmoText) { ammoCountEl.textContent = ammoText; p.lastAmmoText = ammoText; }
   ammoReserveEl.textContent = p.reserve;
 
+  // 9TH ROUND (items 4/6): AMMO readout directly under LIFE — current/
+  // MAGAZINE CAPACITY (not the reserve pool ammoReserveEl already shows),
+  // plus a "RELOADING..." line while reloading so 0-ammo is never a silent
+  // dead end on screen.
+  if (p.ammo !== p.lastAmmoBelowHpCount || p.reloading !== p.lastAmmoBelowHpReloading) {
+    ammoBelowHpCountEl.textContent = p.ammo;
+    ammoBelowHpReloadingEl.hidden = !p.reloading;
+    ammoBelowHpReadoutEl.classList.toggle('empty', p.ammo <= 0);
+    ammoBelowHpReadoutEl.classList.toggle('low', p.ammo > 0 && p.ammo <= Math.ceil(MAG_SIZE * 0.25));
+    p.lastAmmoBelowHpCount = p.ammo;
+    p.lastAmmoBelowHpReloading = p.reloading;
+  }
+
+  // 9TH ROUND (item 36): ESCAPE MODE's own TIME LEFT readout — M:SS,
+  // dirty-checked at whole-second granularity like every other HUD write.
+  if (state.gameMode === 'escape') {
+    const secsLeft = Math.ceil(state.escape.timeLeftSec);
+    if (secsLeft !== state.escape.lastTimeLeftDisplayedSec) {
+      const mm = Math.floor(secsLeft / 60);
+      const ss = String(secsLeft % 60).padStart(2, '0');
+      escapeTimeLeftValueEl.textContent = mm + ':' + ss;
+      state.escape.lastTimeLeftDisplayedSec = secsLeft;
+    }
+  }
+
   const stealthText = p.stealth ? 'ON' : 'OFF';
   if (stealthText !== p.lastStealthText) {
     stealthStateEl.textContent = stealthText;
@@ -4379,6 +4841,141 @@ function updateHud() {
   // PART 17: FOCUS gauge.
   const focusPct = Math.round((p.focus / FOCUS_MAX) * 100);
   if (focusPct !== p.lastFocusFillPct) { focusFillEl.style.width = focusPct + '%'; p.lastFocusFillPct = focusPct; }
+}
+
+// 9TH ROUND (item 37): ESCAPE-exclusive enemy pursuit oscillation — see the
+// full root-cause/design comment on ESCAPE_ENEMY_PURSUIT_MIN_Z above. Only
+// ever called from frame()'s ESCAPE branch; COMBAT's own applyForwardDelta()/
+// updateEnemy() distance logic never calls this and is completely untouched.
+function updateEscapeEnemyPursuit(now) {
+  const e = state.enemy;
+  if (e.deathState !== 'alive') return;
+  // Only while nothing else owns e.z (claw approach/recovery, or any future
+  // attack-side z write) — same "idle = free to move" rule COMBAT's own
+  // recovery gating uses (see applyForwardDelta()'s isClawIdle).
+  if (e.attackState !== 'idle') return;
+  const phase = (now % ESCAPE_ENEMY_PURSUIT_PERIOD_MS) / ESCAPE_ENEMY_PURSUIT_PERIOD_MS;
+  const mid = (ESCAPE_ENEMY_PURSUIT_MIN_Z + ESCAPE_ENEMY_PURSUIT_MAX_Z) / 2;
+  const amp = (ESCAPE_ENEMY_PURSUIT_MAX_Z - ESCAPE_ENEMY_PURSUIT_MIN_Z) / 2;
+  e.z = mid - amp * Math.cos(phase * Math.PI * 2); // starts near MAX (falling behind), closes in, retreats, repeats
+}
+
+// 9TH ROUND (item 30-35): shared CLEAR SEQUENCE — reachable from COMBAT
+// (boss defeated) and ESCAPE (TIME LIMIT hit 0). idempotent: a second call
+// while already active is a no-op, so nothing can double-trigger it.
+function triggerClearSequence(now, reason) {
+  if (state.clearSequence.active) return;
+  state.clearSequence.active = true;
+  state.clearSequence.phase = 'gateAppear';
+  state.clearSequence.phaseStartedAt = now;
+  state.clearSequence.reason = reason;
+  if (DEBUG_MODE) r10DebugLog('CLEAR SEQUENCE START (' + reason + ')');
+}
+
+function clearSequenceResolve(now) {
+  // 9TH ROUND note (honest scope disclosure — see completion report item
+  // 48): DARKOUT-TPS is a single-arena test-bed prototype with no stage
+  // manifest/sequencer (unlike ACTION-GAME's MAIN SCENARIO stage list) — so
+  // "transition to the next stage/state" is implemented here as looping
+  // back into a fresh encounter of the SAME kind that was just cleared,
+  // which is the closest honest equivalent this codebase actually has.
+  const reason = state.clearSequence.reason;
+  state.clearSequence.active = false;
+  state.clearSequence.phase = 'idle';
+  state.clearSequence.reason = null;
+  if (reason === 'combat') {
+    spawnEnemy(state.enemy.type);
+  } else if (reason === 'escape') {
+    state.escape.timeLeftSec = ESCAPE_TIME_LIMIT_SEC;
+  }
+  if (DEBUG_MODE) r10DebugLog('CLEAR SEQUENCE COMPLETE (' + reason + ')');
+}
+
+function updateClearSequence(now) {
+  const cs = state.clearSequence;
+  if (!cs.active) return;
+  const elapsed = now - cs.phaseStartedAt;
+  if (cs.phase === 'gateAppear' && elapsed >= CLEAR_GATE_APPEAR_MS) {
+    cs.phase = 'gateOpen'; cs.phaseStartedAt = now;
+  } else if (cs.phase === 'gateOpen' && elapsed >= CLEAR_GATE_OPEN_MS) {
+    cs.phase = 'playerRun'; cs.phaseStartedAt = now;
+  } else if (cs.phase === 'playerRun' && elapsed >= CLEAR_PLAYER_RUN_MS) {
+    cs.phase = 'lightExpand'; cs.phaseStartedAt = now;
+  } else if (cs.phase === 'lightExpand' && elapsed >= CLEAR_LIGHT_EXPAND_MS) {
+    cs.phase = 'whiteOut'; cs.phaseStartedAt = now;
+  } else if (cs.phase === 'whiteOut' && elapsed >= CLEAR_WHITEOUT_MS + CLEAR_HOLD_WHITE_MS) {
+    clearSequenceResolve(now);
+  }
+}
+
+// Canvas-only — no new image assets. Drawn as the LAST thing in frame()'s
+// render section (after HUD-relevant canvas content, before nothing else),
+// so it visually overlays the whole scene. A no-op draw whenever inactive.
+function renderClearSequence(now) {
+  const cs = state.clearSequence;
+  if (!cs.active) return;
+  const elapsed = now - cs.phaseStartedAt;
+  const w = state.cssW, h = state.cssH;
+  const gateCX = state.centerX;
+  const gateCY = h * 0.42;
+  const gateW = Math.min(w * 0.32, 260);
+  const gateH = gateW * 1.5;
+
+  if (cs.phase === 'gateAppear') {
+    const t = Math.min(1, elapsed / CLEAR_GATE_APPEAR_MS);
+    ctx.save();
+    ctx.globalAlpha = t;
+    ctx.strokeStyle = '#cfd8e0';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(gateCX - gateW / 2, gateCY - gateH / 2, gateW, gateH);
+    ctx.fillStyle = '#05070a';
+    ctx.fillRect(gateCX - gateW / 2 + 3, gateCY - gateH / 2 + 3, gateW - 6, gateH - 6);
+    ctx.restore();
+  } else if (cs.phase === 'gateOpen' || cs.phase === 'playerRun') {
+    const t = cs.phase === 'gateOpen' ? Math.min(1, elapsed / CLEAR_GATE_OPEN_MS) : 1;
+    ctx.save();
+    // two door halves slide apart, revealing a growing white gap between them
+    const doorGap = gateW * 0.5 * t;
+    ctx.strokeStyle = '#cfd8e0';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(gateCX - gateW / 2, gateCY - gateH / 2, gateW, gateH);
+    // light spilling through the opening gap
+    const glowW = Math.max(1, doorGap * 2);
+    const grad = ctx.createLinearGradient(gateCX - glowW / 2, 0, gateCX + glowW / 2, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.5, 'rgba(255,255,255,0.95)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(gateCX - glowW / 2, gateCY - gateH / 2 + 3, glowW, gateH - 6);
+    // left/right door leaves sliding outward
+    ctx.fillStyle = '#0b0f14';
+    ctx.fillRect(gateCX - gateW / 2 + 3, gateCY - gateH / 2 + 3, gateW / 2 - 3 - doorGap, gateH - 6);
+    ctx.fillRect(gateCX + doorGap, gateCY - gateH / 2 + 3, gateW / 2 - 3 - doorGap, gateH - 6);
+    if (cs.phase === 'playerRun') {
+      // player sprint cue: brighten + scale the existing player draw slightly
+      // toward the gate by nudging strafeOffset toward center — purely
+      // cosmetic, gameplay input is already frozen (see frame()'s gate).
+      const rt = Math.min(1, elapsed / CLEAR_PLAYER_RUN_MS);
+      state.player.strafeOffset *= (1 - rt * 0.06);
+    }
+    ctx.restore();
+  } else if (cs.phase === 'lightExpand') {
+    const t = Math.min(1, elapsed / CLEAR_LIGHT_EXPAND_MS);
+    const r = t * Math.hypot(w, h);
+    const grad = ctx.createRadialGradient(gateCX, gateCY, 0, gateCX, gateCY, Math.max(1, r));
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.save();
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  } else if (cs.phase === 'whiteOut') {
+    const t = Math.min(1, elapsed / CLEAR_WHITEOUT_MS);
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,' + t.toFixed(3) + ')';
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -4460,7 +5057,17 @@ function frame(ts) {
   if (actions.pauseToggle) togglePauseMenu();
 
   if (!state.paused) {
-    if (state.gameMode === 'escape') {
+    // 9TH ROUND (item 30-35): CLEAR SEQUENCE owns the frame while active —
+    // advance its own time-based phase machine, but skip every normal
+    // FIRE/MOVE/DASH/RELOAD/COVER/LIGHT/enemy-update call below entirely
+    // (no updatePlayer/updateEscapePlayer/updateEnemy/updateBullets/
+    // fireWeapon calls at all), so the player can never take damage or fire
+    // mid-sequence, and it can never be re-triggered while already active
+    // (see triggerClearSequence()'s own guard).
+    updateClearSequence(ts);
+    if (state.clearSequence.active) {
+      // intentionally no gameplay update this frame — render-only below.
+    } else if (state.gameMode === 'escape') {
       // ESCAPE: its own dedicated player-update path — still no
       // updatePlayer()/updateBullets()/fireWeapon() call anywhere in this
       // branch, so the PLAYER still has zero attack commands and no shot
@@ -4481,7 +5088,16 @@ function frame(ts) {
       const forwardDelta = updateEscapePlayer(dt, ts, state.input.moveX, escActions);
       applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
       updateEnemy(dt, ts);
+      updateEscapeEnemyPursuit(ts);
       updateParticles(dt); // ESCAPE itself still spawns no particles directly, but the now-active enemy's own attack impacts do (spark/smoke/shockwave) — no longer a pure no-op
+      // 9TH ROUND (item 36): real elapsed-time countdown, ticked only while
+      // unpaused and the CLEAR SEQUENCE isn't already running (guarded
+      // above) — reaching 0 triggers the SAME shared CLEAR SEQUENCE COMBAT
+      // uses on boss defeat, per spec's "共通の演出" requirement.
+      if (state.escape.timeLeftSec > 0) {
+        state.escape.timeLeftSec = Math.max(0, state.escape.timeLeftSec - dt);
+        if (state.escape.timeLeftSec <= 0) triggerClearSequence(ts, 'escape');
+      }
     } else {
       const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
       applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
@@ -4506,7 +5122,12 @@ function frame(ts) {
     renderEnemy(theme);
     renderParticles();
     renderEscapePlayer();
-    renderFlashlightMask();
+    // 9TH ROUND (item 20): ESCAPE MODE has no LIGHT at all — it is a
+    // survive-until-TIME-LIMIT mode, not explore-in-darkness, so the
+    // darkness mask/flashlight is never drawn here (was previously called
+    // unconditionally in this branch, gated only by theme==='escape', which
+    // no longer implies gameMode==='escape' now that STAGE TYPE and GAME
+    // MODE are decoupled).
     renderEnemyTelegraphs(theme);
   } else {
     renderEnemy(theme);
@@ -4519,6 +5140,12 @@ function frame(ts) {
     // reverse.
     renderParticles();
     renderPlayer(theme);
+    // 9TH ROUND (item 14): redraw the cover-providing barrel's foreground
+    // portion on top of the player so COVER visually reads as "behind the
+    // drum can," not "sprite swap while standing in front of it." Runs
+    // before the darkness mask so it is lit/darkened like any other world
+    // object, consistent with renderBarrels() itself.
+    renderBarrelForeground();
     renderFlashlightMask();
     // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
     // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
@@ -4534,6 +5161,11 @@ function frame(ts) {
     renderEnemyTelegraphs(theme);
     renderAimReticle();
   }
+
+  // 9TH ROUND (item 30-35): drawn last so it overlays the whole scene
+  // (gate/door/light-expand/WHITE OUT), in both COMBAT and ESCAPE — a
+  // genuine no-op draw whenever inactive.
+  renderClearSequence(ts);
 
   updateHud();
 
@@ -4628,4 +5260,7 @@ window.__darkoutTps = {
   // diagnostic state; nothing here is ever written FROM a test back into
   // gameplay logic.
   DEBUG_MODE, r10DebugState,
+  // 9TH ROUND: STAGE TYPE / GAME MODE independence — exposed for automated
+  // testing only.
+  setGameMode,
 };

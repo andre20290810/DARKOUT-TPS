@@ -240,9 +240,27 @@ html, body {
   top: max(10px, env(safe-area-inset-top));
   left: max(14px, env(safe-area-inset-left));
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+/* 9TH ROUND: HP label + bar now their own inner row so the new AMMO
+   readout below can sit directly UNDER the LIFE gauge (item 6), not
+   beside it — #hud-top-left itself switched from a row to a column. */
+#hp-row {
+  display: flex;
   align-items: center;
   gap: 8px;
 }
+#ammo-below-hp-readout {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #e0e6ea;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+#ammo-below-hp-readout.low { color: #ffb85e; }
+#ammo-below-hp-readout.empty { color: #ff6b6b; }
 #hp-label {
   font-size: 11px;
   font-weight: 700;
@@ -557,20 +575,24 @@ html, body {
   font-weight: bold;
   color: #8fffb0;
 }
-#r10-dbg-game, #r10-dbg-player, #r10-dbg-fire, #r10-dbg-shot,
+#r10-dbg-game, #r10-dbg-player, #r10-dbg-ammo, #r10-dbg-fire, #r10-dbg-shot,
 #r10-dbg-enemy, #r10-dbg-input, #r10-dbg-log {
   -webkit-user-select: text;
   user-select: text;
   pointer-events: auto;
 }
 
-#theme-switch, #enemy-switch {
+#theme-switch, #gamemode-switch, #enemy-switch {
   position: absolute;
   z-index: 50;
   display: flex;
   gap: 4px;
 }
 #theme-switch { top: max(10px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); top: 40px; }
+/* 9TH ROUND: GAME MODE (COMBAT/ESCAPE) is now a second, independent
+   dev/test row directly under STAGE TYPE — see setGameMode() in game.js.
+   Reuses .theme-btn's own visual style via .gamemode-btn below. */
+#gamemode-switch { top: max(10px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); top: 66px; }
 /* 5TH ROUND PART 15: ENEMY SELECT/AUTO MODE panel moved from the top
    (where it competed with the combat HUD) down to the controller panel's
    bottom-right, per spec ("MODE表示...コントローラーパネル下部へ...上部
@@ -581,7 +603,7 @@ html, body {
    round) so it never overflows offscreen on a narrow landscape phone.
    Only the POSITION changed — selectEnemy()/AUTO MODE logic is untouched. */
 #enemy-switch { bottom: 145px; right: max(14px, env(safe-area-inset-right)); max-width: 46vw; flex-wrap: wrap; justify-content: flex-end; }
-.theme-btn, .enemy-btn {
+.theme-btn, .enemy-btn, .gamemode-btn {
   font-size: 9px;
   letter-spacing: 0.05em;
   padding: 4px 7px;
@@ -590,7 +612,7 @@ html, body {
   color: #9fb0bd;
   border-radius: 3px;
 }
-.theme-btn.active, .enemy-btn.active {
+.theme-btn.active, .enemy-btn.active, .gamemode-btn.active {
   background: rgba(80,180,255,0.35);
   border-color: rgba(120,200,255,0.8);
   color: #fff;
@@ -686,13 +708,27 @@ html, body {
    body.escape-mode is only ever present while state.gameMode === 'escape'. */
 .touch-escape-only { display: none; }
 body.escape-mode .touch-escape-only { display: block; }
+#escape-timeleft-readout {
+  display: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #e0e6ea;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+body.escape-mode #escape-timeleft-readout { display: block; }
 body.escape-mode #ammo-readout,
+body.escape-mode #ammo-below-hp-readout,
+body.escape-mode #ammo-below-hp-reloading,
 body.escape-mode #stealth-readout,
 body.escape-mode #enemy-hud,
 body.escape-mode #focus-hud,
 body.escape-mode #touch-fire,
 body.escape-mode #touch-reload,
 body.escape-mode #touch-stealth,
-body.escape-mode #touch-focus {
+body.escape-mode #touch-focus,
+body.escape-mode #touch-light-pad {
+  /* 9TH ROUND item 20: ESCAPE MODE has no LIGHT input/rendering/UI at all —
+     it is a survive-until-TIME-LIMIT mode, not explore-in-darkness. */
   display: none;
 }

@@ -81,8 +81,20 @@
   <!-- HUD: health / ammo / stealth / theme / enemy HP / FOCUS, kept as static DOM nodes updated via textContent/style only (no per-frame element creation) -->
   <div id="hud">
     <div id="hud-top-left">
-      <div id="hp-label">HP</div>
-      <div id="hp-bar-track"><div id="hp-bar-fill"></div></div>
+      <div id="hp-row">
+        <div id="hp-label">HP</div>
+        <div id="hp-bar-track"><div id="hp-bar-fill"></div></div>
+      </div>
+      <!-- 9TH ROUND (items 4/6): magazine-vs-capacity readout directly under
+           LIFE, so a player can tell at a glance whether they're about to
+           run dry (separate concept from #ammo-readout's own current/
+           RESERVE-POOL pairing at top-right, which is untouched). -->
+      <div id="ammo-below-hp-readout">AMMO <span id="ammo-below-hp-count">12</span>/<span id="ammo-below-hp-mag">12</span></div>
+      <div id="ammo-below-hp-reloading" hidden>RELOADING...</div>
+      <!-- 9TH ROUND (item 36): ESCAPE MODE's own TIME LIMIT readout — hidden
+           in COMBAT MODE via CSS (body.escape-mode gate), shown only while
+           state.gameMode==='escape'. -->
+      <div id="escape-timeleft-readout">TIME LEFT <span id="escape-timeleft-value">1:30</span></div>
     </div>
     <div id="hud-top-right">
       <div id="ammo-readout">AMMO <span id="ammo-count">12</span>/<span id="ammo-reserve">48</span></div>
@@ -162,6 +174,7 @@
     </div>
     <div id="r10-dbg-game"></div>
     <div id="r10-dbg-player"></div>
+    <div id="r10-dbg-ammo"></div>
     <div id="r10-dbg-fire"></div>
     <div id="r10-dbg-shot"></div>
     <div id="r10-dbg-enemy"></div>
@@ -170,11 +183,22 @@
     <div id="r10-dbg-log"></div>
   </div>
 
-  <!-- Theme switch (dev/test control, always visible in this prototype) -->
+  <!-- Theme switch (dev/test control, always visible in this prototype).
+       9TH ROUND: STAGE TYPE (this button row) and GAME MODE (the new
+       #gamemode-switch row below) are now independently selectable —
+       state.theme (LAB/ARMORED/ESCAPE, purely cosmetic corridor/world
+       appearance) no longer forces state.gameMode (COMBAT/ESCAPE, which
+       PLAYER control scheme + win condition apply). Clicking a STAGE TYPE
+       button here now changes ONLY the visuals; GAME MODE stays whatever
+       #gamemode-switch was last set to. -->
   <div id="theme-switch">
     <button type="button" data-theme="lab" class="theme-btn active">LAB</button>
     <button type="button" data-theme="armored" class="theme-btn">ARMORED</button>
     <button type="button" data-theme="escape" class="theme-btn">ESCAPE</button>
+  </div>
+  <div id="gamemode-switch">
+    <button type="button" data-gamemode="combat" class="gamemode-btn active">COMBAT MODE</button>
+    <button type="button" data-gamemode="escape" class="gamemode-btn">ESCAPE MODE</button>
   </div>
 
   <!-- 4th round PART 10/11: ENEMY SELECT — extends the previous ROID1/
