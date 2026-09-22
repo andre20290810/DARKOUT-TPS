@@ -514,8 +514,19 @@ const AIM_LIGHT_CLAMP_MARGIN_PX = 6;
 // Applied ONLY to the gamepad's own curved aim axis before it's written
 // into state.input.aimX/Y — TOUCH AIM's contribution is read completely
 // unaffected by this, per spec ("TOUCH側とは必要に応じて別管理").
-const AIM_SENSITIVITY_PRESETS = { low: 0.7, normal: 1.0, high: 1.4 };
-let controllerAimSensitivity = AIM_SENSITIVITY_PRESETS.normal;
+// 15TH ROUND (items 35-39): re-investigated the existing 3-tier system —
+// it was LOW(0.7)/NORMAL(1.0)/HIGH(1.4), defaulting to NORMAL. Per this
+// round's explicit instruction, whichever tier was SLOWEST becomes the new
+// STANDARD/default going forward (LOW's own 0.7 value, unchanged), with
+// the other two tiers reconstructed around it as SLOW (finer than
+// STANDARD) and FAST (quicker than STANDARD, reusing the old NORMAL value
+// so a player who liked the old default keeps that exact feel under its
+// new FAST label). Scoped to RIGHT STICK AIM only — see
+// controllerAimSensitivity's own read site (state.input.aimX/Y) below;
+// LEFT STICK LIGHT (applyLightCurve()) and player MOVE never read this at
+// all, so neither is affected by this change (item 38).
+const AIM_SENSITIVITY_PRESETS = { slow: 0.5, standard: 0.7, fast: 1.0 };
+let controllerAimSensitivity = AIM_SENSITIVITY_PRESETS.standard;
 
 const FIRE_COOLDOWN_MS = 130;
 // 12TH ROUND (item 9): MAG_SIZE 12->30. RESERVE_MAX scaled by the SAME
@@ -603,29 +614,22 @@ const FIRE_POSE_SCALE_BOOST = 1.02;
 // computePlayerDrawRect()/fireWeapon() so the muzzle flash/bullet origin
 // tracks the player's ACTUAL on-screen size instead of a fixed formula.
 const MUZZLE_HEIGHT_FRAC = 0.27;
-// 11TH ROUND (items 24-27, 44-48): SOUTH WALK re-fix. Round 10's continuous
-// sin-based body-bob (a single real image sliding smoothly up/down) was
-// judged on real devices as still reading like "a static image sliding,"
-// not walking. Re-investigated assets/player/ per item 26 — there is still
-// only ONE real south-facing image on disk (player_dash_south.png; see
-// ASSETS.player.southWalk/dashS) — no genuine multi-pose south asset was
-// invented. Per item 26's fallback, this builds DISCRETE Canvas-only
-// "recognizably distinct frames" from that single source image: each of
-// the 3 slots below (stepped through in lockstep with the SAME
-// p.walkFrame index NORTH's own 3-frame walk[] cycle already uses, via the
-// SAME p.walkTimer > 0.14 cadence) applies a small combination of
-// horizontal lean (dxFrac, simulates alternating weight-shift/stride),
-// vertical bob (dyFrac, foot-anchored lift), and body scale — switched
-// discretely per frame (no interpolation between them) so consecutive
-// frames read as distinct poses stepping, not one image smoothly sliding.
-// scale stays within [0.992, 1.008] — a 1.6%-wide band centered on 1.0,
-// comfortably inside the spec's ±2% cap (item 27) with margin for the
-// dxFrac/dyFrac offsets themselves never being read as a size change.
-const SOUTH_WALK_FRAME_OFFSETS = [
-  { dxFrac: 0, dyFrac: 0, scale: 1.0 },
-  { dxFrac: 0.014, dyFrac: -0.018, scale: 1.008 },
-  { dxFrac: -0.014, dyFrac: -0.008, scale: 0.992 },
-];
+// 11TH ROUND (items 24-27, 44-48): SOUTH WALK re-fix (SUPERSEDED — see
+// 15TH ROUND note below). Round 10's continuous sin-based body-bob (a
+// single real image sliding smoothly up/down) was judged on real devices
+// as still reading like "a static image sliding," not walking. At the
+// time there was still only ONE real south-facing image on disk
+// (player_dash_south.png), so a DISCRETE Canvas-transform trick
+// (SOUTH_WALK_FRAME_OFFSETS, formerly defined here) simulated 3 distinct
+// poses from that single source image via small per-frame lean/bob/scale
+// offsets, stepped through in lockstep with the SAME p.walkFrame index
+// NORTH's own 3-frame walk[] cycle already uses.
+// 15TH ROUND (items 4-9, 40-41): the user supplied 3 genuine south-facing
+// walking photographs — SOUTH_WALK_FRAME_OFFSETS' pseudo-walk trick is no
+// longer needed and has been removed; ASSETS.player.southWalkFrames[] (3
+// real coverSpriteFrame()-measured images) plus renderPlayer()'s
+// usingSouthWalkPose branch (reusing computeBodyVisualScale(), the SAME
+// alpha-bounds normalization COVER/ROID/ESCAPE already use) replace it.
 
 const GAMEPAD_AXIS_DEADZONE = 0.16;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
@@ -639,6 +643,15 @@ const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
 // as real input (this is the same class of bug ACTION-GAME's own gamepad
 // work already had to solve — see that project's "settle window" fix).
 const GAMEPAD_SETTLE_MS = 350;
+// 15TH ROUND (items 29-34): FOCUS's activation moved off LB (which was
+// double-booked with RELOAD — see edge(4)'s own comment below) onto a
+// RIGHT-STICK-CLICK (R3, standard-mapping button 11) HOLD, so a quick tap
+// never triggers it (avoiding an accidental FOCUS toggle from a player just
+// resting a finger on R3) while a deliberate hold still feels responsive.
+// 500ms sits in the middle of the ~400-600ms guideline range — short enough
+// that a real hold doesn't feel laggy, long enough that a reflexive/
+// accidental tap (well under 300ms on a real controller) never fires it.
+const FOCUS_R3_HOLD_MS = 500;
 
 // ---------------------------------------------------------------------
 // AIM — 4th round: position-integrated (velocity) control, replacing the
@@ -813,8 +826,22 @@ const MISSILE_DAMAGE = 24;
 // hit the same frame the fast-approach lands), CLAW_HIT_RANGE_PX is the
 // real lateral reach checked at the swing instant.
 const CLAW_BLINK_MS = 500;      // GABRIEL/ADAM blinks in place — first "something is coming" tell
-const CLAW_APPROACH_MS = 220;   // fast close-the-distance dash to its own zMin (same duration class as the player's own DASH_DURATION_MS)
-const CLAW_WINDUP_MS = 280;     // brief claw-raised telegraph AFTER arriving — the real "point of no return" reaction window (see DASH-evasion, PART 9)
+// 15TH ROUND (items 14-17): real-device play read the 220ms close-the-
+// distance dash as "abnormally fast," close to an instant teleport to melee
+// range. Slowed to a genuinely visible closing run (still a purposeful
+// approach, not a slow walk) — CLAW_APPROACH_MS alone controls this; the
+// eased-tween code that consumes it (updateEnemy()'s 'approach' sub-state)
+// is untouched, so the approach simply takes longer to cover the same
+// distance instead of gaining a new curve/overshoot.
+const CLAW_APPROACH_MS = 480;
+// 15TH ROUND (items 15-16): CLAW_WINDUP_MS is now long enough to hold a
+// genuine "decelerate/stop -> 2 SLOW, clearly-countable blinks -> attack"
+// telegraph (see renderEnemy()'s own inSlowTelegraph block below) instead
+// of the old single 280ms brief flicker — explicitly NOT a fast/strobing
+// flicker (item 16). Reused verbatim by 'counterAttack' (item 17: the
+// 5-HIT COUNTER's own close-range attack gets the SAME telegraph, not a
+// separate/parallel one).
+const CLAW_WINDUP_MS = 640;
 const CLAW_SWING_MS = 140;      // unchanged from the old single impact duration
 const CLAW_COOLDOWN_MS = 1200;  // unchanged from the old cooldown duration
 const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
@@ -846,7 +873,12 @@ const GABRIEL_ADAM_DAMAGE_INTERVAL_MS = 300; // minimum ms between damage-eligib
 // reachable without also having to reposition LIGHT itself.
 const GABRIEL_ADAM_REAIM_THRESHOLD_PX = FLASHLIGHT_BASE_RADIUS * 0.5;
 const GABRIEL_ADAM_DEFENSE_MS = 1100; // item 36: bounded, non-permanent — always exits back to normal battle (or into COUNTER at 5 hits)
-const GABRIEL_ADAM_COUNTER_APPROACH_MS = 260; // fast, visibly-tweened lunge — never an instant teleport (item 38)
+// 15TH ROUND (item 17): kept deliberately FASTER than the normal
+// CLAW_APPROACH_MS (480ms) — the user explicitly allows the 5-HIT COUNTER's
+// own approach to stay quicker than a normal attack's — but bumped up from
+// the original 260ms so it still reads as a fast lunge rather than an
+// instant teleport, matching item 38's own requirement.
+const GABRIEL_ADAM_COUNTER_APPROACH_MS = 340; // fast, visibly-tweened lunge — never an instant teleport (item 38)
 
 const ENEMY_TURN_COOLDOWN_MS = 850; // "heavy mech" — can't re-flip facing more often than this
 const ENEMY_TURN_HYSTERESIS_PX = 36; // player must cross this far past center before a flip is even considered
@@ -882,8 +914,24 @@ const ENEMY_LANE_TRACK_MULT = {
 // DRONE (a real ACTION-GAME "SECURITY DRONE" scout) is tuned most
 // aggressive; ADAM SPHERE (a slow-rotating stationary turret in its own
 // source material) stays the most patient of the group.
+// 15TH ROUND (items 24-28): real-device play still showed ROID1/ROID2/
+// DRONE/ADAM SPHERE leaving the player "一方的に撃っている" for too long,
+// even after the 14TH ROUND's own tuning — explicitly NOT to be judged by
+// the 30-second attack-COUNT numbers alone (item 24); the metric that
+// actually matters is the MAXIMUM IDLE GAP (longest real elapsed time from
+// one attack ending to the next beginning, item 27). Reuses the SAME
+// architecture (enemyAttackFreqMult()/idle-wait-window scaling) rather than
+// a new timer system (item 26) — only the 4 in-scope types' multipliers are
+// lowered here (roughly 30-40% further), further shrinking the random
+// idle-wait window that directly drives max idle gap, while the attack's
+// OWN telegraph/impact/recovery/cooldown timing is completely untouched
+// (item 28 — still no overlapping/unavoidable judgment windows). GABRIEL/
+// ADAM are explicitly OUT of scope this round (items 24-25 name only
+// ROID1/ROID2/DRONE/ADAM SPHERE) and are left at their 14TH ROUND values.
+// Relative ordering preserved: DRONE stays most aggressive, ADAM SPHERE
+// stays the most patient of the 4.
 const ENEMY_ATTACK_FREQ_MULT = {
-  drone: 0.55, roid1: 0.75, roid2: 0.70, gabriel: 0.65, adamSphere: 0.80, adam: 0.70,
+  drone: 0.35, roid1: 0.50, roid2: 0.48, gabriel: 0.65, adamSphere: 0.55, adam: 0.70,
 };
 // 13TH ROUND (item 4): ESCAPE keeps continuous attack pressure (SURVIVE +
 // dodge, not a quiet run) — reuses the SAME ENEMY_ATTACK_FREQ_MULT/
@@ -1115,7 +1163,11 @@ function r10CollectSnapshot(ts) {
     r12: (() => {
       const aim = getAimPoint();
       const light = getFlashlightCenter();
-      const hot = isAimOnEffectiveHit();
+      // 15TH ROUND (items 18-23): DEBUG panel's own "effectiveHit"/"aimColor"
+      // fields now read the SAME unified isEffectiveDamageNow() the real
+      // crosshair uses (not the older geometry-only isAimOnEffectiveHit()),
+      // so COPY DEBUG output always matches what's actually on screen.
+      const hot = isEffectiveDamageNow();
       const rect = computeEnemyDrawRect();
       const hitPt = getEffectiveHitPoint(rect);
       const isRoidType = e.type === 'roid1' || e.type === 'roid2';
@@ -1128,7 +1180,7 @@ function r10CollectSnapshot(ts) {
           hp: p.hp, dashDirection: dashActive && ts < p.fwdDashUntil ? (p.fwdDashSign > 0 ? 'north' : 'south') : '-' },
         aim: { x: Math.round(aim.x), y: Math.round(aim.y),
           lightCenterX: Math.round(light.x), lightCenterY: Math.round(light.y),
-          lightRadius: FLASHLIGHT_BASE_RADIUS, effectiveHit: hot, aimColor: hot ? 'red' : 'white' },
+          lightRadius: FLASHLIGHT_BASE_RADIUS, effectiveHit: hot, aimColor: hot ? 'yellow' : 'white' },
         focus: { targetType: isRoidType && rect.headX != null ? 'head' : 'body',
           targetX: Math.round(hitPt.x), targetY: Math.round(hitPt.y),
           effectiveDamagePoint: hitPt.x.toFixed(0) + ',' + hitPt.y.toFixed(0) },
@@ -1670,14 +1722,28 @@ const ASSETS = {
     // decision from a much earlier round (see dashN's own comment: "the
     // protagonist never turns to face south in this game") — but per this
     // round's explicit instruction, normal SOUTH movement now gets a real
-    // south-facing sprite. Reuses the EXISTING, already-copied, currently
-    // UNUSED player_dash_south.png (a genuine front-on running pose,
-    // same 384x340 canvas/padding as every other player_*.png here, so it
-    // needs no separate alpha-measured anchor like COVER/ESCAPE's frames
-    // do — the plain centered/bottom-anchored draw path already works).
-    // Scoped to NORMAL walk only — BACKSTEP (the special south-facing-
-    // camera-away lunge action) is untouched and still uses dashN.
-    southWalk: loadImg('assets/player/player_dash_south.png'),
+    // south-facing sprite. Scoped to NORMAL walk only — BACKSTEP (the
+    // special south-facing-camera-away lunge action) is untouched and
+    // still uses dashN/dashS below (the old single player_dash_south.png).
+    // 15TH ROUND (items 4-9, 40-41): the 11TH ROUND's single-image
+    // Canvas-transform pseudo-walk (SOUTH_WALK_FRAME_OFFSETS, now removed)
+    // is replaced by 3 genuine user-supplied south-walk photos, used
+    // EXACTLY as provided (no
+    // regeneration/recropping of the source files) — 01→02→03→01... in
+    // lockstep with the SAME p.walkFrame index NORTH's own walk[] cycle
+    // already uses. bodyTopFrac/bodyBottomFrac/bodyCenterXFrac below are
+    // real alpha-channel measurements (Python/Pillow: bodyTop/Bottom = the
+    // first/last row with any alpha>10 pixel; bodyCenterXFrac = the alpha-
+    // weighted column centroid) of each of the 3 actual source PNGs — never
+    // guessed — reusing coverSpriteFrame() (the SAME helper COVER's own 3
+    // south/north/east poses already use for this exact "differently-
+    // padded source photos must read as one consistent on-screen body
+    // size/foot position" problem, see computeBodyVisualScale()).
+    southWalkFrames: [
+      coverSpriteFrame('assets/player/player_walk_south_01.png', 0.0113, 0.9452, 0.5067),
+      coverSpriteFrame('assets/player/player_walk_south_02.png', 0.0207, 0.9900, 0.5062),
+      coverSpriteFrame('assets/player/player_walk_south_03.png', 0.0000, 0.9735, 0.4999),
+    ],
     // 10TH ROUND (items 1-2): re-investigated assets/player/ — there is
     // still only ONE south-facing player image on disk
     // (player_dash_south.png). Per this round's explicit instruction, a
@@ -2212,6 +2278,14 @@ const state = {
   // returns neutral input but keeps re-syncing prevButtons so no stale/
   // noisy pre-settle state can leak in as a real input once settle ends.
   gamepadSettleUntil: 0,
+  // 15TH ROUND (items 29-34): R3 (right-stick click)-HOLD FOCUS. Timestamp
+  // of R3's own most recent rising edge (button 11), or null while R3 is
+  // not held — pollGamepad() compares `now - r3HoldStartAt` against
+  // FOCUS_R3_HOLD_MS each frame to decide whether FOCUS is actually active
+  // yet (see gpFocusHeldLocal below). A single top-level field (not nested
+  // under state.input) since it tracks raw HOLD DURATION, not a per-frame
+  // input value.
+  r3HoldStartAt: null,
   // 9TH ROUND (item 39-43): pure diagnostic fields for the CONTROLLER-only
   // startup investigation — never read by any gameplay/control-flow logic,
   // only written for ?debug=1 visibility. lastGamepadButtonIndex/-At track
@@ -2488,6 +2562,7 @@ window.addEventListener('gamepaddisconnected', (e) => {
     state.gamepadConnected = false;
     state.prevButtons = [];
     state.gamepadSettleUntil = 0;
+    state.r3HoldStartAt = null; // 15TH ROUND: never let a stale hold-start timestamp survive a disconnect/reconnect
   }
 });
 
@@ -2761,27 +2836,30 @@ function pollGamepad(now) {
     gpAim.y = applyAimCurve(gp.axes[3] || 0);
 
     gpFire = pressed(5);                            // RB = FIRE
-    // 4th round: LB is FOCUS/AUTO AIM — a HELD state (consumed continuously
-    // in updatePlayer(), not an edge-triggered one-shot action), replacing
-    // the retired FLASH. See gpFocusHeld below and PART 16/17/19.
-    const gpFocusHeldLocal = pressed(4);
+    // 15TH ROUND (items 29-34): FOCUS is now a RIGHT-STICK-CLICK (R3,
+    // button 11) HOLD — pressed(11) alone is a raw instantaneous read, so
+    // r3HoldStartAt tracks the REAL wall-clock moment R3 was first pressed
+    // (set once on its own rising edge, cleared the instant it releases)
+    // and gpFocusHeldLocal only goes true once that duration crosses
+    // FOCUS_R3_HOLD_MS — a short tap never reaches the threshold and so
+    // never activates FOCUS at all (item 30). LB is FULLY freed of FOCUS
+    // duty here (see edge(4) below — LB is RELOAD only now), resolving the
+    // double-booking the 10TH ROUND's own comment used to describe.
+    const r3Pressed = pressed(11);
+    if (r3Pressed && state.r3HoldStartAt == null) state.r3HoldStartAt = now || 0;
+    else if (!r3Pressed) state.r3HoldStartAt = null;
+    const gpFocusHeldLocal = r3Pressed && state.r3HoldStartAt != null && (now || 0) - state.r3HoldStartAt >= FOCUS_R3_HOLD_MS;
     if (edge(3)) state.actions.northDash = true;      // Y = NORTH DASH
     if (edge(2)) state.actions.westDash = true;       // X = WEST DASH
     if (edge(1)) state.actions.eastDash = true;       // B = EAST DASH
     if (edge(0)) state.actions.southDash = true;      // A = SOUTH DASH / BACKSTEP
-    // 10TH ROUND (items 28-29): investigated the real button allocation —
-    // RELOAD had ended up on L3 (left-stick click) because a much earlier
-    // round's comment ("every face/shoulder/trigger is spoken for") treated
-    // LB as fully claimed by FOCUS/AUTO AIM. This round's explicit
-    // instruction is to make LB the PRIMARY controller RELOAD in COMBAT
-    // MODE. LB is a HELD button for FOCUS but a rising EDGE for RELOAD —
-    // the two are not mutually exclusive at the input layer (pressing LB
-    // starts a reload once AND keeps FOCUS active for as long as it's held
-    // afterward), so this adds LB as an edge-triggered RELOAD trigger
-    // without removing FOCUS. L3 is kept working too (harmless — reload is
-    // idempotent while already reloading/full), so no existing muscle
-    // memory breaks, but LB is now the one this round's spec asks for.
-    if (edge(4)) state.actions.reload = true;         // LB = RELOAD (primary, 10TH ROUND)
+    // 10TH ROUND (items 28-29) / 15TH ROUND (items 29, 34): LB is the
+    // PRIMARY controller RELOAD in COMBAT MODE, confirmed unchanged this
+    // round — and since FOCUS moved off LB onto R3-HOLD above, LB is now
+    // PURELY a RELOAD trigger with no second duty at all (the 10TH ROUND's
+    // "LB is held for FOCUS but an edge for RELOAD, not mutually exclusive"
+    // note no longer applies — there is nothing left to be exclusive with).
+    if (edge(4)) state.actions.reload = true;         // LB = RELOAD (primary)
     if (edge(10)) state.actions.reload = true;        // L3 = RELOAD (legacy, kept working)
     // 4th round: Start/Menu (standard mapping button 9) toggles PAUSE —
     // previously unused. Touch's own on-screen PAUSE button is unaffected.
@@ -3094,7 +3172,7 @@ document.querySelectorAll('.aim-sens-btn').forEach((btn) => {
     e.preventDefault();
     document.querySelectorAll('.aim-sens-btn').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
-    controllerAimSensitivity = AIM_SENSITIVITY_PRESETS[btn.dataset.sens] || AIM_SENSITIVITY_PRESETS.normal;
+    controllerAimSensitivity = AIM_SENSITIVITY_PRESETS[btn.dataset.sens] || AIM_SENSITIVITY_PRESETS.standard;
   });
 });
 
@@ -3743,9 +3821,13 @@ function resolveSniperImpact(now) {
   spawnParticle({ type: 'explosionFlash', x: e.fireToX, y: e.fireToY, r: 16, born: now, until: now + 90 });
   spawnParticle({ type: 'spark', x: e.fireToX, y: e.fireToY, born: now, until: now + 170 });
   if (invincible) {
-    showCenterMsg('AVOIDED', '#7fffb0');
+    // 15TH ROUND (items 10-13): on-screen "AVOIDED" text removed — the
+    // judgment itself (no damage while DASH-invincible) is unchanged, just
+    // recorded into DEBUG only (r10DebugLog is a silent no-op on a normal
+    // URL, see its own comment).
+    r10DebugLog('SNIPER: AVOIDED (dash-invincible)');
   } else if (blocked) {
-    showCenterMsg('BLOCKED', '#9fd8ff');
+    r10DebugLog('SNIPER: BLOCKED (cover)');
   } else {
     p.hp = Math.max(0, p.hp - SNIPER_DAMAGE);
     // 5TH ROUND PART 12/13: "HIT!" text removed — the blink IS the hit
@@ -3884,9 +3966,12 @@ function resolveMissileImpact(now) {
   e.explosionChainSpawned = 1;
 
   if (invincible) {
-    showCenterMsg('AVOIDED', '#7fffb0');
+    // 15TH ROUND (items 10-13): on-screen "AVOIDED"/"DODGED" text removed —
+    // the judgment itself (invincible / moved out of the target ellipse) is
+    // unchanged, just recorded into DEBUG only.
+    r10DebugLog('MISSILE: AVOIDED (dash-invincible)');
   } else if (!inSplash) {
-    showCenterMsg('DODGED', '#7fffb0');
+    r10DebugLog('MISSILE: DODGED (out of splash)');
   } else {
     p.hp = Math.max(0, p.hp - MISSILE_DAMAGE);
     p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
@@ -4279,7 +4364,10 @@ function updateEnemy(dt, now) {
           p.hp = Math.max(0, p.hp - CLAW_DAMAGE);
           p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
         } else {
-          showCenterMsg(dashInvincible ? 'AVOIDED' : 'MISS', '#7fffb0');
+          // 15TH ROUND (items 10-13): on-screen "AVOIDED"/"MISS" text
+          // removed — the hit-test/judgment above is unchanged, just
+          // recorded into DEBUG only.
+          r10DebugLog('CLAW: ' + (dashInvincible ? 'AVOIDED (dash-invincible)' : 'MISS (out of range)'));
         }
       }
     } else if (e.attackState === 'impact') {
@@ -4358,7 +4446,8 @@ function updateEnemy(dt, now) {
           p.hp = Math.max(0, p.hp - CLAW_DAMAGE);
           p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
         } else {
-          showCenterMsg(dashInvincible ? 'AVOIDED' : 'MISS', '#7fffb0');
+          // 15TH ROUND (items 10-13): on-screen text removed, DEBUG-only.
+          r10DebugLog('CLAW COUNTER: ' + (dashInvincible ? 'AVOIDED (dash-invincible)' : 'MISS (out of range)'));
         }
         // item 37: invulnerability ends the instant the attack itself
         // resolves — never lingers through the recovery tail below.
@@ -5620,11 +5709,21 @@ function renderPlayer(theme) {
   const coverFlip = usingCoverPose && p.coverFacing === 'west';
   const coverFrame = usingCoverPose ? (coverFlip ? ASSETS.player.cover.east : ASSETS.player.cover[p.coverFacing]) : null;
 
+  // 15TH ROUND (items 4-9): genuine 3-frame SOUTH WALK, gated the SAME way
+  // the old single-image southWalk pose was (walk + real south input),
+  // plus excluding dashActive up front (unlike the old img-identity check
+  // below, southWalkFrame is a per-frame OBJECT, not a stable image
+  // reference, so it can't be re-detected after the DASH override further
+  // down reassigns img — excluding dashActive here instead keeps the same
+  // net behavior: DASH always wins, exactly like before).
+  const usingSouthWalkPose = !usingCoverPose && !dashActive && !p.reloading && !firing && p.facing === 'walk' && p.moveDirSouth;
+  const southWalkFrame = usingSouthWalkPose ? ASSETS.player.southWalkFrames[p.walkFrame] : null;
+
   let img;
   if (usingCoverPose) img = coverFrame.img; // readiness checked below before this is ever flipped/drawn
   else if (p.reloading) img = ASSETS.player.aim;
   else if (firing) img = ASSETS.player.aim;
-  else if (p.facing === 'walk' && p.moveDirSouth) img = ASSETS.player.southWalk;
+  else if (usingSouthWalkPose) img = southWalkFrame.img;
   else if (p.facing === 'walk') img = ASSETS.player.walk[p.walkFrame];
   else img = ASSETS.player.aim;
   // COVER中はFIRE演出の拡大ポーズを適用しない — 画像そのものがCOVER専用に
@@ -5686,30 +5785,32 @@ function renderPlayer(theme) {
     dx = cx - centerXFrac * drawW;
     dy = bottomY - coverFrame.bodyBottomFrac * drawH;
     if (coverFlip) img = getFlippedCoverEastImage(coverFrame.img); // safe now: coverFrame.img already confirmed ready above
+  } else if (usingSouthWalkPose) {
+    // 15TH ROUND (items 6-7): normalize on-screen body size AND foot
+    // position across the 3 real source photos — reuses
+    // computeBodyVisualScale() verbatim (the SAME normalization COVER/
+    // ROID1/ROID2/ADAM SPHERE/ESCAPE already rely on for exactly this
+    // "differently-padded source images must read as one consistent body
+    // size" problem) rather than a naive fixed width/height scale (item 6
+    // explicitly forbids that — canvas size alone does not guarantee
+    // matching visible person size). Target height matches the player's
+    // own current standing (AIM pose) body height, same formula COVER
+    // already uses for standingBodyHeightPx, so SOUTH WALK reads as the
+    // same body size as the idle/NORTH-facing poses, not just consistent
+    // across its own 3 frames. bodyBottomFrac anchors the foot to the SAME
+    // fixed screen point (cx, bottomY) every frame — no vertical jitter on
+    // frame switch (item 7).
+    const standingBodyHeightPx = ASSETS.player.aim.naturalHeight * baseScale * p.scale;
+    const bodyScale = computeBodyVisualScale(southWalkFrame, standingBodyHeightPx);
+    drawW = southWalkFrame.img.naturalWidth * bodyScale;
+    drawH = southWalkFrame.img.naturalHeight * bodyScale;
+    dx = cx - southWalkFrame.bodyCenterXFrac * drawW;
+    dy = bottomY - southWalkFrame.bodyBottomFrac * drawH;
   } else {
     drawH = img.naturalHeight * baseScale * p.scale;
     drawW = img.naturalWidth * baseScale * p.scale;
     dx = cx - drawW / 2;
     dy = bottomY - drawH;
-    // 11TH ROUND (items 24-27, 44-48): 10TH ROUND's continuous sin-based
-    // body-bob read on real devices as "a static image sliding," not
-    // walking — see SOUTH_WALK_FRAME_OFFSETS' own comment above for the
-    // re-investigation (still only ONE real south image on disk). Replaced
-    // with a DISCRETE step through SOUTH_WALK_FRAME_OFFSETS, indexed
-    // directly by p.walkFrame (0/1/2, no interpolation between slots) —
-    // the SAME index NORTH's own walk[] array cycle already uses, so the
-    // footstep rhythm/cadence matches exactly, but the SOUTH pose now
-    // visibly switches (lean + bob + scale) once per step instead of
-    // smoothly sliding.
-    if (img === ASSETS.player.southWalk) {
-      const off = SOUTH_WALK_FRAME_OFFSETS[p.walkFrame];
-      const scaledW = drawW * off.scale;
-      const scaledH = drawH * off.scale;
-      dx = cx - scaledW / 2 + off.dxFrac * drawW;
-      dy = bottomY - scaledH + off.dyFrac * drawH;
-      drawW = scaledW;
-      drawH = scaledH;
-    }
   }
   // 5TH ROUND PART 12: short damage-blink — a brief brightness flash on the
   // player sprite the instant real damage lands (see PLAYER_HIT_FLASH_MS /
@@ -5719,9 +5820,21 @@ function renderPlayer(theme) {
   // STEALTH/COVER for its brief duration so "you were just hit" is never
   // masked by another state's own dimming/tinting.
   if (nowTs < p.hitFlashUntil) {
+    // 15TH ROUND (items 10-13): "HIT" text is gone entirely (already true
+    // since the 5TH ROUND, see resolveSniperImpact()'s own comment) and the
+    // generic brightness(2.2) pulse is replaced with a genuine RED blink on
+    // the PLAYER sprite itself — a source-atop fill drawn after the normal
+    // sprite, so the red only paints the sprite's own opaque silhouette
+    // (never a rectangle over the transparent background). Single brief
+    // pulse for the whole PLAYER_HIT_FLASH_MS window — non-strobing, and
+    // only ever entered on a REAL HP-reducing hit (see resolveSniperImpact/
+    // resolveMissileImpact/the CLAW hit-tests: MISS/DODGED/AVOIDED/BLOCKED/
+    // DEFENSE never set p.hitFlashUntil), so DAMAGE=0 cases never blink.
     ctx.save();
-    ctx.filter = 'brightness(2.2)';
     ctx.drawImage(img, dx, dy, drawW, drawH);
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.fillStyle = 'rgba(255,40,40,0.65)';
+    ctx.fillRect(dx, dy, drawW, drawH);
     ctx.restore();
     return;
   }
@@ -5873,10 +5986,25 @@ function renderEnemy(theme) {
   // explicitly SKIPPED whenever a real hit-flash is already active, so the
   // two never fight for priority on the same frame.
   const attackFlashStates = e.kind === 'claw'
-    ? ['blink', 'telegraph', 'impact', 'counterApproach', 'counterAttack']
+    ? ['blink', 'impact', 'counterApproach']
     : ['lock_red', 'lock_yellow', 'fire', 'lockon', 'target', 'impact'];
   const inAttackFlashWindow = ATTACK_FLASH_TYPES.has(e.type)
     && e.deathState === 'alive' && attackFlashStates.includes(e.attackState);
+  // 15TH ROUND (items 15-16): the pre-attack telegraph (right after
+  // 'approach' lands, before the swing) is now a genuine SLOW, clearly-
+  // countable 2-blink warning — split out of the fast attackFlashStates
+  // pulse above ('telegraph'/'counterAttack' removed from that array),
+  // which is left untouched for the OTHER claw states (the pre-approach
+  // 'blink' tell and the brief 'impact'/'counterApproach' frames — items
+  // 15-16 only asked to fix the post-approach telegraph). Phase is
+  // anchored to THIS state's own entry time (e.attackUntil - CLAW_WINDUP_MS,
+  // the same "recover start time from the deadline" pattern updateEnemy()'s
+  // own eased tweens already use), split into 4 equal quarters —
+  // lit/dim/lit/dim — so it always resolves to exactly 2 discrete flashes
+  // before the swing, never a fast/variable strobe (item 16) and never a
+  // random count. Reused verbatim for 'counterAttack' (item 17).
+  const inSlowTelegraph = e.kind === 'claw' && e.deathState === 'alive'
+    && (e.attackState === 'telegraph' || e.attackState === 'counterAttack');
   // 14TH ROUND (items 25-26): DEFENSE must read as visually distinct from a
   // normal attack-flash pulse — not "HP just didn't move," a real, different
   // look (steady cool-blue tint + a thin guard-glow rim), so the player can
@@ -5885,9 +6013,22 @@ function renderEnemy(theme) {
   // brightness-pulse attackFlashStates treatment above.
   const inDefense = e.deathState === 'alive' && e.attackState === 'defense';
   if (flashing) {
-    ctx.filter = 'brightness(2.2)';
+    // 15TH ROUND (items 11-13): real damage now blinks the ENEMY sprite
+    // itself red (see the matching source-atop fill drawn right after the
+    // sprite below, after imgReady(rect.img)'s drawImage/fillRect) instead
+    // of a generic brightness pulse — gated on `flashing` itself already
+    // requiring deathState==='alive', so it can never overlap the
+    // exploding/burning death filters above.
   } else if (inDefense) {
     ctx.filter = 'brightness(0.9) saturate(1.4) hue-rotate(175deg)';
+  } else if (inSlowTelegraph) {
+    const quarterMs = CLAW_WINDUP_MS / 4;
+    const stateStartedAt = e.attackUntil - CLAW_WINDUP_MS;
+    const elapsed = clamp(now - stateStartedAt, 0, CLAW_WINDUP_MS - 1);
+    const quarter = Math.floor(elapsed / quarterMs);
+    const lit = quarter === 0 || quarter === 2; // lit, dim, lit, dim -> exactly 2 flashes
+    ctx.globalAlpha = lit ? 1 : 0.45;
+    ctx.filter = lit ? 'brightness(2.0)' : 'brightness(0.8)';
   } else if (inAttackFlashWindow) {
     const lit = Math.sin(now / 65) > 0;
     ctx.globalAlpha = lit ? 1 : 0.3;
@@ -5950,9 +6091,21 @@ function renderEnemy(theme) {
     const w = rect.w * bobScale;
     const h = rect.h;
     ctx.drawImage(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
+    if (flashing) {
+      ctx.filter = 'none';
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = 'rgba(255,40,40,0.65)';
+      ctx.fillRect(rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
+    }
   } else {
     ctx.fillStyle = '#334';
     ctx.fillRect(rect.x, rect.y + bobY, rect.w, rect.h);
+    if (flashing) {
+      ctx.filter = 'none';
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = 'rgba(255,40,40,0.65)';
+      ctx.fillRect(rect.x, rect.y + bobY, rect.w, rect.h);
+    }
   }
   ctx.restore();
 }
@@ -6395,11 +6548,38 @@ function isAimOnEffectiveHit() {
   }
   return Math.hypot(aim.x - rect.cx, aim.y - rect.cy) <= enemyHitRadius(rect);
 }
+// 15TH ROUND (items 18-23): root-cause of the long-standing "RED表示され
+// ているのに実際は無傷" bug (recurring since the 12TH ROUND per this
+// round's spec) — isAimOnEffectiveHit() above only ever checked geometry
+// plus GABRIEL/ADAM's DEFENSE/COUNTER-state, but updateBullets()'s REAL
+// damage decision (see its own isClawBoss branches below) additionally
+// gates on e.damageAimArmed (the 14TH ROUND re-arm rule) AND e.invulnerable
+// (ROID1/ROID2's own counter-phase, which isAimOnEffectiveHit() never
+// checked at all) — two extra conditions the crosshair silently ignored,
+// so it could read "hot" in cases that would actually deal 0 damage. This
+// function is the fix: the ONE place that composes ALL THREE real gates,
+// in the SAME order updateBullets() itself applies them, so AIM COLOR can
+// never again diverge from the real outcome. Never reimplements the
+// geometry itself — always defers to isAimOnEffectiveHit() first.
+function isEffectiveDamageNow() {
+  if (!isAimOnEffectiveHit()) return false;
+  const e = state.enemy;
+  const isClawBoss = e.type === 'gabriel' || e.type === 'adam';
+  if (isClawBoss && !e.damageAimArmed) return false; // item 22: re-arm gate
+  if (e.invulnerable) return false; // item 21: ROID counter-phase + any lingering claw-boss invulnerable window
+  return true;
+}
 function renderAimReticle() {
   const aim = getAimPoint();
-  const hot = isAimOnEffectiveHit();
+  // 15TH ROUND (items 18-20): WHITE/RED -> WHITE/YELLOW. YELLOW is now an
+  // ABSOLUTE guarantee real damage lands if FIRE is pressed this instant
+  // (isEffectiveDamageNow() is exactly updateBullets()'s own real gate
+  // composition — see its own comment) — replacing the old RED, which only
+  // promised "geometrically over the hit area," not "will actually deal
+  // damage," which is what real-device testing kept catching as a lie.
+  const hot = isEffectiveDamageNow();
   ctx.save();
-  ctx.strokeStyle = hot ? 'rgba(255,70,60,0.95)' : 'rgba(255,255,255,0.9)';
+  ctx.strokeStyle = hot ? 'rgba(255,214,10,0.95)' : 'rgba(255,255,255,0.9)';
   ctx.lineWidth = 1.5;
   const r = 6; // was 11 — PART 7: smaller crosshair
   ctx.beginPath();
@@ -6797,6 +6977,28 @@ function frame(ts) {
     // invisible against the 0.90-alpha overlay, which is why the tracer
     // used to appear to vanish depending on input state.
     renderBullets();
+    // 15TH ROUND (items 1-3): "射撃弾道がPLAYER画像の上へoverlayされる" — the
+    // 3RD-ROUND fix above (renderBullets() must run AFTER renderFlashlightMask()
+    // to stay visible outside the lit circle) is still correct and left
+    // untouched, but it necessarily left the tracer drawing on top of the
+    // ALREADY-drawn player sprite (drawn once, before the mask, so it reads
+    // as a normal lit/darkened world object). Rather than reordering around
+    // that hard constraint (which would reopen the exact "tracer vanishes in
+    // the dark" bug the 3RD ROUND fixed), this redraws the player sprite a
+    // SECOND time, on top of the tracer — the SAME "foreground redraw"
+    // pattern already established by renderBarrelForeground() (see its own
+    // comment above) for exactly this class of problem. Gated on an actually
+    // active bullet (BULLET_TRAVEL_MS=55ms — 3-4 frames at most) so the
+    // player's normal darkness-masked look is completely unchanged for the
+    // vast majority of frames where no bullet is in flight; renderPlayer()/
+    // renderBarrelForeground() are both pure (read state, mutate nothing),
+    // so calling them again here is safe. renderBarrelForeground() is
+    // re-run right after so COVER's own "barrel in front of player" ordering
+    // (9TH ROUND, item 14 — untouched) still holds even during these frames.
+    if (state.bullets.some((b) => b.active)) {
+      renderPlayer(theme);
+      renderBarrelForeground();
+    }
     // FOLLOWUP FIX: telegraphs (LOCK boxes/▲/target ellipse/bolts) render
     // AFTER the darkness mask so they stay legible as warnings no matter
     // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
@@ -6864,7 +7066,7 @@ window.__darkoutTps = {
   // pure read-only helpers, exposed for automated testing only
   getAimPoint, getFlashlightCenter, computeEnemyDrawRect,
   isPlayerInCover, getStealthStrength, applyAimCurve, playerMarkerPos, barrels,
-  isAimOnEffectiveHit, enemyHitRadius, approachZMinForRoid, isRoidActivelyFiring,
+  isAimOnEffectiveHit, isEffectiveDamageNow, enemyHitRadius, approachZMinForRoid, isRoidActivelyFiring,
   // added 3rd round (PART 3/4/6/9/11/12): new stick curve/collision helpers
   applyLightCurve, clampStrafeForBarrels, clampForwardDeltaForBarrels,
   triggerFireHaptics,
@@ -6913,7 +7115,6 @@ window.__darkoutTps = {
   // automated testing only.
   ASSETS_PLAYER_ESCAPE_RUN, applyEscapeMoveCurve,
   ENEMY_ATTACK_FREQ_MULT, enemyAttackFreqMult,
-  SOUTH_WALK_FRAME_OFFSETS,
   ESCAPE_DASH_BLINK_MS, ESCAPE_STRAFE_DASH_DISTANCE_PX,
   ESCAPE_SOUTH_DASH_DISTANCE_Z, ESCAPE_NORTH_BACKSTEP_DISTANCE_Z,
   FLASHLIGHT_BASE_RADIUS, FIRE_POSE_SCALE_BOOST,
