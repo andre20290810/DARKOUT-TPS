@@ -411,6 +411,15 @@ const STEALTH_FADE_MS = 150; // enter/exit fade, same duration as ACTION-GAME
 // STEALTH's alpha 0.35 drop + distortion so the two states read distinctly.
 const COVER_ALPHA_DROP = 0.10;
 const COVER_TINT_STRENGTH = 0.18;
+// COVER ACTION (drum-can hiding pose): the crouched COVER sprite's target
+// visual body height, as a fraction of the player's OWN current standing
+// body height (ASSETS.player.aim.naturalHeight at the same baseScale/
+// p.scale renderPlayer() already uses) — so the crouch reads as genuinely
+// lower than standing rather than a re-scaled stand-in. 0.62 is a
+// moderate crouch reduction (a real crouch/kneel is roughly 55-70% of
+// standing height); verified visually via screenshot, adjustable here if
+// a different depth is wanted later.
+const COVER_HEIGHT_RATIO = 0.62;
 
 // ---------------------------------------------------------------------
 // COVER (drum-can barrels) — PART 4/9. Kept as one explicit lookup so
@@ -590,6 +599,17 @@ function escapeSpriteFrame(src, bodyTopFrac, bodyBottomFrac, wheelBottomFrac, wh
   return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac), { wheelBottomFrac, wheelCenterXFrac });
 }
 
+// COVER ACTION (drum-can hiding pose): extends spriteFrame() with the
+// body's own horizontal-center fraction (bodyCenterXFrac), alpha-channel-
+// measured the same column-coverage-threshold way bodyTopFrac/
+// bodyBottomFrac are (row coverage). Used as the stable anchor point in
+// renderPlayer() so switching COVER direction never shifts the player's
+// on-screen position — mirrors escapeSpriteFrame()'s own wheelCenterXFrac
+// idea for the same reason.
+function coverSpriteFrame(src, bodyTopFrac, bodyBottomFrac, bodyCenterXFrac) {
+  return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac), { bodyCenterXFrac });
+}
+
 // 9 real, user-supplied ESCAPE player sprites (assets/player_escape/) — a
 // SEPARATE asset set from ASSETS.player (LAB/ARMORED combat player); never
 // overwrites or aliases it. south[]/west[]/east[] are each a 3-frame loop
@@ -743,6 +763,19 @@ const ASSETS = {
     // (right_dash.png / left_dash.png), copied read-only — PART 1.
     dashE: loadImg('assets/player/player_dash_east.png'),
     dashW: loadImg('assets/player/player_dash_west.png'),
+    // COVER ACTION (drum-can hiding pose): 3 user-supplied crouched poses,
+    // kept as their own player.cover.* sub-object — never overwrites or
+    // aliases the standing fire/aim/walk/dash art above, and separate from
+    // ASSETS.playerEscape too (COVER only exists in LAB/ARMORED combat;
+    // ESCAPE never reads this). No 'west' key: the user explicitly asked
+    // for no separate west file — WEST reuses 'east', mirrored at render
+    // time only (see renderPlayer()/getFlippedCoverEastImage()), never a
+    // duplicated/pre-flipped image file.
+    cover: {
+      south: coverSpriteFrame('assets/player/player_cover_south.png', 0.0851, 0.8594, 0.4944),
+      north: coverSpriteFrame('assets/player/player_cover_north.png', 0.1441, 0.8414, 0.5191),
+      east: coverSpriteFrame('assets/player/player_cover_east.png', 0.0103, 0.9934, 0.3661),
+    },
   },
   roid1: ROID1_SPRITES,
   roid2: ROID2_SPRITES,
@@ -1059,6 +1092,14 @@ const state = {
     // smoothed the same dt-based way p.scale already is, so leaving cover
     // fades out over a short interval rather than snapping.
     coverVisual: 0,
+    // COVER ACTION: which crouched-behind-barrel pose to show
+    // ('south'|'north'|'east'|'west'), tracked continuously from the
+    // player's own moveX/moveY input (see updatePlayer()'s own facing-
+    // tracker) — only ever CONSUMED by renderPlayer() while
+    // isPlayerInCover() is true. Defaults to 'north', matching this game's
+    // existing baseline orientation (every other PLAYER pose — walk/aim/
+    // fire/north-dash — already faces north/away-from-camera).
+    coverFacing: 'north',
     // 4th round: FOCUS / AUTO AIM (LB, replaces the retired FLASH).
     focus: FOCUS_MAX,
     autoAimActive: false,
@@ -2036,6 +2077,22 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     p.facing = 'walk';
   } else {
     p.facing = 'idle';
+  }
+
+  // COVER ACTION: facing tracker (NEW) — monitors the SAME moveX/moveY
+  // this function already receives, continuously, regardless of whether
+  // COVER is currently active (renderPlayer() is the only thing that ever
+  // reads p.coverFacing, and only while isPlayerInCover() is true — see
+  // its own comment). Whichever axis has the larger held deflection wins;
+  // with no input held at all, p.coverFacing simply keeps its last value
+  // rather than resetting to a default, so ducking behind a barrel with
+  // no further input keeps showing whichever direction was last faced.
+  if (Math.abs(moveY) >= Math.abs(moveX)) {
+    if (moveY < -0.15) p.coverFacing = 'north';
+    else if (moveY > 0.15) p.coverFacing = 'south';
+  } else {
+    if (moveX < -0.15) p.coverFacing = 'west';
+    else if (moveX > 0.15) p.coverFacing = 'east';
   }
 
   return forwardDelta;
@@ -3293,6 +3350,34 @@ function drawPlayerStealthed(img, dx, dy, w, h, strength, now) {
   ctx.restore();
 }
 
+// COVER ACTION — WEST facing reuses ASSETS.player.cover.east, mirrored.
+// Built ONCE into a small offscreen canvas the first time it's actually
+// needed (never at load time, since the source Image may not be ready
+// yet — callers only invoke this after confirming imgReady() on the
+// ORIGINAL image), then reused every subsequent frame. The mirror is done
+// entirely on this own private context (save/translate/scale/drawImage/
+// restore, all scoped to THIS offscreen canvas) — it never touches the
+// main `ctx`'s transform, so it cannot leak a flip into any later
+// enemy/background/UI drawing on the main canvas (see the completion
+// report's own note on this).
+let coverEastFlippedCanvas = null;
+function getFlippedCoverEastImage(img) {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (coverEastFlippedCanvas && coverEastFlippedCanvas._sourceImg === img) return coverEastFlippedCanvas;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const fctx = c.getContext('2d');
+  fctx.save();
+  fctx.translate(w, 0);
+  fctx.scale(-1, 1);
+  fctx.drawImage(img, 0, 0, w, h);
+  fctx.restore();
+  c._sourceImg = img;
+  coverEastFlippedCanvas = c;
+  return c;
+}
+
 function renderPlayer(theme) {
   const p = state.player;
   const cx = state.centerX + p.strafeOffset;
@@ -3307,19 +3392,41 @@ function renderPlayer(theme) {
   // actual shot instead of freezing on one static image for the whole
   // hold — see FIRE_POSE_HOLD_MS's own comment.
   const firing = (nowTs - p.lastShotAt) < FIRE_POSE_HOLD_MS;
-  let img = ASSETS.player.aim;
-  if (p.reloading) img = ASSETS.player.aim;
+
+  // COVER ACTION (drum-can hiding pose): sprite-selection priority is
+  // DASH(特殊演出) > COVER > FIRE/RELOAD > WALK > default AIM — a dash
+  // already in progress always wins (it covers real distance and must
+  // show its own directional lunge pose; this is also exactly what makes
+  // COVER自動的に解除される when a dash carries the player out of
+  // isPlayerInCover()'s radius — no separate cancel logic needed), but
+  // COVER otherwise overrides the normal FIRE/WALK/AIM pose choice
+  // entirely — reuses the EXISTING isPlayerInCover() (unmodified) as the
+  // ACTIVE/INACTIVE gate, not the smoothed p.coverVisual (that stays as
+  // the separate tint-fade effect below, applied ON TOP of whichever
+  // sprite — cover or normal — ends up chosen here).
+  const dashActive = nowTs < p.fwdDashUntil || nowTs < p.dashUntil;
+  const usingCoverPose = !dashActive && isPlayerInCover();
+  const coverFlip = usingCoverPose && p.coverFacing === 'west';
+  const coverFrame = usingCoverPose ? (coverFlip ? ASSETS.player.cover.east : ASSETS.player.cover[p.coverFacing]) : null;
+
+  let img;
+  if (usingCoverPose) img = coverFrame.img; // readiness checked below before this is ever flipped/drawn
+  else if (p.reloading) img = ASSETS.player.aim;
   else if (firing) img = ASSETS.player.aim;
   else if (p.facing === 'walk') img = ASSETS.player.walk[p.walkFrame];
   else img = ASSETS.player.aim;
-  let fireScaleBoost = firing ? FIRE_POSE_SCALE_BOOST : 1;
+  // COVER中はFIRE演出の拡大ポーズを適用しない — 画像そのものがCOVER専用に
+  // 置き換わるため（FIRE_POSE_SCALE_BOOSTの二重適用を避ける）。
+  let fireScaleBoost = (firing && !usingCoverPose) ? FIRE_POSE_SCALE_BOOST : 1;
 
   // PART 1: NORTH DASH and SOUTH BACKSTEP both use the same north-facing
   // lunge pose — the character never turns to face south in this game, so
   // BACKSTEP no longer shows a front-on image. EAST/WEST DASH use real
   // direction-specific art so the dash direction actually reads visually.
   // DASH always wins over the fire-pose boost — it already has its own
-  // distinct pose, no need to also enlarge it.
+  // distinct pose, no need to also enlarge it. (usingCoverPose is already
+  // guaranteed false here whenever dashActive is true, so this never
+  // fights the COVER branch above.)
   if (nowTs < p.fwdDashUntil) {
     img = ASSETS.player.dashN;
     fireScaleBoost = 1;
@@ -3341,10 +3448,36 @@ function renderPlayer(theme) {
     drawSpriteCentered(img, cx, bottomY, baseScale * p.scale, 1);
     return;
   }
-  const drawH = img.naturalHeight * baseScale * p.scale;
-  const drawW = img.naturalWidth * baseScale * p.scale;
-  const dx = cx - drawW / 2;
-  const dy = bottomY - drawH;
+
+  let drawW, drawH, dx, dy;
+  if (usingCoverPose) {
+    // Uniform on-screen body size across all COVER directions (south/
+    // north/east/west-flip) — reuses computeBodyVisualScale() verbatim
+    // (the SAME normalization ROID1/ROID2/ADAM SPHERE/ESCAPE already rely
+    // on), fed this frame's own measured bodyTopFrac/bodyBottomFrac.
+    // Target height is COVER_HEIGHT_RATIO of the player's OWN current
+    // standing height (judged from the actual rendered size, never source
+    // resolution) so the crouch reads as genuinely lower than standing.
+    const standingBodyHeightPx = ASSETS.player.aim.naturalHeight * baseScale * p.scale;
+    const targetBodyHeightPx = standingBodyHeightPx * COVER_HEIGHT_RATIO;
+    const bodyScale = computeBodyVisualScale(coverFrame, targetBodyHeightPx);
+    drawW = coverFrame.img.naturalWidth * bodyScale;
+    drawH = coverFrame.img.naturalHeight * bodyScale;
+    // Stable anchor: this frame's own measured body-center-X/body-
+    // bottom-Y is pinned to the SAME fixed screen point (cx, bottomY) for
+    // every direction (mirrored for WEST, since the drawn image itself is
+    // mirrored too — see getFlippedCoverEastImage() below) — so switching
+    // COVER direction never jumps the player's on-screen position.
+    const centerXFrac = coverFlip ? (1 - coverFrame.bodyCenterXFrac) : coverFrame.bodyCenterXFrac;
+    dx = cx - centerXFrac * drawW;
+    dy = bottomY - coverFrame.bodyBottomFrac * drawH;
+    if (coverFlip) img = getFlippedCoverEastImage(coverFrame.img); // safe now: coverFrame.img already confirmed ready above
+  } else {
+    drawH = img.naturalHeight * baseScale * p.scale;
+    drawW = img.naturalWidth * baseScale * p.scale;
+    dx = cx - drawW / 2;
+    dy = bottomY - drawH;
+  }
   // 5TH ROUND PART 12: short damage-blink — a brief brightness flash on the
   // player sprite the instant real damage lands (see PLAYER_HIT_FLASH_MS /
   // the three resolve*Impact() sites and the CLAW hit-test above). Mirrors
@@ -3364,12 +3497,15 @@ function renderPlayer(theme) {
     // distinct states) — the heat-haze distortion effect is unchanged.
     drawPlayerStealthed(img, dx, dy, drawW, drawH, strength, nowTs);
   } else if (p.coverVisual > 0.001) {
-    // PART 13 (3rd round): COVER is shown on the player's own sprite, not
-    // a ground overlay — ~10% more transparent than normal plus a subtle
-    // dark tint, both scaled by coverVisual (which itself is the smoothed
-    // isPlayerInCover() target, see updatePlayer()) so entering/leaving
-    // barrel range fades rather than snapping. Deliberately much milder
-    // than STEALTH's alpha 0.35 + distortion, so the two never look alike.
+    // PART 13 (3rd round): COVER's existing tint/alpha effect — ~10% extra
+    // transparency + a subtle dark tint, both scaled by coverVisual (the
+    // SAME smoothed isPlayerInCover() target as before, see
+    // updatePlayer()) so entering/leaving barrel range fades rather than
+    // snapping. Unchanged by the COVER-sprite addition above: it now
+    // simply applies to whichever image was chosen (the new crouched
+    // COVER pose while usingCoverPose, the normal sprite otherwise) —
+    // still deliberately much milder than STEALTH's alpha 0.35 +
+    // distortion so the two never look alike.
     ctx.save();
     ctx.globalAlpha = 1 - COVER_ALPHA_DROP * p.coverVisual;
     ctx.filter = `brightness(${(1 - COVER_TINT_STRENGTH * p.coverVisual).toFixed(3)})`;
@@ -4025,4 +4161,6 @@ window.__darkoutTps = {
   updateEscapePlayer, renderEscapePlayer, consumeEscapeActions,
   computeBodyVisualScale, ASSETS_PLAYER_ESCAPE,
   ESCAPE_AUTO_SCROLL_SPEED, ESCAPE_STRAFE_SPEED, ESCAPE_ANIM_FRAME_MS,
+  // COVER ACTION — exposed for automated testing only.
+  COVER_HEIGHT_RATIO, getFlippedCoverEastImage,
 };
