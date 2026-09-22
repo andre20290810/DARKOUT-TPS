@@ -75,6 +75,13 @@ const ENEMY_Z_MAX = 1500;
 // — ROID's own ~247 floor (a live, viewport-height-solved value; see
 // approachZMinForRoid()), satisfying "GABRIELの方がROIDより近づける".)
 const GABRIEL_Z_MIN = 145;
+// 5TH ROUND PART 7: ADAM shares GABRIEL's own crop-toward-upper-body
+// approach formula (same "family" boss in ACTION-GAME, same human scale) —
+// given its own, independently-tunable constant rather than literally
+// reusing GABRIEL_Z_MIN, but seeded at the identical value since there is
+// no real signal it should differ and this project's rule is never to
+// invent numbers without a reason.
+const ADAM_Z_MIN = 145;
 const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, never actually reached in practice
 // Enemy sprite height expressed in the SAME world-unit space the corridor
 // projection uses (see project()), so proj.scale converts it to pixels
@@ -86,7 +93,28 @@ const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, neve
 // for GABRIEL to read closer to human scale.
 const ROID_WORLD_HEIGHT = 700; // unchanged value from round 1 (was ENEMY_WORLD_HEIGHT)
 const GABRIEL_WORLD_HEIGHT = 480;
-const ROID_FULLBODY_SCREEN_FRAC = 0.92; // PART4: ROID's own max-approach target — whole body still just inside frame
+const ADAM_WORLD_HEIGHT = 480; // 5TH ROUND PART 7: seeded at GABRIEL's own value (same human scale), independently tunable
+// 5TH ROUND ROOT CAUSE FIX ("最大接近時、敵の足付近しか見えない"): the old
+// PART4 value (0.92) only ever solved for "drawH equals this fraction of
+// screen height" — it never accounted for WHERE the anchor point (ROID's
+// own feet, since it's always foot-anchored/never cropped) actually sits
+// on screen. ROID's feet land at proj.y = horizonY + CORRIDOR_FLOOR_Y*scale
+// (~40% down the canvas, HORIZON_Y_RATIO, plus a small further offset —
+// see approachZMinForRoid()), and since ROID's sprite is body-only-padding
+// (bodyBottomFrac≈0.998, i.e. the feet sit right at the image's own bottom
+// edge) the ENTIRE drawn height extends upward from that point. Solving
+// dy = proj.y - drawH for the old 0.92 target gives a NEGATIVE value on
+// ordinary screens — meaning the sprite's head/torso were being pushed
+// off the top of the canvas by construction, leaving only the lower
+// (foot/leg) portion actually visible, exactly matching the real-device
+// report. 0.42 is chosen so dy stays a comfortably positive ~8% of the
+// canvas height (full derivation: dy ≈ cssH*(0.40 - 0.757*FRAC), so
+// FRAC<=0.46 is required for ANY headroom at all) — full body, including
+// the head, now stays on screen with margin at max approach, while still
+// reading as a large, close, imposing mech (42% of screen height). GABRIEL
+// is untouched (uses its own, unrelated GABRIEL_Z_MIN/closeBoost crop
+// formula, never this constant).
+const ROID_FULLBODY_SCREEN_FRAC = 0.42;
 
 // PART 9 (3rd round): ROID1/ROID2 now use only 3 real direction poses —
 // SOUTH-WEST / SOUTH / SOUTH-EAST — never the true EAST/WEST full-profile
@@ -165,7 +193,18 @@ const FIRE_HAPTIC_DURATION_MS = 70;
 const FIRE_HAPTIC_WEAK = 0.35;
 const FIRE_HAPTIC_STRONG = 0.15;
 
-const PLAYER_MAX_HP = 100;
+// 5TH ROUND PART 11: 5x the previous value (100 -> 500), per spec — the
+// current definition is read and multiplied, not a guessed replacement
+// number. Existing damage values (SNIPER_DAMAGE/MISSILE_DAMAGE/CLAW_DAMAGE)
+// are intentionally left unchanged this round.
+const PLAYER_MAX_HP = 100 * 5;
+// 5TH ROUND PART 12: short damage-blink duration — brief enough not to
+// obscure gameplay, clearly visible as an immediate "you were just hit"
+// cue. Never overlaps the moment damage is possible again: damage is only
+// ever applied when the player is NOT already DASH-invincible (all three
+// damage sites gate on `invincible = now < p.invincibleUntil` before
+// applying it), so this and DASH_INVINCIBLE_MS never need to race.
+const PLAYER_HIT_FLASH_MS = 160;
 // PART 2 (3rd round): a further visual size bump — leaning further toward
 // the "腰から上を画面手前に大きく見せる" TPS framing. This constant is
 // consumed ONLY by renderPlayer()'s own draw-size calculation; it never
@@ -178,6 +217,16 @@ const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
 
 const GAMEPAD_AXIS_DEADZONE = 0.16;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
+// 5TH ROUND: root-cause fixes for "北へ勝手に進み続ける" / "十字キーが
+// 効かなくなる" / "スティックが効かない" reports. GAMEPAD_SETTLE_MS is a
+// brief window after a gamepad is FIRST adopted (page load, or reconnect
+// after a disconnect) during which its raw button/axis state is NOT fed
+// into movement/actions — some real controllers (Bluetooth pads in
+// particular) report noisy/uncalibrated button state for the first few
+// polls before settling, which previously landed straight into gameplay
+// as real input (this is the same class of bug ACTION-GAME's own gamepad
+// work already had to solve — see that project's "settle window" fix).
+const GAMEPAD_SETTLE_MS = 350;
 
 // ---------------------------------------------------------------------
 // AIM — 4th round: position-integrated (velocity) control, replacing the
@@ -286,6 +335,29 @@ const MISSILE_TARGET_MS = 1500;
 const MISSILE_IMPACT_MS = 220;
 const MISSILE_COOLDOWN_MS = 1700;
 const MISSILE_DAMAGE = 24;
+
+// 5TH ROUND PART 8/9/10: GABRIEL/ADAM's CLAW attack rebuilt into a real
+// blink -> fast-approach -> brief-windup -> spatial-hit-test swing
+// sequence, replacing the old shape where entering the attack motion
+// guaranteed a hit unless the player happened to be mid-DASH-invincibility
+// at that exact instant (never an actual position check at all — "GABRIEL
+// が攻撃モーションに入ったら自動的に主人公へダメージ" was literally true
+// before this round). See updateEnemy()'s 'claw' branch for the full
+// state machine; CLAW_BLINK_MS/CLAW_APPROACH_MS are the two reaction
+// windows the player gets (spec explicitly forbids an instant guaranteed
+// hit the same frame the fast-approach lands), CLAW_HIT_RANGE_PX is the
+// real lateral reach checked at the swing instant.
+const CLAW_BLINK_MS = 500;      // GABRIEL/ADAM blinks in place — first "something is coming" tell
+const CLAW_APPROACH_MS = 220;   // fast close-the-distance dash to its own zMin (same duration class as the player's own DASH_DURATION_MS)
+const CLAW_WINDUP_MS = 280;     // brief claw-raised telegraph AFTER arriving — the real "point of no return" reaction window (see DASH-evasion, PART 9)
+const CLAW_SWING_MS = 140;      // unchanged from the old single impact duration
+const CLAW_COOLDOWN_MS = 1200;  // unchanged from the old cooldown duration
+const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
+// Real lateral reach at the swing instant — a bit under STRAFE_DASH_DISTANCE_PX
+// (100px) so a single, well-timed DASH reliably clears it, matching spec
+// item 9's "DASHで回避可能" requirement without making it trivial to avoid
+// by accident (deadzone/idle drift alone won't clear 95px).
+const CLAW_HIT_RANGE_PX = 95;
 
 const ENEMY_TURN_COOLDOWN_MS = 850; // "heavy mech" — can't re-flip facing more often than this
 const ENEMY_TURN_HYSTERESIS_PX = 36; // player must cross this far past center before a flip is even considered
@@ -409,6 +481,30 @@ const ROID2_SPRITES = {
     spriteFrame('assets/roid2/roid2_fire_04.png', 0.0853, 0.9831),
   ],
 };
+// 5TH ROUND PART 7: ADAM SPHERE — real ACTION-GAME asset (adam_sphere_01..04,
+// alpha-channel-measured the same way ROID's frames were, not guessed:
+// topFrac≈0.10/bottomFrac≈0.89 for all 4). The sphere is rotationally
+// symmetric (no facing/direction concept), so unlike ROID it reuses the
+// SAME 4 real frames for every zone AND for the "fire" pose slot — there is
+// no separate attack-pose art for it in ACTION-GAME, and this project's own
+// rule is never to fabricate new art, so the existing idle/pulse frames are
+// what plays throughout, cycled as a simple animation via the same
+// roidFireFrame ping-pong machinery ROID already uses.
+const ADAM_SPHERE_SPRITES = {
+  search: [
+    spriteFrame('assets/adam_sphere/adam_sphere_01.png', 0.1065, 0.8892),
+    spriteFrame('assets/adam_sphere/adam_sphere_02.png', 0.1094, 0.88),
+    spriteFrame('assets/adam_sphere/adam_sphere_03.png', 0.1009, 0.8963),
+    spriteFrame('assets/adam_sphere/adam_sphere_04.png', 0.1023, 0.8864),
+    spriteFrame('assets/adam_sphere/adam_sphere_01.png', 0.1065, 0.8892),
+  ],
+  fire: [
+    spriteFrame('assets/adam_sphere/adam_sphere_01.png', 0.1065, 0.8892),
+    spriteFrame('assets/adam_sphere/adam_sphere_02.png', 0.1094, 0.88),
+    spriteFrame('assets/adam_sphere/adam_sphere_03.png', 0.1009, 0.8963),
+    spriteFrame('assets/adam_sphere/adam_sphere_04.png', 0.1023, 0.8864),
+  ],
+};
 // zone -> search-frame-index, copied verbatim from ACTION-GAME's own
 // ROID1_FACE_FRAME/ROID2_FACE_FRAME (game.js ~L5059-5060) — both bosses
 // share the same zone->index layout in the reference game.
@@ -427,8 +523,19 @@ const ROID_FACE_FRAME = { right: 1, center: 2, left: 3 };
 // than faked. ENEMY_IMPLEMENTED/ENEMY_LABEL/ENEMY_DEATH_FAMILY cover all 6
 // selectable identities so the UI can list all of them (per spec item 10)
 // while cleanly refusing to "start a fight" against one that doesn't exist.
+// 5TH ROUND PART 7: ADAM/ADAM SPHERE flip to TRUE — real assets found and
+// investigated directly in ACTION-GAME (andre20290810/ACTION-GAME), never
+// assumed absent. ADAM reuses GABRIEL's own attack-family state machine
+// (computeEnemyDrawRect()/updateEnemy()'s 'claw' kind) with its own real
+// art (ASSETS.adam); ADAM SPHERE reuses the ROID-style ranged sniper/
+// missile state machine with its own real art (ASSETS.adamSphere). Both
+// are simplifications of ACTION-GAME's own fuller DEFENSE/counter and
+// double-shot/blockade systems (out of this round's scope) — see the
+// completion report for the honest accounting of what was and wasn't
+// ported. DRONE remains false: no asset/AI/code for it exists anywhere in
+// this repo (re-checked this round, unchanged from prior rounds).
 const ENEMY_IMPLEMENTED = {
-  drone: false, roid1: true, roid2: true, gabriel: true, adamSphere: false, adam: false,
+  drone: false, roid1: true, roid2: true, gabriel: true, adamSphere: true, adam: true,
 };
 const ENEMY_LABEL = {
   drone: 'DRONE', roid1: 'ROID 1', roid2: 'ROID 2', gabriel: 'GABRIEL', adamSphere: 'ADAM SPHERE', adam: 'ADAM',
@@ -475,11 +582,84 @@ const ASSETS = {
     windup: loadImg('assets/gabriel/gabriel_claw_windup.png'),
     release: loadImg('assets/gabriel/gabriel_claw_release.png'),
   },
+  // 5TH ROUND PART 7: ADAM — real ACTION-GAME asset, copied read-only, same
+  // as every other character here. ADAM shares GABRIEL's own attack FAMILY
+  // in ACTION-GAME (isGabrielFamilyBossType() there groups 'gabriel' and
+  // 'adam' together), so it's wired into the SAME idle/windup/release CLAW
+  // pipeline GABRIEL already uses (see computeEnemyDrawRect()/updateEnemy())
+  // rather than inventing a second, parallel attack system. windup uses the
+  // real ACTION-GAME "attack" (pre-swing) pose; release uses the real
+  // "straight_claw" (connecting swing) pose — both existing files, no
+  // fabricated art. ACTION-GAME's fuller DEFENSE/counter-attack system for
+  // ADAM is NOT ported (out of this round's scope) — see completion report.
+  adam: {
+    idle: loadImg('assets/adam/adam_idle_south.png'),
+    windup: loadImg('assets/adam/adam_attack_south.png'),
+    release: loadImg('assets/adam/adam_straight_claw.png'),
+  },
+  adamSphere: ADAM_SPHERE_SPRITES,
   barrel: loadImg('assets/objects/barrel.png'),
 };
 
 function imgReady(img) {
   return !!img && img.complete && img.naturalWidth > 0;
+}
+
+// ---------------------------------------------------------------------
+// LOADING GATE (5TH ROUND PART 17/18/19/20)
+// This prototype previously had NO loading gate at all — gameplay/input
+// began the instant the page loaded, before any sprite or the BGM had
+// actually arrived (confirmed by investigation: no loading screen, no
+// "ready" check, no asset enumeration existed anywhere in this file).
+// REQUIRED_IMAGES/REQUIRED_MEDIA below are collected from the SAME real
+// ASSETS object every character already draws from — never a fabricated
+// separate list — so "ready" means every image already in use is actually
+// decoded, not a fixed timer.
+// ---------------------------------------------------------------------
+function collectImages(node, out) {
+  if (!node) return;
+  if (node.tagName === 'IMG') { out.push(node); return; }
+  if (Array.isArray(node)) { for (const v of node) collectImages(v, out); return; }
+  if (typeof node === 'object') { for (const k in node) collectImages(node[k], out); }
+}
+const REQUIRED_IMAGES = [];
+collectImages(ASSETS, REQUIRED_IMAGES);
+
+const loadingScreenEl = document.getElementById('loading-screen');
+const loadingBarFillEl = document.getElementById('loading-bar-fill');
+const loadingPctEl = document.getElementById('loading-pct');
+const loadingStatusEl = document.getElementById('loading-status');
+const loadingStartPromptEl = document.getElementById('loading-start-prompt');
+
+const loadFailureLogged = new Set();
+// Checked once per frame (cheap — ~30 images + 1 audio element, no
+// per-frame allocation beyond a couple of counters) until it returns true.
+// Never a setTimeout/fixed-duration "looks done" fallback — genuinely
+// polls each asset's own real state (img.complete/naturalWidth, the
+// bgm-audio element's readyState) every time.
+function checkAssetsReady() {
+  let loaded = 0;
+  const total = REQUIRED_IMAGES.length + 1; // +1 for BGM
+  for (const img of REQUIRED_IMAGES) {
+    if (imgReady(img)) { loaded++; }
+    else if (img.complete && img.naturalWidth === 0 && !loadFailureLogged.has(img.src)) {
+      // PART 20: failed asset -> console, with its path and required/optional
+      // status (every entry here is required — nothing on this list is
+      // decorative). No new large error-UI is built, per spec.
+      loadFailureLogged.add(img.src);
+      console.error('[loading] REQUIRED image failed to load:', img.src);
+    }
+  }
+  if (bgmAudioEl && bgmAudioEl.readyState >= 3) {
+    loaded++;
+  } else if (bgmAudioEl && bgmAudioEl.error && !loadFailureLogged.has(bgmAudioEl.src)) {
+    loadFailureLogged.add(bgmAudioEl.src);
+    console.error('[loading] REQUIRED audio failed to load:', bgmAudioEl.src, bgmAudioEl.error);
+  }
+  const pct = Math.round((loaded / total) * 100);
+  loadingBarFillEl.style.width = pct + '%';
+  loadingPctEl.textContent = String(pct);
+  return loaded >= total;
 }
 
 // ---------------------------------------------------------------------
@@ -518,6 +698,7 @@ const state = {
     lastHpFillPct: -1,
     lastAmmoText: '',
     lastStealthText: '',
+    hitFlashUntil: 0, // 5TH ROUND PART 12: player damage-blink window, see PLAYER_HIT_FLASH_MS
     // PART 5/6 (3rd round), rewritten 4th round: AIM's own persistent
     // state — liveX/Y is velocity-integrated by the RIGHT STICK and NEVER
     // auto-recenters (see updatePlayer()'s own AIM section); manualOffsetX/Y
@@ -570,6 +751,11 @@ const state = {
     // PHASE2 (TARGET AREA) — not re-tracked live — so the player can
     // actually dodge it by moving away before it lands, per spec.
     missileTargetX: 0, missileTargetY: 0,
+    // 5TH ROUND PART 8: CLAW 'approach' phase's start-z snapshot, so the
+    // fast close-the-distance dash-in can be eased deterministically
+    // (same recompute-from-a-stored-start pattern the player's own DASH
+    // uses) rather than a raw per-frame velocity step.
+    clawApproachStartZ: 0,
     // 4th round: real max HP (enemy.hp was previously declared but never
     // actually compared against a max anywhere — see PHASE 9 root-cause
     // report) + death-sequence state. 'alive' -> ('exploding'|'burning') ->
@@ -613,11 +799,23 @@ const state = {
   gamepadConnected: false,
   gamepadIndex: null,
   prevButtons: [],
+  // 5TH ROUND: settle window state — see GAMEPAD_SETTLE_MS above.
+  // gamepadSettleUntil is a timestamp; while now < this, pollGamepad()
+  // returns neutral input but keeps re-syncing prevButtons so no stale/
+  // noisy pre-settle state can leak in as a real input once settle ends.
+  gamepadSettleUntil: 0,
 
   // 4th round: touch UI is OFF by default (spec item 6 — Gamepad play
   // shouldn't have the screen full of sticks/buttons); PAUSE toggles it.
   touchControlsVisible: false,
   paused: false,
+  // 5TH ROUND PART 17/18: LOADING gate — see checkAssetsReady()/frame()'s
+  // own gating. assetsReady flips once every required image + the BGM are
+  // genuinely confirmed loaded; gameStarted flips on the first real
+  // gesture AFTER that (never before), which is also the single unified
+  // trigger for BGM playback (see handleFirstGesture()).
+  assetsReady: false,
+  gameStarted: false,
   // ENEMY SELECT / AUTO MODE (4th round). 'auto' cycles AUTO_SEQUENCE;
   // any other value is one specific implemented enemy type. autoMode.index
   // is AUTO_SEQUENCE's own index (only ever points at an implemented type).
@@ -691,6 +889,22 @@ for (const def of STRUCTURE_KINDS) {
   }
 }
 
+// 5TH ROUND PART 16 ("延々と前進している感覚"): a purely COSMETIC,
+// continuous forward-flow illusion for the floor-pattern structures
+// (floorSeam/grating) so the corridor still reads as "flowing past /
+// advancing" even while the player stands still fighting — spec's own
+// contrast is "同じ場所で止まって戦っている" vs "延々と奥へ近づき続けて
+// いる". This NEVER writes to structures[].z, applyForwardDelta(), enemy
+// z, or barrel z — those stay 100% player-input-driven, exactly as the
+// "北へ勝手に進み続ける" fix above requires; it only computes a RENDER-TIME
+// offset in renderStructure() below. Seamless by construction: floorSeam/
+// grating already repeat identically every SPACING world-z units, so
+// shifting the whole repeating pattern by an amount that wraps every
+// SPACING units is visually indistinguishable at the wrap instant — never
+// a jump/pop (spec: "継ぎ目で大きくジャンプ...しないように").
+const AMBIENT_FLOOR_CRAWL_SPACING = { floorSeam: 95, grating: 210 };
+const AMBIENT_FLOOR_CRAWL_SPEED = 70; // world-z units/sec — gentler than WALK_FORWARD_SPEED (150) so it never reads as if the player is actually walking
+
 // ---------------------------------------------------------------------
 // BARRELS (drum-can COVER ZONE objects — PART 4). Alternating left/right
 // of center so the corridor is never fully blocked and only every other
@@ -760,6 +974,7 @@ window.addEventListener('gamepaddisconnected', (e) => {
     state.gamepadIndex = null;
     state.gamepadConnected = false;
     state.prevButtons = [];
+    state.gamepadSettleUntil = 0;
   }
 });
 
@@ -780,7 +995,7 @@ function applyStickCurve(raw, deadzone, power) {
 function applyAimCurve(raw) { return applyStickCurve(raw, AIM_DEADZONE, AIM_CURVE_POWER); }
 function applyLightCurve(raw) { return applyStickCurve(raw, LIGHT_DEADZONE, LIGHT_CURVE_POWER); }
 
-function pollGamepad() {
+function pollGamepad(now) {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   let gp = null;
   if (state.gamepadIndex !== null) {
@@ -788,8 +1003,43 @@ function pollGamepad() {
     if (!gp || !gp.connected) { gp = null; state.gamepadIndex = null; }
   }
   if (!gp) {
+    // 5TH ROUND ("複数Gamepadの誤認識" investigation): previously this
+    // just grabbed the FIRST connected pad index, so a spurious/ghost
+    // gamepad entry (a known real phenomenon on some browser/OS combos —
+    // ghost entries typically report mapping:'' and/or an empty id) sitting
+    // at a lower index than the player's real controller would win
+    // permanently (the loop never re-evaluates once ANY index looks
+    // "connected"). Now a standard-mapping candidate with a real id is
+    // preferred over one without, when more than one pad is present.
+    let candidate = null, candidateIndex = -1;
     for (let i = 0; i < pads.length; i++) {
-      if (pads[i] && pads[i].connected) { gp = pads[i]; state.gamepadIndex = i; break; }
+      const cand = pads[i];
+      if (!cand || !cand.connected) continue;
+      if (!candidate) { candidate = cand; candidateIndex = i; continue; }
+      const candidateIsStandard = candidate.mapping === 'standard' && !!candidate.id;
+      const thisIsStandard = cand.mapping === 'standard' && !!cand.id;
+      if (thisIsStandard && !candidateIsStandard) { candidate = cand; candidateIndex = i; }
+    }
+    if (candidate) {
+      gp = candidate;
+      state.gamepadIndex = candidateIndex;
+      // New adoption — see GAMEPAD_SETTLE_MS above. Don't trust this pad's
+      // raw state as real input yet; re-baseline prevButtons every frame
+      // until settle ends so no pre-settle noise can register as an edge
+      // the instant settle expires.
+      state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
+      state.prevButtons = [];
+      console.log('[gamepad] adopted index', candidateIndex, 'id=', candidate.id, 'mapping=', candidate.mapping || '(non-standard)', 'axes=', candidate.axes.length, 'buttons=', candidate.buttons.length);
+      // 5TH ROUND ("スティックが効かない" investigation): LEFT STICK/RIGHT
+      // STICK are read from axes[0..3] (W3C Standard Gamepad layout — the
+      // layout the vast majority of consumer pads, including non-standard-
+      // mapped ones, still report axes in). If a real device genuinely
+      // exposes fewer than 4 axes, AIM (axes[2]/[3]) would silently read
+      // as permanently-neutral with no visible cause — surfaced here as a
+      // real diagnostic instead of failing silently.
+      if (candidate.axes.length < 4) {
+        console.warn('[gamepad] only', candidate.axes.length, 'axes reported — RIGHT STICK (AIM) will not respond on this device/mapping.');
+      }
     }
   }
 
@@ -805,6 +1055,19 @@ function pollGamepad() {
 
   if (gp) {
     const b = gp.buttons;
+    const settling = (now || 0) < state.gamepadSettleUntil;
+
+    if (settling) {
+      // 5TH ROUND: settle window — keep re-syncing prevButtons to the
+      // CURRENT raw state every frame (so whatever the pad happens to be
+      // doing while it calibrates never becomes a false rising edge once
+      // settle ends) but never feed this frame's state into gameplay.
+      const settleSnapshot = new Array(b.length);
+      for (let i = 0; i < b.length; i++) settleSnapshot[i] = !!(b[i] && b[i].pressed);
+      state.prevButtons = settleSnapshot;
+      return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
+    }
+
     const prev = state.prevButtons;
     const pressed = (i) => !!(b[i] && b[i].pressed);
     const edge = (i) => pressed(i) && !prev[i];
@@ -814,10 +1077,33 @@ function pollGamepad() {
     // itself — never LT alone, never RT alone, never re-fires while both
     // stay held). Computed FIRST so PART 6's D-PAD modifier logic below can
     // check it and give STEALTH priority, per spec ("誤判定を防ぐ").
-    const ltHeld = pressed(6), rtHeld = pressed(7);
+    // 5TH ROUND root-cause fix ("十字キーが効かなくなる"): this used to
+    // read the browser's own .pressed boolean directly, which many
+    // real analog triggers report as true from a very small pull (well
+    // under half travel) — a barely-touched/resting-drifted LT or RT was
+    // silently stealing the D-PAD away from MOVE into the AIM-trim
+    // branches below with no visible cause. GAMEPAD_TRIGGER_THRESHOLD was
+    // already declared for exactly this but was never actually wired in —
+    // now both triggers are gated on their real analog .value crossing it,
+    // falling back to .pressed only if .value is unavailable (older
+    // browsers/synthetic gamepad-button objects with no analog value).
+    const triggerValue = (i) => (b[i] && typeof b[i].value === 'number') ? b[i].value : (pressed(i) ? 1 : 0);
+    const ltHeld = triggerValue(6) >= GAMEPAD_TRIGGER_THRESHOLD;
+    const rtHeld = triggerValue(7) >= GAMEPAD_TRIGGER_THRESHOLD;
     const bothTriggersHeld = ltHeld && rtHeld;
     const bothTriggersHeldPrev = !!prev[6] && !!prev[7];
     if (bothTriggersHeld && !bothTriggersHeldPrev) state.actions.stealth = true;
+
+    // 5TH ROUND root-cause fix ("北へ勝手に進み続ける"): a real D-PAD can
+    // never physically report opposite directions (UP+DOWN, or LEFT+RIGHT)
+    // pressed at the same time — seeing that combination is a strong
+    // signal of a malformed/misread report from a non-standard-mapped or
+    // otherwise misbehaving device, so it's treated as noise for THIS
+    // frame only (never a lasting ban on any one direction — the very
+    // next clean frame reads normally again).
+    const dpadUp = pressed(12), dpadDown = pressed(13), dpadLeft = pressed(14), dpadRight = pressed(15);
+    const dpadVerticalValid = !(dpadUp && dpadDown);
+    const dpadHorizontalValid = !(dpadLeft && dpadRight);
 
     // PART 3/6 (3rd round): D-PAD is MOVE only when NEITHER trigger is held.
     // LT alone -> D-PAD UP/DOWN trims AIM height (PART 6). RT alone -> D-PAD
@@ -827,16 +1113,24 @@ function pollGamepad() {
     if (bothTriggersHeld) {
       // pure STEALTH gesture window — D-PAD intentionally inert here.
     } else if (ltHeld) {
-      if (pressed(12)) gpAimAdjust.height -= 1; // D-PAD up = raise AIM
-      if (pressed(13)) gpAimAdjust.height += 1; // D-PAD down = lower AIM
+      if (dpadVerticalValid) {
+        if (dpadUp) gpAimAdjust.height -= 1; // D-PAD up = raise AIM
+        if (dpadDown) gpAimAdjust.height += 1; // D-PAD down = lower AIM
+      }
     } else if (rtHeld) {
-      if (pressed(14)) gpAimAdjust.horiz -= 1; // D-PAD left = AIM left
-      if (pressed(15)) gpAimAdjust.horiz += 1; // D-PAD right = AIM right
+      if (dpadHorizontalValid) {
+        if (dpadLeft) gpAimAdjust.horiz -= 1; // D-PAD left = AIM left
+        if (dpadRight) gpAimAdjust.horiz += 1; // D-PAD right = AIM right
+      }
     } else {
-      if (pressed(14)) gpMove.x -= 1; // D-PAD left
-      if (pressed(15)) gpMove.x += 1; // D-PAD right
-      if (pressed(12)) gpMove.y -= 1; // D-PAD up = north/forward
-      if (pressed(13)) gpMove.y += 1; // D-PAD down = south/back
+      if (dpadHorizontalValid) {
+        if (dpadLeft) gpMove.x -= 1; // D-PAD left
+        if (dpadRight) gpMove.x += 1; // D-PAD right
+      }
+      if (dpadVerticalValid) {
+        if (dpadUp) gpMove.y -= 1; // D-PAD up = north/forward
+        if (dpadDown) gpMove.y += 1; // D-PAD down = south/back
+      }
     }
     const moveMag = Math.hypot(gpMove.x, gpMove.y);
     if (moveMag > 1) { gpMove.x /= moveMag; gpMove.y /= moveMag; }
@@ -874,7 +1168,7 @@ function pollGamepad() {
     // satisfy the browser's autoplay gesture requirement for BGM. See
     // tryStartBgm()'s own comment for the full picture.
     for (let i = 0; i < b.length; i++) {
-      if (pressed(i) && !prev[i]) { tryStartBgm(); break; }
+      if (pressed(i) && !prev[i]) { handleFirstGesture(); break; }
     }
 
     const nextPrev = new Array(b.length);
@@ -1017,8 +1311,31 @@ function tryStartBgm() {
   if (p && p.catch) p.catch(() => {}); // autoplay rejected (no gesture yet) — silently retry on the next one
   if (!bgmAudioEl.paused) bgmStarted = true;
 }
-document.addEventListener('pointerdown', tryStartBgm);
-document.addEventListener('keydown', tryStartBgm);
+
+// 5TH ROUND PART 17/18/19: unified first-gesture handler — the single
+// touch point every input source (touch/mouse pointerdown, keydown, first
+// gamepad button press) already funnels through. Refuses to do ANYTHING
+// until state.assetsReady is genuinely true (checkAssetsReady()'s own real
+// polling, never a timer) — this is what stops a gesture made WHILE the
+// loading bar is still showing from silently "counting" as the START the
+// instant loading finishes moments later (spec item 18's requirement,
+// generalized from gamepad to every input source: a press before ready
+// must never carry over as a press-after-ready). Once ready, the first
+// qualifying gesture both starts BGM (tryStartBgm(), unchanged) AND
+// dismisses the loading/TAP-TO-START gate — the same spec item 19 "START
+// 等のユーザー操作を利用してAudioを開始" moment doubles as the real
+// GAMEPLAY-start moment for this prototype (which has no separate
+// TITLE/menu screen to hook a more specific event to).
+function handleFirstGesture() {
+  if (!state.assetsReady) return;
+  tryStartBgm();
+  if (!state.gameStarted) {
+    state.gameStarted = true;
+    loadingScreenEl.hidden = true;
+  }
+}
+document.addEventListener('pointerdown', handleFirstGesture);
+document.addEventListener('keydown', handleFirstGesture);
 
 // PART 30 (4th round follow-up): PAUSE/RESUME lifecycle for the BGM.
 // audio.pause()/audio.play() on the SAME element never touch currentTime —
@@ -1080,6 +1397,38 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   // from (so the block lands at the correct edge, not always the same
   // side).
   p.strafeOffset = clampStrafeForBarrels(p.strafeOffset, strafeOffsetAtFrameStart);
+
+  // 5TH ROUND ROOT CAUSE FIX ("最初の攻撃ではダメージが入るが、その後
+  // 何度撃ってもダメージが入らない"): live-repro testing (holding
+  // FOCUS/AIM to line up, releasing it, then firing) showed the FIRST shot
+  // always lands, but any shot fired after the player so much as taps
+  // STRAFE afterward misses — even though the player never touches AIM
+  // again. Root cause: getAimPoint() anchors the reticle at
+  // `baseX = centerX + p.strafeOffset` (PART 5, 3rd round — deliberate,
+  // reticle sits near the player) and simply ADDS the persistent
+  // aimLiveX offset on top. aimLiveX is correct only relative to
+  // whatever strafeOffset was true the instant it was last set (by stick
+  // input or AUTO AIM) — the enemy itself barely moves in screen space
+  // (computeEnemyDrawRect()'s cx tracks world position, not the player's
+  // own strafeOffset), so once the player strafes even briefly afterward,
+  // baseX shifts but aimLiveX does not, and the ABSOLUTE reticle position
+  // silently drags off the target by the exact strafe distance — confirmed
+  // by test: a single 250ms D-PAD tap (~60px of strafe) was enough to move
+  // a dead-center reticle (dist≈3px) completely off ROID1's ~48px hit
+  // radius, and it then stayed off target for every subsequent shot since
+  // nothing else ever corrects it. Fix: whenever strafeOffset actually
+  // changes this frame (continuous move OR dash OR barrel clamp — the
+  // total real delta after all of the above), subtract that exact delta
+  // from aimLiveX so the reticle's ABSOLUTE on-screen position — and thus
+  // whether it's still over the enemy — is unaffected by pure strafing.
+  // Deliberate right-stick input / AUTO AIM still move it normally on top
+  // of this; AIM_RANGE's own clamp (unchanged) is still the final bound,
+  // so a very large strafe simply lets the reticle start drifting again
+  // only once that full range is exhausted, never silently before it.
+  const strafeDeltaThisFrame = p.strafeOffset - strafeOffsetAtFrameStart;
+  if (strafeDeltaThisFrame !== 0) {
+    p.aimLiveX = clamp(p.aimLiveX - strafeDeltaThisFrame, -AIM_RANGE, AIM_RANGE);
+  }
 
   // NORTH/SOUTH world scroll + player scale sync
   let forwardDelta = 0;
@@ -1270,8 +1619,10 @@ function applyForwardDelta(forwardDelta) {
   }
   const e = state.enemy;
   // PART 4: per-type max-approach floor — ROID1/ROID2 (giant mechs) stop
-  // much farther out than GABRIEL (human-scale), see the constants above.
-  const zMin = e.type === 'gabriel' ? GABRIEL_Z_MIN : approachZMinForRoid();
+  // much farther out than GABRIEL/ADAM (human-scale), see the constants
+  // above. ADAM SPHERE has no dedicated floor of its own (5TH ROUND PART
+  // 7) — it reuses the ROID-style dynamic solve, same as DRONE would.
+  const zMin = e.type === 'gabriel' ? GABRIEL_Z_MIN : (e.type === 'adam' ? ADAM_Z_MIN : approachZMinForRoid());
   e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
 }
 
@@ -1323,8 +1674,9 @@ function updateEnemyFacing(dt, now) {
   const playerScreenX = state.centerX + state.player.strafeOffset;
   const diff = playerScreenX - proj.x;
 
-  if (e.type === 'gabriel') {
-    // GABRIEL — unchanged from round 1: simple 2-state east/west flip.
+  if (e.type === 'gabriel' || e.type === 'adam') {
+    // GABRIEL/ADAM (5TH ROUND PART 7: same attack family) — unchanged from
+    // round 1: simple 2-state east/west flip.
     let desired = e.facing;
     if (diff > ENEMY_TURN_HYSTERESIS_PX) desired = 'east';
     else if (diff < -ENEMY_TURN_HYSTERESIS_PX) desired = 'west';
@@ -1371,7 +1723,10 @@ function resolveSniperImpact(now) {
     showCenterMsg('BLOCKED', '#9fd8ff');
   } else {
     p.hp = Math.max(0, p.hp - SNIPER_DAMAGE);
-    showCenterMsg('HIT!', '#ff4040');
+    // 5TH ROUND PART 12/13: "HIT!" text removed — the blink IS the hit
+    // feedback now (see renderPlayer()'s hitFlashUntil branch). Damage
+    // application/effects above are unchanged.
+    p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
   }
 }
 
@@ -1398,7 +1753,7 @@ function resolveMissileImpact(now) {
     showCenterMsg('DODGED', '#7fffb0');
   } else {
     p.hp = Math.max(0, p.hp - MISSILE_DAMAGE);
-    showCenterMsg('HIT!', '#ff4040');
+    p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
   }
 }
 
@@ -1460,7 +1815,7 @@ function spawnEnemy(type) {
   e.attackState = 'idle';
   e.attackUntil = 0;
   e.nextIdleCheckAt = 0;
-  e.kind = type === 'gabriel' ? 'claw' : 'sniper';
+  e.kind = (type === 'gabriel' || type === 'adam') ? 'claw' : 'sniper';
   e.hp = ENEMY_MAX_HP;
   e.maxHp = ENEMY_MAX_HP;
   e.hitFlashUntil = 0;
@@ -1471,6 +1826,7 @@ function spawnEnemy(type) {
   e.lockX = 0; e.lockY = 0;
   e.fireFromX = 0; e.fireFromY = 0; e.fireToX = 0; e.fireToY = 0;
   e.missileTargetX = 0; e.missileTargetY = 0;
+  e.clawApproachStartZ = 0;
   e.deathState = 'alive';
   e.deathStartedAt = 0;
   e.deathUntil = 0;
@@ -1577,10 +1933,10 @@ function updateEnemy(dt, now) {
     if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500;
     if (now >= e.nextIdleCheckAt && e.z < 900) {
       const stealthMul = p.stealth ? 1.8 : 1.0;
-      if (e.type === 'gabriel') {
+      if (e.type === 'gabriel' || e.type === 'adam') {
         e.kind = 'claw';
-        e.attackState = 'telegraph';
-        e.attackUntil = now + 700 * stealthMul;
+        e.attackState = 'blink';
+        e.attackUntil = now + CLAW_BLINK_MS * stealthMul;
       } else {
         e.kind = Math.random() < 0.45 ? 'missile' : 'sniper';
         if (e.kind === 'sniper') {
@@ -1597,18 +1953,67 @@ function updateEnemy(dt, now) {
     return;
   }
 
-  // --- GABRIEL claw (unchanged shape: telegraph -> impact -> cooldown) ---
+  // --- GABRIEL/ADAM claw (5TH ROUND PART 8/9/10 rebuild) ---
+  // blink -> approach -> telegraph(windup, reuses existing render state
+  // name) -> impact(swing, reuses existing render state name) -> cooldown.
+  // Root-cause note: the OLD sequence was telegraph->impact->cooldown, and
+  // "avoided" was decided ENTIRELY by `now < p.invincibleUntil` (DASH's own
+  // i-frame window) — there was no spatial check at all, so simply not
+  // dashing at that one instant guaranteed a hit regardless of actual
+  // distance. The new 'impact' entry below checks BOTH the existing DASH
+  // i-frames AND a real lateral distance test (CLAW_HIT_RANGE_PX) — either
+  // one avoids it, matching "GABRIELが攻撃モーションに入ったら自動的に
+  // ダメージ、ではない" and "DASHで回避可能" simultaneously without
+  // removing DASH's own existing invincibility-based avoidance.
   if (e.kind === 'claw') {
-    if (e.attackState === 'telegraph') {
+    if (e.attackState === 'blink') {
+      // First reaction window — GABRIEL/ADAM blinks in place at its
+      // current (pre-approach) distance; renderEnemy() reads this state
+      // to drive the blink visual. No movement yet.
       if (now >= e.attackUntil) {
-        e.attackState = 'impact';
-        e.attackUntil = now + 140;
-        const dodged = now < p.invincibleUntil;
-        if (!dodged) { p.hp = Math.max(0, p.hp - 20); showCenterMsg('HIT!', '#ff4040'); }
-        else showCenterMsg('AVOIDED', '#7fffb0');
+        e.clawApproachStartZ = e.z;
+        e.attackState = 'approach';
+        e.attackUntil = now + CLAW_APPROACH_MS;
+      }
+    } else if (e.attackState === 'approach') {
+      // Fast close-the-distance dash toward its own max-approach position
+      // (GABRIEL_Z_MIN/ADAM_Z_MIN — UNCHANGED values, per spec item 8: this
+      // round only changes the ATTACK, never the max-approach distance
+      // itself). Same eased-interpolation shape the player's own DASH uses.
+      const zMin = e.type === 'gabriel' ? GABRIEL_Z_MIN : ADAM_Z_MIN;
+      const tNorm = clamp(1 - (e.attackUntil - now) / CLAW_APPROACH_MS, 0, 1);
+      const eased = 1 - Math.pow(1 - tNorm, 2);
+      e.z = e.clawApproachStartZ + (zMin - e.clawApproachStartZ) * eased;
+      if (now >= e.attackUntil) {
+        e.z = zMin; // land exactly on the max-approach position, no overshoot/undershoot
+        e.attackState = 'telegraph'; // reuses the existing windup-art render state
+        e.attackUntil = now + CLAW_WINDUP_MS;
+      }
+    } else if (e.attackState === 'telegraph') {
+      // Second, SHORT reaction window — the real "point of no return" tell
+      // (claw-raised windup pose) AFTER arrival, satisfying spec item 9's
+      // explicit ban on an instant guaranteed hit the same frame the
+      // approach lands. A player who saw the blink and DASHed clear of
+      // CLAW_HIT_RANGE_PX during blink+approach+this window avoids it.
+      if (now >= e.attackUntil) {
+        e.attackState = 'impact'; // reuses the existing release/swing-art render state
+        e.attackUntil = now + CLAW_SWING_MS;
+        // The actual hit-test — fires exactly once, at the instant the
+        // swing begins, against the player's ACTUAL current position.
+        const rect = computeEnemyDrawRect();
+        const playerScreenX = state.centerX + p.strafeOffset;
+        const lateralDist = Math.abs(playerScreenX - rect.cx);
+        const outOfRange = lateralDist > CLAW_HIT_RANGE_PX;
+        const dashInvincible = now < p.invincibleUntil;
+        if (!outOfRange && !dashInvincible) {
+          p.hp = Math.max(0, p.hp - CLAW_DAMAGE);
+          p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
+        } else {
+          showCenterMsg(dashInvincible ? 'AVOIDED' : 'MISS', '#7fffb0');
+        }
       }
     } else if (e.attackState === 'impact') {
-      if (now >= e.attackUntil) { e.attackState = 'cooldown'; e.attackUntil = now + 1200; }
+      if (now >= e.attackUntil) { e.attackState = 'cooldown'; e.attackUntil = now + CLAW_COOLDOWN_MS; }
     } else if (e.attackState === 'cooldown') {
       if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + 900 + Math.random() * 1400; }
     }
@@ -1698,16 +2103,23 @@ function computeEnemyDrawRect() {
   const e = state.enemy;
   const proj = screenSpaceEnemyAnchor();
 
-  if (e.type === 'gabriel') {
-    // GABRIEL: round-1's existing crop-toward-upper-body approach shape is
-    // UNCHANGED (it already does "get close -> frame shifts to the upper
-    // body" correctly) — PART 4 only retunes GABRIEL's OWN zMin/world
-    // height (see GABRIEL_Z_MIN/GABRIEL_WORLD_HEIGHT), not this formula.
-    const set = ASSETS.gabriel;
+  if (e.type === 'gabriel' || e.type === 'adam') {
+    // GABRIEL/ADAM: round-1's existing crop-toward-upper-body approach
+    // shape is UNCHANGED (it already does "get close -> frame shifts to
+    // the upper body" correctly) — PART 4 only retunes GABRIEL's OWN
+    // zMin/world height (see GABRIEL_Z_MIN/GABRIEL_WORLD_HEIGHT), not this
+    // formula. 5TH ROUND PART 7: ADAM reuses this SAME formula (its own
+    // attack "family" in ACTION-GAME, same human scale) via its own
+    // ADAM_Z_MIN/ADAM_WORLD_HEIGHT constants and real ASSETS.adam art,
+    // rather than a second parallel implementation.
+    const isGabriel = e.type === 'gabriel';
+    const set = isGabriel ? ASSETS.gabriel : ASSETS.adam;
+    const zMin = isGabriel ? GABRIEL_Z_MIN : ADAM_Z_MIN;
+    const worldHeight = isGabriel ? GABRIEL_WORLD_HEIGHT : ADAM_WORLD_HEIGHT;
     const img = e.attackState === 'telegraph' ? set.windup : (e.attackState === 'impact' ? set.release : set.idle);
-    const distNorm = 1 - (e.z - GABRIEL_Z_MIN) / (ENEMY_Z_MAX - GABRIEL_Z_MIN);
+    const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 2.6;
-    const drawH = GABRIEL_WORLD_HEIGHT * proj.scale * closeBoost;
+    const drawH = worldHeight * proj.scale * closeBoost;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
     const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));
@@ -1940,16 +2352,24 @@ function renderStructure(s, theme) {
       break;
     }
     case 'floorSeam': {
-      const l = project(-half, CORRIDOR_FLOOR_Y, s.z);
-      const r = project(half, CORRIDOR_FLOOR_Y, s.z);
+      // 5TH ROUND PART 16: ambient render-time-only crawl — see the
+      // AMBIENT_FLOOR_CRAWL_* comment above structures[]. crawlZ wraps
+      // within [0, spacing), so this is a bounded shift of the already-
+      // repeating pattern, never an actual position change of s itself.
+      const crawlZ = (state.timeSec * AMBIENT_FLOOR_CRAWL_SPEED) % AMBIENT_FLOOR_CRAWL_SPACING.floorSeam;
+      const drawZ = s.z - crawlZ;
+      const l = project(-half, CORRIDOR_FLOOR_Y, drawZ);
+      const r = project(half, CORRIDOR_FLOOR_Y, drawZ);
       ctx.strokeStyle = theme.wallDark;
       ctx.lineWidth = Math.max(1, 2 * l.scale);
       ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(r.x, r.y); ctx.stroke();
       break;
     }
     case 'grating': {
-      const l = project(-half * 0.7, CORRIDOR_FLOOR_Y * 0.98, s.z);
-      const r = project(half * 0.7, CORRIDOR_FLOOR_Y * 0.98, s.z);
+      const crawlZg = (state.timeSec * AMBIENT_FLOOR_CRAWL_SPEED) % AMBIENT_FLOOR_CRAWL_SPACING.grating;
+      const gz = s.z - crawlZg;
+      const l = project(-half * 0.7, CORRIDOR_FLOOR_Y * 0.98, gz);
+      const r = project(half * 0.7, CORRIDOR_FLOOR_Y * 0.98, gz);
       const w = r.x - l.x;
       ctx.strokeStyle = theme.wallDark;
       ctx.lineWidth = Math.max(1, 1.5 * l.scale);
@@ -2156,6 +2576,20 @@ function renderPlayer(theme) {
   const drawW = img.naturalWidth * baseScale * p.scale;
   const dx = cx - drawW / 2;
   const dy = bottomY - drawH;
+  // 5TH ROUND PART 12: short damage-blink — a brief brightness flash on the
+  // player sprite the instant real damage lands (see PLAYER_HIT_FLASH_MS /
+  // the three resolve*Impact() sites and the CLAW hit-test above). Mirrors
+  // the SAME flashing pattern already used for enemy hit feedback
+  // (renderEnemy()'s own hitFlashUntil check) — takes visual priority over
+  // STEALTH/COVER for its brief duration so "you were just hit" is never
+  // masked by another state's own dimming/tinting.
+  if (nowTs < p.hitFlashUntil) {
+    ctx.save();
+    ctx.filter = 'brightness(2.2)';
+    ctx.drawImage(img, dx, dy, drawW, drawH);
+    ctx.restore();
+    return;
+  }
   if (strength > 0.001) {
     // STEALTH always wins visually over COVER (they must read as clearly
     // distinct states) — the heat-haze distortion effect is unchanged.
@@ -2199,6 +2633,16 @@ function renderEnemy(theme) {
   const flashing = e.deathState === 'alive' && now < e.hitFlashUntil;
   ctx.save();
   if (flashing) ctx.filter = 'brightness(2.2)';
+
+  // 5TH ROUND PART 8: CLAW's first reaction window ("GABRIELが点滅") — a
+  // fast on/off flicker (alpha + brightness) while attackState==='blink',
+  // purely visual, no new asset. Only ever active while alive (blink is
+  // gated to deathState==='alive' by the state machine itself).
+  if (e.deathState === 'alive' && e.attackState === 'blink') {
+    const lit = Math.sin(now / 65) > 0;
+    ctx.globalAlpha = lit ? 1 : 0.3;
+    ctx.filter = lit ? 'brightness(2.0)' : 'brightness(0.75)';
+  }
 
   if (e.deathState === 'exploding') {
     // PART 25: DRONE/ROID1/ROID2/ADAM SPHERE — reuses the exact same
@@ -2564,7 +3008,33 @@ function frame(ts) {
   lastTs = ts;
   state.timeSec += dt;
 
-  const gpInput = pollGamepad();
+  // 5TH ROUND PART 17/18: LOADING gate. While assets aren't genuinely
+  // ready yet, skip ALL input/gameplay/render processing entirely — the
+  // opaque #loading-screen overlay covers the canvas anyway, so there is
+  // nothing to draw yet regardless. checkAssetsReady() is real per-frame
+  // polling of each asset's own state, never a timer.
+  if (!state.assetsReady) {
+    if (checkAssetsReady()) {
+      state.assetsReady = true;
+      loadingStatusEl.hidden = true;
+      loadingStartPromptEl.hidden = false;
+      // PART 18: explicit flush at the exact ready transition — any
+      // gamepad button already held through loading must require a fresh
+      // release+press before it can register as anything, never fire as a
+      // stale edge the instant gating lifts (see GAMEPAD_SETTLE_MS/
+      // pollGamepad()'s own settle-window, reused here for the same
+      // purpose at this different trigger point).
+      state.gamepadSettleUntil = ts + GAMEPAD_SETTLE_MS;
+    }
+    return;
+  }
+
+  const gpInput = pollGamepad(ts);
+  // PART 17/19: still waiting for the qualifying first gesture (touch/key/
+  // gamepad button, see handleFirstGesture()) — assets are ready and the
+  // "TAP TO START" prompt is showing, but gameplay itself has not begun,
+  // so no input is processed as gameplay yet either.
+  if (!state.gameStarted) return;
   state.input.moveX = gpInput.move.x !== 0 ? gpInput.move.x : touchMove.x;
   state.input.moveY = gpInput.move.y !== 0 ? gpInput.move.y : touchMove.y;
   // PART 3/4 (3rd round): LEFT STICK drives FLASHLIGHT only, RIGHT STICK

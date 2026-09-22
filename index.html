@@ -18,6 +18,21 @@
 
   <canvas id="scene-canvas"></canvas>
 
+  <!-- 5TH ROUND PART 17/18/19/20: real asset-readiness LOADING gate — this
+       prototype previously had NONE at all (gameplay/input began the
+       instant the page loaded, before sprites/BGM had actually arrived).
+       Blocks START (gamepad/touch/keyboard) until every required asset
+       (all real character sprites + barrel + BGM) is genuinely confirmed
+       loaded via checkAssetsReady() in game.js — never a fixed timer.
+       Starts visible; game.js hides it once ready + a real gesture opens
+       the "TAP TO START" gate. -->
+  <div id="loading-screen">
+    <div id="loading-title">DARKOUT-TPS</div>
+    <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
+    <div id="loading-status">LOADING ASSETS... <span id="loading-pct">0</span>%</div>
+    <div id="loading-start-prompt" hidden>TAP SCREEN / PRESS ANY BUTTON TO START</div>
+  </div>
+
   <!-- Main gameplay BGM ("AFTER THE LIMITS"). loop: this is a continuous
        gameplay track, expected to keep playing across the whole AUTO MODE
        sequence, well past a single loop of the song. Playback itself is
@@ -85,19 +100,20 @@
 
   <!-- 4th round PART 10/11: ENEMY SELECT — extends the previous ROID1/
        ROID2/GABRIEL-only BOSS TEST panel with AUTO + all 6 requested
-       identities. DRONE/ADAM SPHERE/ADAM have no implementation anywhere
-       in this repo (investigated first — no assets, no AI, no code) so
-       their buttons are marked visually disabled; clicking them shows a
-       "NOT IMPLEMENTED" notice instead of faking a fight (see
-       selectEnemy() in game.js). -->
+       identities. 5TH ROUND PART 7: ADAM/ADAM SPHERE are now real
+       (assets found + investigated in ACTION-GAME, wired into existing
+       attack-family state machines) — only DRONE remains unimplemented
+       (no asset/AI/code anywhere in this repo); its button stays marked
+       visually disabled, clicking it shows a "NOT IMPLEMENTED" notice
+       instead of faking a fight (see selectEnemy() in game.js). -->
   <div id="enemy-switch">
     <button type="button" data-enemy="auto" class="enemy-btn active">AUTO</button>
     <button type="button" data-enemy="drone" class="enemy-btn enemy-btn-unimplemented">DRONE</button>
     <button type="button" data-enemy="roid1" class="enemy-btn">ROID 1</button>
     <button type="button" data-enemy="roid2" class="enemy-btn">ROID 2</button>
     <button type="button" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
-    <button type="button" data-enemy="adamSphere" class="enemy-btn enemy-btn-unimplemented">ADAM SPHERE</button>
-    <button type="button" data-enemy="adam" class="enemy-btn enemy-btn-unimplemented">ADAM</button>
+    <button type="button" data-enemy="adamSphere" class="enemy-btn">ADAM SPHERE</button>
+    <button type="button" data-enemy="adam" class="enemy-btn">ADAM</button>
   </div>
 
   <!-- On-screen touch fallback controls (for testing without a controller).
