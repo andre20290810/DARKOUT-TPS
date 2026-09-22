@@ -149,6 +149,17 @@
        #touch-buttons. -->
   <div id="r10-debug-panel" hidden>
     <div id="r10-dbg-title">DEBUG (?debug=1)</div>
+    <!-- ADDENDUM: COPY DEBUG — copies a full plaintext snapshot (GAME/
+         PLAYER/FIRE/SHOT/ENEMY/INPUT + full event log) to the clipboard so
+         it can be pasted straight into ChatGPT etc. from an iPhone. Fixed
+         at the top of the panel (reachable without scrolling past a long
+         event log). This is the only element inside #r10-debug-panel with
+         pointer-events re-enabled (see style.css) — the rest of the panel
+         stays pass-through so it never blocks gameplay touches. -->
+    <div id="r10-dbg-copy-row">
+      <button type="button" id="r10-dbg-copy-btn">COPY DEBUG</button>
+      <span id="r10-dbg-copy-status"></span>
+    </div>
     <div id="r10-dbg-game"></div>
     <div id="r10-dbg-player"></div>
     <div id="r10-dbg-fire"></div>

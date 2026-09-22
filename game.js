@@ -589,6 +589,12 @@ const r10DbgShotEl = document.getElementById('r10-dbg-shot');
 const r10DbgEnemyEl = document.getElementById('r10-dbg-enemy');
 const r10DbgInputEl = document.getElementById('r10-dbg-input');
 const r10DbgLogEl = document.getElementById('r10-dbg-log');
+// ADDENDUM (COPY DEBUG): the button + its transient success/failure label.
+// Both live inside #r10-debug-panel, which only ever exists/shows when
+// DEBUG_MODE is true (see index.html) — nothing here is reachable on a
+// normal URL.
+const r10DbgCopyBtnEl = document.getElementById('r10-dbg-copy-btn');
+const r10DbgCopyStatusEl = document.getElementById('r10-dbg-copy-status');
 
 const r10DebugState = DEBUG_MODE ? {
   fireCallCount: 0,     // every real fireWeapon() invocation, success or reject
@@ -620,46 +626,205 @@ function r10DebugLog(text) {
   console.log('[DEBUG ' + t.toFixed(0) + ']', text);
 }
 
-let r10DbgLastRenderAt = 0;
-function r10UpdateDebugPanel(ts) {
-  if (ts - r10DbgLastRenderAt < 150) return; // throttled DOM writes, debug-only
-  r10DbgLastRenderAt = ts;
+// ADDENDUM (COPY DEBUG): single source of truth for every field the panel
+// shows AND every field COPY DEBUG copies, so the two can never drift out
+// of sync with each other. Pure read — computes and returns a plain object
+// from the CURRENT live state at the moment it's called; never reads back
+// from the DOM. Called both from the throttled r10UpdateDebugPanel() below
+// and, independently and un-throttled, at the exact instant COPY DEBUG is
+// pressed (see r10CopyDebugSnapshot()) — that second call is what makes
+// the copy a true snapshot of the moment of the tap, not whatever the
+// panel happened to last redraw up to 150ms earlier.
+function r10CollectSnapshot(ts) {
   const p = state.player, e = state.enemy, es = state.escape, d = r10DebugState;
   const activeBullets = state.bullets.filter((b) => b.active).length;
   const activeParticles = state.particles.filter((pt) => pt.active).length;
   const dashActive = ts < p.dashUntil || ts < p.fwdDashUntil || ts < es.strafeDashUntil || ts < es.fwdDashUntil;
+  return {
+    ts,
+    game: { mode: state.gameMode, theme: state.theme, started: state.gameStarted, paused: state.paused },
+    player: { x: Math.round(p.strafeOffset), facing: p.facing, hp: p.hp, maxHp: PLAYER_MAX_HP,
+      cover: isPlayerInCover(), coverFacing: p.coverFacing, dash: dashActive },
+    fire: { held: state.input.fireHeld, calls: d.fireCallCount, ok: d.fireSuccessCount,
+      rej: d.fireRejectCount, rejReason: d.fireRejectReason, lastAt: Math.round(d.lastFireAt),
+      cdLeft: Math.max(0, Math.round(p.fireCooldownUntil - ts)), nextOk: Math.round(d.nextFireAllowedAt) },
+    shot: { active: activeBullets, fx: activeParticles, created: d.shotCreatedCount,
+      lastDir: d.lastShotDir ? d.lastShotDir.x.toFixed(0) + ',' + d.lastShotDir.y.toFixed(0) : '-',
+      lastTgt: d.lastTarget ? d.lastTarget.x.toFixed(0) + ',' + d.lastTarget.y.toFixed(0) : '-',
+      lastTest: d.lastHitTestResult },
+    enemy: { type: e.type, hp: e.hp, maxHp: e.maxHp, lastDmg: d.lastDamage,
+      lastDmgAt: Math.round(d.lastDamageAt), hits: d.hitCount, miss: d.missCount },
+    input: { mode: d.inputMode, fireBtn: state.input.fireHeld,
+      stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
+      aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0) },
+    // ADDENDUM item 9: the FULL ring buffer (up to 60 entries), oldest
+    // first — COPY DEBUG must never truncate this, unlike the on-screen
+    // panel's own last-16 display slice below.
+    log: d.log.slice(),
+  };
+}
 
-  r10DbgGameEl.textContent = 'GAME mode=' + state.gameMode + ' theme=' + state.theme +
-    ' started=' + state.gameStarted + ' paused=' + state.paused;
+let r10DbgLastRenderAt = 0;
+function r10UpdateDebugPanel(ts) {
+  if (ts - r10DbgLastRenderAt < 150) return; // throttled DOM writes, debug-only
+  r10DbgLastRenderAt = ts;
+  const s = r10CollectSnapshot(ts);
 
-  r10DbgPlayerEl.textContent = 'PLAYER x=' + Math.round(p.strafeOffset) + ' facing=' + p.facing +
-    ' hp=' + p.hp + '/' + PLAYER_MAX_HP +
-    ' cover=' + isPlayerInCover() + '(' + p.coverFacing + ')' +
-    ' dash=' + dashActive;
+  r10DbgGameEl.textContent = 'GAME mode=' + s.game.mode + ' theme=' + s.game.theme +
+    ' started=' + s.game.started + ' paused=' + s.game.paused;
 
-  r10DbgFireEl.textContent = 'FIRE held=' + state.input.fireHeld +
-    ' calls=' + d.fireCallCount + ' ok=' + d.fireSuccessCount +
-    ' rej=' + d.fireRejectCount + '(' + d.fireRejectReason + ')' +
-    '\n lastAt=' + Math.round(d.lastFireAt) +
-    ' cdLeft=' + Math.max(0, Math.round(p.fireCooldownUntil - ts)) +
-    ' nextOk=' + Math.round(d.nextFireAllowedAt);
+  r10DbgPlayerEl.textContent = 'PLAYER x=' + s.player.x + ' facing=' + s.player.facing +
+    ' hp=' + s.player.hp + '/' + s.player.maxHp +
+    ' cover=' + s.player.cover + '(' + s.player.coverFacing + ')' +
+    ' dash=' + s.player.dash;
 
-  r10DbgShotEl.textContent = 'SHOT active=' + activeBullets + ' fx=' + activeParticles +
-    ' created=' + d.shotCreatedCount +
-    '\n lastDir=' + (d.lastShotDir ? d.lastShotDir.x.toFixed(0) + ',' + d.lastShotDir.y.toFixed(0) : '-') +
-    ' lastTgt=' + (d.lastTarget ? d.lastTarget.x.toFixed(0) + ',' + d.lastTarget.y.toFixed(0) : '-') +
-    '\n lastTest=' + d.lastHitTestResult;
+  r10DbgFireEl.textContent = 'FIRE held=' + s.fire.held +
+    ' calls=' + s.fire.calls + ' ok=' + s.fire.ok +
+    ' rej=' + s.fire.rej + '(' + s.fire.rejReason + ')' +
+    '\n lastAt=' + s.fire.lastAt + ' cdLeft=' + s.fire.cdLeft + ' nextOk=' + s.fire.nextOk;
 
-  r10DbgEnemyEl.textContent = 'ENEMY ' + e.type + ' hp=' + e.hp + '/' + e.maxHp +
-    '\n lastDmg=' + d.lastDamage + '@' + Math.round(d.lastDamageAt) +
-    ' hits=' + d.hitCount + ' miss=' + d.missCount;
+  r10DbgShotEl.textContent = 'SHOT active=' + s.shot.active + ' fx=' + s.shot.fx +
+    ' created=' + s.shot.created +
+    '\n lastDir=' + s.shot.lastDir + ' lastTgt=' + s.shot.lastTgt +
+    '\n lastTest=' + s.shot.lastTest;
 
-  r10DbgInputEl.textContent = 'INPUT mode=' + d.inputMode + ' fireBtn=' + state.input.fireHeld +
-    '\n stickR=' + state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2) +
-    ' aimLive=' + p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0);
+  r10DbgEnemyEl.textContent = 'ENEMY ' + s.enemy.type + ' hp=' + s.enemy.hp + '/' + s.enemy.maxHp +
+    '\n lastDmg=' + s.enemy.lastDmg + '@' + s.enemy.lastDmgAt +
+    ' hits=' + s.enemy.hits + ' miss=' + s.enemy.miss;
 
-  const lines = d.log.slice(-16).reverse().map((en) => en.t.toFixed(0) + ' ' + en.text);
+  r10DbgInputEl.textContent = 'INPUT mode=' + s.input.mode + ' fireBtn=' + s.input.fireBtn +
+    '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim;
+
+  const lines = s.log.slice(-16).reverse().map((en) => en.t.toFixed(0) + ' ' + en.text);
   r10DbgLogEl.textContent = lines.join('\n');
+}
+
+// ADDENDUM: renders a r10CollectSnapshot() result as plain, ChatGPT-
+// pasteable text — every section the panel shows, plus the FULL event log
+// (not the panel's last-16 slice).
+function r10FormatDebugText(s) {
+  const lines = [];
+  lines.push('=== DARKOUT 2 DEBUG ===');
+  lines.push('');
+  lines.push('GAME');
+  lines.push('mode: ' + s.game.mode);
+  lines.push('theme: ' + s.game.theme);
+  lines.push('started: ' + s.game.started);
+  lines.push('paused: ' + s.game.paused);
+  lines.push('');
+  lines.push('PLAYER');
+  lines.push('position: x=' + s.player.x);
+  lines.push('facing: ' + s.player.facing);
+  lines.push('hp: ' + s.player.hp + '/' + s.player.maxHp);
+  lines.push('cover: ' + s.player.cover + ' (' + s.player.coverFacing + ')');
+  lines.push('dash: ' + s.player.dash);
+  lines.push('');
+  lines.push('FIRE');
+  lines.push('input: ' + s.fire.held);
+  lines.push('calls: ' + s.fire.calls);
+  lines.push('success: ' + s.fire.ok);
+  lines.push('reject: ' + s.fire.rej);
+  lines.push('rejectReason: ' + s.fire.rejReason);
+  lines.push('lastFireTime: ' + s.fire.lastAt);
+  lines.push('cooldown: ' + s.fire.cdLeft);
+  lines.push('nextFireTime: ' + s.fire.nextOk);
+  lines.push('');
+  lines.push('SHOT');
+  lines.push('active: ' + s.shot.active);
+  lines.push('effects: ' + s.shot.fx);
+  lines.push('created: ' + s.shot.created);
+  lines.push('lastDirection: ' + s.shot.lastDir);
+  lines.push('lastTarget: ' + s.shot.lastTgt);
+  lines.push('lastHitResult: ' + s.shot.lastTest);
+  lines.push('');
+  lines.push('ENEMY');
+  lines.push('type: ' + s.enemy.type);
+  lines.push('hp: ' + s.enemy.hp + '/' + s.enemy.maxHp);
+  lines.push('lastDamage: ' + s.enemy.lastDmg);
+  lines.push('lastDamageTime: ' + s.enemy.lastDmgAt);
+  lines.push('hitCount: ' + s.enemy.hits);
+  lines.push('missCount: ' + s.enemy.miss);
+  lines.push('');
+  lines.push('INPUT');
+  lines.push('mode: ' + s.input.mode);
+  lines.push('fireButton: ' + s.input.fireBtn);
+  lines.push('rightStick: ' + s.input.stickR);
+  lines.push('aim: ' + s.input.aim);
+  lines.push('');
+  lines.push('=== EVENT LOG (' + s.log.length + ' entries) ===');
+  if (s.log.length === 0) {
+    lines.push('(empty)');
+  } else {
+    for (const en of s.log) lines.push('[' + en.t.toFixed(0) + '] ' + en.text);
+  }
+  lines.push('');
+  lines.push('=== END DEBUG ===');
+  return lines.join('\n');
+}
+
+// ADDENDUM: Clipboard write with an iOS/Safari-safe fallback.
+// navigator.clipboard.writeText() requires a secure context + (on some
+// Safari versions) a same-tick user-activation path that an awaited
+// promise chain can lose — so on any rejection/absence we fall back to
+// the classic hidden-textarea + select() + document.execCommand('copy')
+// path, which has been reliable on Safari/iOS for this exact use case for
+// years. Returns a Promise<boolean> (true = copied).
+function r10CopyTextToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true).catch(() => r10FallbackCopy(text));
+  }
+  return Promise.resolve(r10FallbackCopy(text));
+}
+function r10FallbackCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    // Keep it on-screen (0-size, transparent) rather than off-screen —
+    // some iOS Safari versions refuse to focus/select an element
+    // positioned far outside the viewport.
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '0';
+    ta.style.width = '1px';
+    ta.style.height = '1px';
+    ta.style.opacity = '0';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length); // iOS Safari needs this explicit range
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (err) {
+    return false;
+  }
+}
+
+let r10CopyStatusClearTimer = null;
+function r10CopyDebugSnapshot() {
+  if (!DEBUG_MODE) return; // defense-in-depth; the button itself only exists in the DEBUG_MODE DOM tree
+  const snapshot = r10CollectSnapshot(performance.now()); // fresh read, taken at the exact instant of the tap
+  const text = r10FormatDebugText(snapshot);
+  r10DebugLog('COPY DEBUG pressed (' + snapshot.log.length + ' log entries in snapshot)');
+  r10CopyTextToClipboard(text).then((ok) => {
+    if (r10CopyStatusClearTimer) clearTimeout(r10CopyStatusClearTimer);
+    r10DbgCopyStatusEl.textContent = ok ? 'COPIED!' : 'COPY FAILED';
+    r10DbgCopyStatusEl.style.color = ok ? '#8fffb0' : '#ff8f8f';
+    r10CopyStatusClearTimer = setTimeout(() => { r10DbgCopyStatusEl.textContent = ''; }, 2000);
+  });
+}
+if (DEBUG_MODE && r10DbgCopyBtnEl) {
+  // pointerdown (not click) so this reads as a direct user-activation
+  // gesture for Clipboard API purposes on touch devices; preventDefault
+  // stops it from also being interpreted as a stray game touch (the
+  // button sits inside the otherwise pointer-events:none debug panel —
+  // see style.css — so this is the ONLY tappable element in that area).
+  r10DbgCopyBtnEl.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    r10CopyDebugSnapshot();
+  });
 }
 
 // ---------------------------------------------------------------------

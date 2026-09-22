@@ -480,14 +480,16 @@ html, body {
    (normal-URL) state, cleared only from game.js when DEBUG_MODE is true.
    Bottom-left, small, its own scroll region — deliberately compact so it
    never obstructs mobile-landscape gameplay (the MOVE stick lives at
-   bottom-left too, but this panel is pointer-events:none and sits above
-   it visually only, never intercepting touches). */
+   bottom-left too, but this panel stays pointer-events:none as a whole —
+   see below for the deliberate per-element overrides that make the COPY
+   DEBUG button and the field text tappable/selectable without turning the
+   whole panel into a blocking region). */
 #r10-debug-panel {
   position: absolute;
   left: max(6px, env(safe-area-inset-left));
   bottom: max(6px, env(safe-area-inset-bottom));
   z-index: 90;
-  width: 168px;
+  width: 186px;
   max-height: 62vh;
   overflow-y: auto;
   background: rgba(0,0,0,0.72);
@@ -511,6 +513,55 @@ html, body {
 #r10-dbg-log {
   color: #ffd98f;
   font-size: 7.5px;
+}
+/* ADDENDUM (COPY DEBUG):
+   - #r10-debug-panel itself stays pointer-events:none (above) so it never
+     steals touches meant for gameplay (MOVE stick etc.) anywhere in its
+     bounding box.
+   - The copy row is the one deliberate exception: pointer-events:auto ONLY
+     on this row/button re-enables taps there without affecting the rest
+     of the panel. sticky positioning keeps it reachable at the top even
+     once the event log grows long enough to scroll.
+   - user-select:text on the field/log text (DEBUG-only, per spec item 7)
+     lets a real device long-press-select/copy manually as a backup to the
+     COPY DEBUG button, without touching any other UI in the game. */
+#r10-dbg-copy-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding: 2px 0 4px;
+  background: rgba(0,0,0,0.85);
+  border-bottom: 1px solid rgba(120,255,160,0.25);
+  pointer-events: auto;
+}
+#r10-dbg-copy-btn {
+  pointer-events: auto;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+  padding: 8px 12px;
+  min-height: 34px;
+  background: rgba(80,180,255,0.35);
+  border: 1px solid rgba(120,200,255,0.8);
+  border-radius: 4px;
+  color: #fff;
+  touch-action: manipulation;
+}
+#r10-dbg-copy-btn:active { background: rgba(80,180,255,0.6); }
+#r10-dbg-copy-status {
+  font-size: 9px;
+  font-weight: bold;
+  color: #8fffb0;
+}
+#r10-dbg-game, #r10-dbg-player, #r10-dbg-fire, #r10-dbg-shot,
+#r10-dbg-enemy, #r10-dbg-input, #r10-dbg-log {
+  -webkit-user-select: text;
+  user-select: text;
+  pointer-events: auto;
 }
 
 #theme-switch, #enemy-switch {
