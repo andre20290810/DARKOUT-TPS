@@ -606,15 +606,37 @@ function imgReady(img) {
 }
 
 // ---------------------------------------------------------------------
-// LOADING GATE (5TH ROUND PART 17/18/19/20)
-// This prototype previously had NO loading gate at all — gameplay/input
-// began the instant the page loaded, before any sprite or the BGM had
-// actually arrived (confirmed by investigation: no loading screen, no
-// "ready" check, no asset enumeration existed anywhere in this file).
-// REQUIRED_IMAGES/REQUIRED_MEDIA below are collected from the SAME real
-// ASSETS object every character already draws from — never a fabricated
-// separate list — so "ready" means every image already in use is actually
-// decoded, not a fixed timer.
+// LOADING GATE (5TH ROUND PART 17/18/19/20; 6TH ROUND: root-cause fix for
+// the real-device "stuck at 98%" report)
+// ---------------------------------------------------------------------
+// 6TH ROUND ROOT CAUSE (confirmed by direct reproduction — see the
+// completion report for the exact repro method): the previous version
+// required `bgmAudioEl.readyState >= 3` (HAVE_FUTURE_DATA) before treating
+// the BGM as "loaded", counted as 1 of the ~42 required items — so a
+// single stuck item landed at (41/42)*100 ≈ 97.6% → rounds to 98%,
+// matching the report exactly. HTMLMediaElement.readyState reaching 3
+// requires the browser to actually BUFFER playable data, and mobile
+// browsers (iOS Safari in particular) are well known to defer that
+// buffering indefinitely — even with preload="auto" — until a real user
+// gesture has occurred. That created a genuine deadlock: the loading gate
+// waited for a state audio could only reach AFTER the gate opens, so on
+// exactly the devices this project targets (touch/mobile), it could never
+// complete. This is a browser-policy issue confirmed by reproducing it
+// directly (freezing bgmAudioEl.readyState at 1, matching real iOS
+// pre-gesture behavior, reliably reproduces a permanent 98% stall
+// identical to the report), not a missing/broken file.
+//
+// Fix (spec section 2's own required/non-required split): only real
+// character/boss/object IMAGES — the things that would visibly be missing
+// from the scene if gameplay started too early — block 100%/START.
+// REQUIRED_IMAGES is collected from the SAME real ASSETS object every
+// character already draws from (never a fabricated separate list). BGM
+// readiness is tracked and logged SEPARATELY for diagnostics, and is
+// never part of the blocking total — it starts (or keeps trying to start)
+// via the existing gesture-gated tryStartBgm() regardless of its buffered
+// state, which already tolerates an unready audio element correctly (see
+// PART 19 in this round's report). A load FAILURE (a real network error,
+// not merely "not buffered yet") is still logged loudly either way.
 // ---------------------------------------------------------------------
 function collectImages(node, out) {
   if (!node) return;
@@ -629,36 +651,153 @@ const loadingScreenEl = document.getElementById('loading-screen');
 const loadingBarFillEl = document.getElementById('loading-bar-fill');
 const loadingPctEl = document.getElementById('loading-pct');
 const loadingStatusEl = document.getElementById('loading-status');
-const loadingStartPromptEl = document.getElementById('loading-start-prompt');
+const loadingEtaEl = document.getElementById('loading-eta');
+const loadingWalkSpriteEl = document.getElementById('loading-walk-sprite');
+const modeSelectScreenEl = document.getElementById('mode-select-screen');
+
+// 6TH ROUND PART 3: LOADING-screen-only walk animation. Reuses the SAME
+// real player north-walk Image objects the game itself draws from
+// (ASSETS.player.walk[0..2] — no new asset, no separate fetch, the
+// browser just serves the already-in-flight/cached request again) but is
+// driven by its OWN tiny interval, completely separate from state.player
+// or the real frame() loop — PART 14 requires this stay 100% cosmetic and
+// never touch real game state, and this implementation has no code path
+// that could (it only ever writes to a decorative <img>'s src).
+const LOADING_WALK_FRAME_MS = 140; // matches the real player's own walk-frame cadence (see updatePlayer()'s p.walkTimer > 0.14)
+let loadingWalkTimerHandle = null;
+let loadingWalkFrameIndex = 0;
+function startLoadingWalkAnimation() {
+  if (loadingWalkTimerHandle !== null) return;
+  loadingWalkTimerHandle = setInterval(() => {
+    loadingWalkFrameIndex = (loadingWalkFrameIndex + 1) % ASSETS.player.walk.length;
+    loadingWalkSpriteEl.src = ASSETS.player.walk[loadingWalkFrameIndex].src;
+  }, LOADING_WALK_FRAME_MS);
+}
+function stopLoadingWalkAnimation() {
+  if (loadingWalkTimerHandle !== null) { clearInterval(loadingWalkTimerHandle); loadingWalkTimerHandle = null; }
+}
+
+// 6TH ROUND PART 11: wireless-controller purchase link. No real store URL
+// exists anywhere in this repo or in ACTION-GAME (checked directly) — per
+// spec, this is left as an explicit, safe placeholder rather than a
+// guessed address; changing where it points is a one-line edit here.
+const CONTROLLER_STORE_URL = ''; // PLACEHOLDER — not yet set, see completion report
+const controllerStoreLinkEl = document.getElementById('controller-store-link');
+if (CONTROLLER_STORE_URL) {
+  controllerStoreLinkEl.href = CONTROLLER_STORE_URL;
+} else {
+  // No destination configured yet — keep the link visibly inert (never a
+  // dead "#" that silently does nothing) rather than a guessed address.
+  controllerStoreLinkEl.addEventListener('click', (e) => e.preventDefault());
+  controllerStoreLinkEl.setAttribute('aria-disabled', 'true');
+}
+
+// 6TH ROUND PART 12: EN/JA toggle for the mode-select screen only — swaps
+// textContent in place from each element's own data-en/data-ja attribute,
+// never a page reload, and never itself a start/gesture action (PART 12's
+// own explicit "言語切り替えだけではゲームを開始しない" — this function
+// touches only text, no game/audio state).
+let uiLang = 'en';
+function applyUiLang() {
+  document.querySelectorAll('[data-en][data-ja]').forEach((el) => {
+    el.textContent = uiLang === 'ja' ? el.dataset.ja : el.dataset.en;
+  });
+}
+document.getElementById('lang-toggle-btn').addEventListener('click', () => {
+  uiLang = uiLang === 'en' ? 'ja' : 'en';
+  applyUiLang();
+});
 
 const loadFailureLogged = new Set();
-// Checked once per frame (cheap — ~30 images + 1 audio element, no
-// per-frame allocation beyond a couple of counters) until it returns true.
-// Never a setTimeout/fixed-duration "looks done" fallback — genuinely
-// polls each asset's own real state (img.complete/naturalWidth, the
-// bgm-audio element's readyState) every time.
-function checkAssetsReady() {
+let bgmLoadLoggedReady = false;
+
+// 6TH ROUND PART 1: diagnostic console output — total/loaded/pending/failed,
+// with pending items listed by file path, so a future stall (whatever its
+// cause) is immediately diagnosable instead of a silent freeze. Throttled
+// to once per ~1s while incomplete (never spammed every frame) plus once
+// on actual completion.
+let lastDiagLogAt = 0;
+function logLoadingDiagnostics(now, loaded, total, pendingPaths, failedPaths) {
+  if (now - lastDiagLogAt < 1000 && loaded < total) return;
+  lastDiagLogAt = now;
+  console.log('[loading] total:', total, 'loaded:', loaded, 'pending:', pendingPaths.length, 'failed:', failedPaths.length);
+  if (pendingPaths.length) console.log('[loading] pending files:', pendingPaths);
+  if (failedPaths.length) console.log('[loading] FAILED files:', failedPaths);
+}
+
+// 6TH ROUND PART 6: real-progress-rate ETA, exponentially-smoothed so it
+// never jitters wildly frame to frame. Samples (timestamp, loadedCount)
+// on every call; needs at least ETA_MIN_SAMPLES spanning ETA_MIN_SPAN_MS
+// of real elapsed time before it will show a number at all (shows
+// "CALCULATING..." until then) — never a fabricated/guessed early value.
+const ETA_MIN_SAMPLES = 3;
+const ETA_MIN_SPAN_MS = 400;
+const ETA_SMOOTHING = 0.25; // EMA factor applied to the rate itself
+let etaSamples = []; // {t, loaded}
+let etaSmoothedRate = null; // items/ms, smoothed
+
+function estimateRemainingSeconds(now, loaded, total) {
+  etaSamples.push({ t: now, loaded });
+  if (etaSamples.length > 8) etaSamples.shift();
+  if (etaSamples.length < ETA_MIN_SAMPLES) return null;
+  const first = etaSamples[0];
+  const span = now - first.t;
+  if (span < ETA_MIN_SPAN_MS) return null;
+  const deltaLoaded = loaded - first.loaded;
+  if (deltaLoaded <= 0) return etaSmoothedRate ? Math.max(0, (total - loaded) / (etaSmoothedRate * 1000)) : null;
+  const instRate = deltaLoaded / span; // items per ms
+  etaSmoothedRate = etaSmoothedRate === null ? instRate : (etaSmoothedRate + ETA_SMOOTHING * (instRate - etaSmoothedRate));
+  if (etaSmoothedRate <= 0) return null;
+  const remainingItems = total - loaded;
+  return Math.max(0, remainingItems / (etaSmoothedRate * 1000));
+}
+
+// Checked once per frame (cheap — ~40 images, no per-frame allocation
+// beyond a couple of counters) until it returns true. Never a
+// setTimeout/fixed-duration "looks done" fallback — genuinely polls each
+// required image's own real state (img.complete/naturalWidth) every time.
+function checkAssetsReady(now) {
   let loaded = 0;
-  const total = REQUIRED_IMAGES.length + 1; // +1 for BGM
+  const total = REQUIRED_IMAGES.length;
+  const pendingPaths = [];
+  const failedPaths = [];
   for (const img of REQUIRED_IMAGES) {
-    if (imgReady(img)) { loaded++; }
-    else if (img.complete && img.naturalWidth === 0 && !loadFailureLogged.has(img.src)) {
-      // PART 20: failed asset -> console, with its path and required/optional
-      // status (every entry here is required — nothing on this list is
-      // decorative). No new large error-UI is built, per spec.
-      loadFailureLogged.add(img.src);
-      console.error('[loading] REQUIRED image failed to load:', img.src);
+    if (imgReady(img)) {
+      loaded++;
+    } else if (img.complete && img.naturalWidth === 0) {
+      failedPaths.push(img.src);
+      if (!loadFailureLogged.has(img.src)) {
+        loadFailureLogged.add(img.src);
+        console.error('[loading] REQUIRED image failed to load:', img.src);
+      }
+    } else {
+      pendingPaths.push(img.src);
     }
   }
-  if (bgmAudioEl && bgmAudioEl.readyState >= 3) {
-    loaded++;
-  } else if (bgmAudioEl && bgmAudioEl.error && !loadFailureLogged.has(bgmAudioEl.src)) {
-    loadFailureLogged.add(bgmAudioEl.src);
-    console.error('[loading] REQUIRED audio failed to load:', bgmAudioEl.src, bgmAudioEl.error);
+  // BGM: diagnostic-only, never blocks the percentage/100% (see the
+  // section comment above for why — mobile browsers can legitimately
+  // never reach readyState>=3 before a gesture).
+  if (bgmAudioEl) {
+    if (bgmAudioEl.error && !loadFailureLogged.has(bgmAudioEl.src)) {
+      loadFailureLogged.add(bgmAudioEl.src);
+      console.error('[loading] BGM (non-blocking) failed to load:', bgmAudioEl.src, bgmAudioEl.error);
+    } else if (bgmAudioEl.readyState >= 3 && !bgmLoadLoggedReady) {
+      bgmLoadLoggedReady = true;
+      console.log('[loading] BGM buffered and ready:', bgmAudioEl.src);
+    }
   }
-  const pct = Math.round((loaded / total) * 100);
+  logLoadingDiagnostics(now, loaded, total, pendingPaths, failedPaths);
+  const pct = total > 0 ? Math.round((loaded / total) * 100) : 100;
   loadingBarFillEl.style.width = pct + '%';
   loadingPctEl.textContent = String(pct);
+  const etaSec = estimateRemainingSeconds(now, loaded, total);
+  if (loaded >= total) {
+    loadingEtaEl.textContent = '';
+  } else if (etaSec === null) {
+    loadingEtaEl.textContent = 'CALCULATING...';
+  } else {
+    loadingEtaEl.textContent = 'ESTIMATED TIME: ' + Math.max(1, Math.ceil(etaSec)) + ' SEC';
+  }
   return loaded >= total;
 }
 
@@ -1072,6 +1211,35 @@ function pollGamepad(now) {
     const pressed = (i) => !!(b[i] && b[i].pressed);
     const edge = (i) => pressed(i) && !prev[i];
 
+    // 6TH ROUND PART 9 fix: the mode-select trigger (any first button press
+    // while !state.gameStarted, see below) used to be checked LAST in this
+    // function — AFTER gpFire/edge(3..0) DASH latches were already computed
+    // from this exact same press. That meant the very button press which
+    // chose "WIRELESS CONTROLLER" could ALSO land as FIRE or a DASH on the
+    // first real gameplay frame the instant state.gameStarted flipped true
+    // (spec explicitly calls this out: "ボタンがそのままDASH/FIRE等として
+    // 誤発火しないように"). Checked here, FIRST, before any action is
+    // derived from this frame's raw button state — if it fires, this exact
+    // press is fully consumed for mode-select only: prevButtons is
+    // re-baselined (so it can never retroactively read as a stale edge
+    // either) and the settle window is re-armed for defense-in-depth
+    // against the next frame too, then this frame returns neutral input,
+    // never reaching the gpFire/DASH lines below.
+    if (!state.gameStarted && state.assetsReady) {
+      let modeSelectTriggered = false;
+      for (let i = 0; i < b.length; i++) {
+        if (pressed(i) && !prev[i]) { modeSelectTriggered = true; break; }
+      }
+      if (modeSelectTriggered) {
+        const triggerSnapshot = new Array(b.length);
+        for (let i = 0; i < b.length; i++) triggerSnapshot[i] = pressed(i);
+        state.prevButtons = triggerSnapshot;
+        handleModeSelect('controller');
+        state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
+        return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
+      }
+    }
+
     // PART 3 (3rd round): LT(6)/RT(7) held SIMULTANEOUSLY -> STEALTH,
     // unchanged latch shape from round 2 (rising-edge on the AND condition
     // itself — never LT alone, never RT alone, never re-fires while both
@@ -1162,14 +1330,12 @@ function pollGamepad(now) {
     if (edge(9)) state.actions.pauseToggle = true;
     gpFocusHeld = gpFocusHeldLocal;
 
-    // PART 29/30 (4th round follow-up): the first real gamepad button
-    // press is a genuine user-activation event too — this is what lets a
-    // controller-only player (no touch/mouse/keyboard input at all) still
-    // satisfy the browser's autoplay gesture requirement for BGM. See
-    // tryStartBgm()'s own comment for the full picture.
-    for (let i = 0; i < b.length; i++) {
-      if (pressed(i) && !prev[i]) { handleFirstGesture(); break; }
-    }
+    // PART 29/30 (4th round follow-up): the mode-select trigger itself now
+    // lives at the TOP of this function (see the 6TH ROUND PART 9 comment
+    // above `const edge = ...`) so it is consumed before any FIRE/DASH
+    // action can be derived from the same press. By the time execution
+    // reaches here, state.gameStarted is already true whenever a gamepad is
+    // in play, so there is nothing left to check.
 
     const nextPrev = new Array(b.length);
     for (let i = 0; i < b.length; i++) nextPrev[i] = pressed(i);
@@ -1312,30 +1478,30 @@ function tryStartBgm() {
   if (!bgmAudioEl.paused) bgmStarted = true;
 }
 
-// 5TH ROUND PART 17/18/19: unified first-gesture handler — the single
-// touch point every input source (touch/mouse pointerdown, keydown, first
-// gamepad button press) already funnels through. Refuses to do ANYTHING
-// until state.assetsReady is genuinely true (checkAssetsReady()'s own real
-// polling, never a timer) — this is what stops a gesture made WHILE the
-// loading bar is still showing from silently "counting" as the START the
-// instant loading finishes moments later (spec item 18's requirement,
-// generalized from gamepad to every input source: a press before ready
-// must never carry over as a press-after-ready). Once ready, the first
-// qualifying gesture both starts BGM (tryStartBgm(), unchanged) AND
-// dismisses the loading/TAP-TO-START gate — the same spec item 19 "START
-// 等のユーザー操作を利用してAudioを開始" moment doubles as the real
-// GAMEPLAY-start moment for this prototype (which has no separate
-// TITLE/menu screen to hook a more specific event to).
-function handleFirstGesture() {
-  if (!state.assetsReady) return;
+// 6TH ROUND PART 7/8/9/10: replaces the 5th round's "any input starts the
+// game" handleFirstGesture() with an explicit MODE SELECT screen (spec:
+// no more bare "TAP TO START" — the player must choose WIRELESS
+// CONTROLLER or TOUCH CONTROLS, and THAT single click/press is the same
+// gesture that unlocks Audio, starts gameplay, and configures the touch
+// UI's visibility). mode is 'controller' | 'touch'. Idempotent — a second
+// call (button mashed, or both a click AND a gamepad confirm racing) is a
+// silent no-op once state.gameStarted is already true, so BGM/game can
+// never double-start (PART 15).
+function handleModeSelect(mode) {
+  if (!state.assetsReady || state.gameStarted) return;
+  modeSelectScreenEl.hidden = true;
+  stopLoadingWalkAnimation();
+  // PART 9: touch controls default to the SAME hidden-by-default state a
+  // WIRELESS CONTROLLER player always had (setTouchControlsVisible()
+  // itself is completely unchanged) — only a TOUCH CONTROLS choice turns
+  // them on.
+  setTouchControlsVisible(mode === 'touch');
   tryStartBgm();
-  if (!state.gameStarted) {
-    state.gameStarted = true;
-    loadingScreenEl.hidden = true;
-  }
+  state.gameStarted = true;
 }
-document.addEventListener('pointerdown', handleFirstGesture);
-document.addEventListener('keydown', handleFirstGesture);
+
+document.getElementById('mode-btn-controller').addEventListener('click', () => handleModeSelect('controller'));
+document.getElementById('mode-btn-touch').addEventListener('click', () => handleModeSelect('touch'));
 
 // PART 30 (4th round follow-up): PAUSE/RESUME lifecycle for the BGM.
 // audio.pause()/audio.play() on the SAME element never touch currentTime —
@@ -3008,16 +3174,18 @@ function frame(ts) {
   lastTs = ts;
   state.timeSec += dt;
 
-  // 5TH ROUND PART 17/18: LOADING gate. While assets aren't genuinely
-  // ready yet, skip ALL input/gameplay/render processing entirely — the
-  // opaque #loading-screen overlay covers the canvas anyway, so there is
-  // nothing to draw yet regardless. checkAssetsReady() is real per-frame
-  // polling of each asset's own state, never a timer.
+  // 5TH ROUND PART 17/18, 6TH ROUND PART 1/2: LOADING gate. While REQUIRED
+  // images aren't genuinely ready yet, skip ALL input/gameplay/render
+  // processing entirely — the opaque #loading-screen overlay covers the
+  // canvas anyway, so there is nothing to draw yet regardless.
+  // checkAssetsReady() is real per-frame polling of each asset's own
+  // state, never a timer (see its own comment for the 98%-stall root
+  // cause this round fixed: BGM no longer blocks this gate at all).
   if (!state.assetsReady) {
-    if (checkAssetsReady()) {
+    if (checkAssetsReady(ts)) {
       state.assetsReady = true;
-      loadingStatusEl.hidden = true;
-      loadingStartPromptEl.hidden = false;
+      loadingScreenEl.hidden = true;
+      modeSelectScreenEl.hidden = false;
       // PART 18: explicit flush at the exact ready transition — any
       // gamepad button already held through loading must require a fresh
       // release+press before it can register as anything, never fire as a
@@ -3030,10 +3198,10 @@ function frame(ts) {
   }
 
   const gpInput = pollGamepad(ts);
-  // PART 17/19: still waiting for the qualifying first gesture (touch/key/
-  // gamepad button, see handleFirstGesture()) — assets are ready and the
-  // "TAP TO START" prompt is showing, but gameplay itself has not begun,
-  // so no input is processed as gameplay yet either.
+  // 6TH ROUND PART 7/13: still waiting for an explicit mode-select choice
+  // (WIRELESS CONTROLLER / TOUCH CONTROLS, see handleModeSelect()) —
+  // assets are ready and that screen is showing, but gameplay itself has
+  // not begun, so no input is processed as gameplay yet either.
   if (!state.gameStarted) return;
   state.input.moveX = gpInput.move.x !== 0 ? gpInput.move.x : touchMove.x;
   state.input.moveY = gpInput.move.y !== 0 ? gpInput.move.y : touchMove.y;
@@ -3119,6 +3287,12 @@ document.addEventListener('visibilitychange', () => {
 // sync with spawnEnemy() by hand.
 spawnEnemy(AUTO_SEQUENCE[0]);
 
+// 6TH ROUND PART 3/14: the LOADING-screen walk animation starts
+// immediately (the loading screen itself is visible from first paint) and
+// is stopped the instant the player actually picks a mode — it never runs
+// concurrently with real gameplay and never touches state.player/state.enemy.
+startLoadingWalkAnimation();
+
 start();
 
 window.__darkoutTps = {
@@ -3137,4 +3311,10 @@ window.__darkoutTps = {
   ENEMY_IMPLEMENTED, ENEMY_LABEL, ENEMY_DEATH_FAMILY, AUTO_SEQUENCE,
   // added 4th round follow-up: BGM lifecycle.
   tryStartBgm, bgmAudioEl,
+  // added 6th round: LOADING gate diagnostics, mode-select, i18n, ETA —
+  // exposed for automated testing only.
+  checkAssetsReady, REQUIRED_IMAGES, handleModeSelect,
+  get uiLang() { return uiLang; }, applyUiLang,
+  CONTROLLER_STORE_URL,
+  startLoadingWalkAnimation, stopLoadingWalkAnimation,
 };

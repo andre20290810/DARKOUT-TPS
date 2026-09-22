@@ -49,7 +49,13 @@ html, body {
   background: #000;
 }
 
-/* 5TH ROUND PART 17/18/19/20: real asset-readiness LOADING gate. */
+/* 5TH ROUND PART 17/18/19/20: real asset-readiness LOADING gate.
+   6TH ROUND: title restyled to a classic/heavy SERIF look (spec section
+   5 — white, no neon/cyber glow, no gradients) using only system serif
+   fonts (Georgia/Times New Roman/Times/serif) so nothing here waits on a
+   web-font network fetch before it can render (spec: never let the title
+   itself delay LOADING). PART 3: walk-loop stage added between the title
+   and the progress bar. */
 #loading-screen {
   position: absolute;
   inset: 0;
@@ -63,12 +69,48 @@ html, body {
 }
 #loading-screen[hidden] { display: none; }
 #loading-title {
-  font-size: 22px;
+  font-family: Georgia, "Times New Roman", Times, serif;
+  font-size: 34px;
   font-weight: 700;
-  letter-spacing: 0.25em;
-  color: #7fffd4;
-  text-shadow: 0 0 16px rgba(127,255,212,0.45);
+  letter-spacing: 0.14em;
+  color: #f2f0ea;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.6);
 }
+
+/* 6TH ROUND PART 3: LOADING-screen-only walk loop. A fixed small stage —
+   the sprite itself is swapped by startLoadingWalkAnimation() in game.js
+   (plain <img src> cycling, no canvas, no game-loop coupling); the ground
+   is a pure-CSS repeating stripe pattern animated via background-position
+   so it reads as scrolling ground without any new asset or video file. */
+#loading-walk-stage {
+  position: relative;
+  width: 180px;
+  height: 130px;
+  overflow: hidden;
+}
+#loading-ground {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  height: 10px;
+  background-image: repeating-linear-gradient(90deg, rgba(255,255,255,0.16) 0 10px, rgba(255,255,255,0.03) 10px 26px);
+  animation: loadingGroundScroll 0.85s linear infinite;
+}
+@keyframes loadingGroundScroll {
+  from { background-position: 0 0; }
+  to { background-position: -26px 0; }
+}
+#loading-walk-sprite {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  height: 110px;
+  width: auto;
+  image-rendering: auto;
+}
+
 #loading-bar-track {
   width: min(320px, 70vw);
   height: 10px;
@@ -89,12 +131,90 @@ html, body {
   color: #9fb0bd;
 }
 #loading-pct { color: #fff; font-weight: 700; }
-#loading-start-prompt {
+/* 6TH ROUND PART 6: real-progress ETA — same visual weight as the status
+   line, not an alarming/pulsing color (this isn't a warning). */
+#loading-eta {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: #7fd3ff;
+  min-height: 1.4em;
+}
+
+/* 6TH ROUND PART 7/8/9/10/11/12: mode-select screen — replaces the old
+   bare "TAP TO START" prompt. */
+#mode-select-screen {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #05070a;
+  padding: 20px;
+}
+#mode-select-screen[hidden] { display: none; }
+#lang-toggle-btn {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #9fb0bd;
+  border-radius: 4px;
+}
+#mode-select-title {
+  font-family: Georgia, "Times New Roman", Times, serif;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #f2f0ea;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.85);
+}
+#mode-select-subtitle {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: #9fb0bd;
+  margin-bottom: 6px;
+}
+.mode-btn {
+  width: min(340px, 82vw);
   font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  color: #ffcf5c;
-  animation: warnPulse 0.9s infinite alternate;
+  letter-spacing: 0.06em;
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #f2f0ea;
+  border-radius: 6px;
+}
+.mode-btn:active { background: rgba(255,255,255,0.22); }
+#controller-store-row {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+#controller-store-question {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: #6e7d88;
+}
+#controller-store-link {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #7fd3ff;
+  text-decoration: underline;
+}
+#controller-store-link[aria-disabled="true"] {
+  color: #4a5560;
+  cursor: default;
+  text-decoration: none;
 }
 
 #scene-canvas {

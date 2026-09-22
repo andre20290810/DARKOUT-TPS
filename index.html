@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>DARKOUT-TPS PROTOTYPE</title>
+<title>DARKOUT 2</title>
 <link rel="stylesheet" href="style.css?v=1">
 </head>
 <body>
@@ -20,17 +20,48 @@
 
   <!-- 5TH ROUND PART 17/18/19/20: real asset-readiness LOADING gate — this
        prototype previously had NONE at all (gameplay/input began the
-       instant the page loaded, before sprites/BGM had actually arrived).
-       Blocks START (gamepad/touch/keyboard) until every required asset
-       (all real character sprites + barrel + BGM) is genuinely confirmed
-       loaded via checkAssetsReady() in game.js — never a fixed timer.
-       Starts visible; game.js hides it once ready + a real gesture opens
-       the "TAP TO START" gate. -->
+       instant the page loaded, before sprites had actually arrived).
+       Blocks the mode-select screen below until every REQUIRED image
+       (all real character sprites + barrel) is genuinely confirmed loaded
+       via checkAssetsReady() in game.js — never a fixed timer. 6TH ROUND:
+       BGM is intentionally NOT part of this gate any more — see
+       checkAssetsReady()'s own comment for the root-caused reason (mobile
+       browsers can legitimately never reach a "buffered" audio state
+       before a user gesture, which used to deadlock this screen at 98%
+       forever on exactly the devices this game targets).
+       6TH ROUND PART 3: the walk-loop below is a LOADING-SCREEN-ONLY
+       visual — it reuses the player's real north-walk sprites but is
+       driven by its own tiny interval in game.js, completely separate
+       from state.player/state.enemy/the real game loop (see
+       startLoadingWalkAnimation()). -->
   <div id="loading-screen">
-    <div id="loading-title">DARKOUT-TPS</div>
+    <div id="loading-title">DARKOUT 2</div>
+    <div id="loading-walk-stage">
+      <div id="loading-ground"></div>
+      <img id="loading-walk-sprite" src="assets/player/player_north_walk_1.png" alt="">
+    </div>
     <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
     <div id="loading-status">LOADING ASSETS... <span id="loading-pct">0</span>%</div>
-    <div id="loading-start-prompt" hidden>TAP SCREEN / PRESS ANY BUTTON TO START</div>
+    <div id="loading-eta">CALCULATING...</div>
+  </div>
+
+  <!-- 6TH ROUND PART 7/8/9/10/11/12: replaces the old "TAP TO START"
+       prompt entirely. Shown only once checkAssetsReady() is genuinely
+       true. The two mode buttons are each, in a single gesture, the
+       Audio-unlock gesture AND the gameplay-start trigger AND the touch-UI
+       visibility decision (see handleModeSelect() in game.js) — never a
+       second confirmation step. The store link and language toggle are
+       deliberately separate controls that do neither of those things. -->
+  <div id="mode-select-screen" hidden>
+    <button type="button" id="lang-toggle-btn" data-en="日本語へ切り替え" data-ja="SWITCH TO ENGLISH">日本語へ切り替え</button>
+    <div id="mode-select-title">DARKOUT 2</div>
+    <div id="mode-select-subtitle" data-en="CHOOSE HOW TO PLAY" data-ja="操作方法を選んでください">CHOOSE HOW TO PLAY</div>
+    <button type="button" id="mode-btn-controller" class="mode-btn" data-en="PLAY WITH WIRELESS CONTROLLER" data-ja="ワイヤレスコントローラーで遊ぶ">PLAY WITH WIRELESS CONTROLLER</button>
+    <button type="button" id="mode-btn-touch" class="mode-btn" data-en="PLAY WITH TOUCH CONTROLS" data-ja="タッチ操作で遊ぶ">PLAY WITH TOUCH CONTROLS</button>
+    <div id="controller-store-row">
+      <div id="controller-store-question" data-en="DON'T HAVE A WIRELESS CONTROLLER?" data-ja="ワイヤレスコントローラーをお持ちでないですか?">DON'T HAVE A WIRELESS CONTROLLER?</div>
+      <a id="controller-store-link" href="#" target="_blank" rel="noopener" data-en="GET A WIRELESS CONTROLLER" data-ja="ワイヤレスコントローラーを購入する">GET A WIRELESS CONTROLLER</a>
+    </div>
   </div>
 
   <!-- Main gameplay BGM ("AFTER THE LIMITS"). loop: this is a continuous
