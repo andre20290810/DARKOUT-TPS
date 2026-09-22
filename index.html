@@ -188,6 +188,12 @@
       <button type="button" id="touch-focus" class="touch-btn">FOCUS</button>
       <button type="button" id="touch-dash-n" class="touch-btn">N-DASH</button>
       <button type="button" id="touch-dash-s" class="touch-btn">S-STEP</button>
+      <!-- ESCAPE-exclusive: LB/X WEST DASH, RB/B EAST DASH have no LAB
+           touch equivalent at all — these two buttons only exist so ESCAPE
+           has real touch parity for them, hidden unless body.escape-mode
+           (see style.css / game.js's theme-btn click handler). -->
+      <button type="button" id="touch-dash-w" class="touch-btn touch-escape-only">W-DASH</button>
+      <button type="button" id="touch-dash-e" class="touch-btn touch-escape-only">E-DASH</button>
     </div>
   </div>
 

@@ -588,3 +588,23 @@ html, body {
   .touch-pad { width: 78px; height: 78px; bottom: max(56px, calc(env(safe-area-inset-bottom) + 56px)); }
   .touch-btn { padding: 7px 2px; }
 }
+
+/* ESCAPE-EXCLUSIVE GAMEPLAY MODE (state.gameMode === 'escape', toggled onto
+   <body> by the SAME existing ESCAPE theme button — see game.js's
+   .theme-btn click handler). Purely visual: hides the combat-only HUD
+   readouts/touch buttons that have no meaning with zero attack commands
+   (spec section 7), and reveals the two ESCAPE-only WEST/EAST DASH touch
+   buttons that have no LAB equivalent. Never affects LAB/ARMORED, since
+   body.escape-mode is only ever present while state.gameMode === 'escape'. */
+.touch-escape-only { display: none; }
+body.escape-mode .touch-escape-only { display: block; }
+body.escape-mode #ammo-readout,
+body.escape-mode #stealth-readout,
+body.escape-mode #enemy-hud,
+body.escape-mode #focus-hud,
+body.escape-mode #touch-fire,
+body.escape-mode #touch-reload,
+body.escape-mode #touch-stealth,
+body.escape-mode #touch-focus {
+  display: none;
+}

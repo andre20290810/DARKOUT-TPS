@@ -51,6 +51,34 @@ const STRAFE_SPEED = 260;
 const STRAFE_DASH_DISTANCE_PX = 100;
 const STRAFE_MAX_OFFSET = 0.30; // fraction of canvas width from center
 
+// ---------------------------------------------------------------------
+// ESCAPE-EXCLUSIVE CONSTANTS — this whole block only ever affects the
+// ESCAPE gameplay mode (state.gameMode === 'escape', see the STATE section
+// below). LAB/ARMORED (state.gameMode === 'combat') never reads any of
+// these; they keep using WALK_FORWARD_SPEED/WALK_BACK_SPEED/STRAFE_SPEED/
+// DASH_*/etc. above completely unchanged. Deliberately NEW, independently-
+// tunable constants rather than reusing LAB's own — per spec, ESCAPE's
+// control scheme must not be a repurposing of LAB's.
+// ---------------------------------------------------------------------
+// Continuous, automatic south-heading world-scroll (no player input
+// required) — "進行方向" (the direction of travel) for A SOUTH DASH/Y NORTH
+// BACKSTEP below. Uses the SAME sign convention applyForwardDelta() already
+// uses for LAB's own forward/north walk (positive forwardDelta -> structure
+// z decreases -> world rushes toward/past the camera) because that is the
+// only sign that actually reads as "advancing forward at speed" — the
+// literal "reverse the direction of progression" in the spec is the
+// SEMANTIC/story direction (north walk -> automatic south run), not a flip
+// of this visual convention (flipping it would read as the player drifting
+// backward, the opposite of a high-speed escape).
+const ESCAPE_AUTO_SCROLL_SPEED = 170;
+const ESCAPE_STRAFE_SPEED = 300;             // px/sec continuous lateral dodge (left stick + D-PAD, unified)
+const ESCAPE_STRAFE_DASH_DISTANCE_PX = 130;  // LB/X WEST, RB/B EAST dash burst distance
+const ESCAPE_STRAFE_DASH_DURATION_MS = 200;
+const ESCAPE_SOUTH_DASH_DISTANCE_Z = 260;    // A — accelerate further in the direction of travel
+const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 200; // Y — brief backstep against the direction of travel
+const ESCAPE_FWD_DASH_DURATION_MS = 220;
+const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval between SOUTH/WEST/EAST frames
+
 // Enemy virtual distance range (world z-like units).
 const ENEMY_Z_MAX = 1500;
 // 2ND-ROUND PART 4: max-approach distance is now PER ENEMY TYPE instead of
@@ -545,6 +573,47 @@ function spriteFrame(src, bodyTopFrac, bodyBottomFrac) {
   return { img: loadImg(src), bodyTopFrac, bodyBottomFrac };
 }
 
+// ESCAPE-exclusive: extends spriteFrame() with a per-frame stable-anchor
+// point (wheelBottomFrac/wheelCenterXFrac), alpha-channel-measured the same
+// row-coverage-threshold way bodyTopFrac/bodyBottomFrac are (thin
+// semi-transparent hair-wisp pixels touch every canvas edge on all 9 source
+// PNGs, so a naive full-alpha bbox is useless — each frame's own row was
+// scored by opaque-pixel coverage, and "core mass" rows/wheel-bottom rows
+// were isolated by a coverage-percentage-of-max threshold; wheelCenterXFrac
+// is the opaque-pixel-weighted horizontal center-of-mass of the bottom 15%
+// of that core band, i.e. the front-wheel/bike-body area). Measured
+// directly from the real files in assets/player_escape/ — not guessed.
+// renderEscapePlayer() pins this exact point to a fixed screen position on
+// every frame, which is what keeps the bike from bouncing/drifting/
+// rescaling when the sprite switches (spec: 3).
+function escapeSpriteFrame(src, bodyTopFrac, bodyBottomFrac, wheelBottomFrac, wheelCenterXFrac) {
+  return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac), { wheelBottomFrac, wheelCenterXFrac });
+}
+
+// 9 real, user-supplied ESCAPE player sprites (assets/player_escape/) — a
+// SEPARATE asset set from ASSETS.player (LAB/ARMORED combat player); never
+// overwrites or aliases it. south[]/west[]/east[] are each a 3-frame loop
+// (see updateEscapePlayer()'s facing/animFrame). No north frames exist in
+// the supplied set — see the completion report for how that gap is
+// handled (not fabricated/flipped/substituted).
+const ASSETS_PLAYER_ESCAPE = {
+  south: [
+    escapeSpriteFrame('assets/player_escape/escape_south_01.png', 0.0226, 0.9878, 0.8743, 0.5022),
+    escapeSpriteFrame('assets/player_escape/escape_south_02.png', 0.0235, 0.9869, 0.8786, 0.4917),
+    escapeSpriteFrame('assets/player_escape/escape_south_03.png', 0.0247, 0.9863, 0.8805, 0.4958),
+  ],
+  west: [
+    escapeSpriteFrame('assets/player_escape/escape_west_01.png', 0.0209, 0.9876, 0.8758, 0.4904),
+    escapeSpriteFrame('assets/player_escape/escape_west_02.png', 0.0259, 0.9865, 0.8745, 0.5079),
+    escapeSpriteFrame('assets/player_escape/escape_west_03.png', 0.0192, 0.9870, 0.8746, 0.5053),
+  ],
+  east: [
+    escapeSpriteFrame('assets/player_escape/escape_east_01.png', 0.0269, 0.9866, 0.8747, 0.5664),
+    escapeSpriteFrame('assets/player_escape/escape_east_02.png', 0.0236, 0.9870, 0.8739, 0.5864),
+    escapeSpriteFrame('assets/player_escape/escape_east_03.png', 0.0248, 0.9865, 0.8738, 0.5882),
+  ],
+};
+
 const ROID1_SPRITES = {
   search: [
     spriteFrame('assets/roid1/roid1_search_01.png', 0.0016, 0.9984),
@@ -709,6 +778,13 @@ const ASSETS = {
   },
   adamSphere: ADAM_SPHERE_SPRITES,
   barrel: loadImg('assets/objects/barrel.png'),
+  // ESCAPE-exclusive player art — SEPARATE from ASSETS.player above (see
+  // ASSETS_PLAYER_ESCAPE's own comment). Registering it here means it's
+  // automatically picked up by collectImages()/REQUIRED_IMAGES below, so
+  // the existing LOADING gate blocks on these 9 real files the same way it
+  // already does for every other character's art — real load-failure
+  // reporting for free, no separate gate needed.
+  playerEscape: ASSETS_PLAYER_ESCAPE,
 };
 
 function imgReady(img) {
@@ -933,6 +1009,15 @@ const state = {
   cssW: window.innerWidth,
   cssH: window.innerHeight,
   theme: 'lab',
+  // ESCAPE-exclusive GAMEPLAY mode, entirely separate from state.theme
+  // above: theme is ONLY the visual corridor palette/decor (LAB/ARMORED/
+  // ESCAPE — see THEMES/STRUCTURE_KINDS), it never selected any gameplay
+  // behavior before this. gameMode is what actually switches PLAYER
+  // rendering/update/input between LAB combat and ESCAPE (see frame()).
+  // Defaults to 'combat' so LAB/ARMORED are 100% unaffected by anything in
+  // this round; only wired true by the ESCAPE theme button (see the
+  // .theme-btn click handler) so the existing UI needs no new control.
+  gameMode: 'combat', // 'combat' | 'escape'
   timeSec: 0,
 
   player: {
@@ -1057,6 +1142,25 @@ const state = {
     eastDash: false,
     westDash: false,
     pauseToggle: false, // 4th round: gamepad Start / touch PAUSE button
+  },
+
+  // ESCAPE-exclusive player state — deliberately its OWN object, never
+  // reusing state.player's dashUntil/dashDir/fwdDashUntil/fwdDashSign
+  // fields (those are LAB's own DASH bookkeeping, with LAB's own
+  // cooldown/pose rules) so the two modes' dash systems can never collide
+  // or leak into each other. state.player.strafeOffset (screen position)
+  // IS still reused — it is a generic on-screen-position field, not
+  // LAB-specific behavior, and both modes need "current lateral offset".
+  escape: {
+    facing: 'south',      // 'south' | 'west' | 'east' — which ASSETS.playerEscape[...] loop is showing
+    animFrame: 0,          // 0..2 index into that loop
+    animElapsedMs: 0,      // time-elapsed accumulator (see ESCAPE_ANIM_FRAME_MS) — NOT a rAF frame counter
+    strafeDashUntil: 0, strafeDashDir: 0, strafeDashStart: 0, // LB/X WEST, RB/B EAST
+    fwdDashUntil: 0, fwdDashSign: 0, fwdDashCoveredZ: 0,       // A SOUTH DASH (+1) / Y NORTH BACKSTEP (-1)
+    // edge-triggered ESCAPE-exclusive actions, consumed each frame by
+    // consumeEscapeActions() — separate from state.actions above so an
+    // ESCAPE dash can never be misread as a LAB dash or vice versa.
+    actions: { westDash: false, eastDash: false, northBackstep: false, southDash: false },
   },
 
   gamepadConnected: false,
@@ -1384,6 +1488,37 @@ function pollGamepad(now) {
       }
     }
 
+    // ESCAPE-EXCLUSIVE CONTROL SCHEME. This mode has its own fixed mapping
+    // (LB/X=WEST dash, RB/B=EAST dash, Y=NORTH backstep, A=SOUTH dash,
+    // D-PAD+LEFT STICK unified for lateral dodge) and NO combat input
+    // exists in it at all — so this branch returns BEFORE any of LAB's own
+    // STEALTH(LT+RT)/D-PAD-AIM-trim/gpFire(RB)/FOCUS(LB)/DASH(X/Y/B/A)/
+    // RELOAD(L3) code below ever runs. That is what guarantees a single
+    // button press can never produce both an ESCAPE action AND a LAB
+    // combat action (e.g. RB must never both EAST-dash and FIRE) — the LAB
+    // lines simply never execute while state.gameMode === 'escape', rather
+    // than being individually suppressed after the fact.
+    if (state.gameMode === 'escape') {
+      const dpadLeft = pressed(14), dpadRight = pressed(15);
+      let lateral;
+      if (dpadLeft && !dpadRight) lateral = -1;
+      else if (dpadRight && !dpadLeft) lateral = 1;
+      else lateral = applyLightCurve(gp.axes[0] || 0); // LEFT STICK — reuses the existing generic deadzone/curve helper, unified with D-PAD above (spec: same movement logic)
+      gpMove.x = lateral;
+
+      if (edge(4) || edge(2)) state.escape.actions.westDash = true;      // LB or X = WEST DASH
+      if (edge(5) || edge(1)) state.escape.actions.eastDash = true;      // RB or B = EAST DASH
+      if (edge(3)) state.escape.actions.northBackstep = true;             // Y = NORTH BACKSTEP
+      if (edge(0)) state.escape.actions.southDash = true;                 // A = SOUTH DASH
+      if (edge(9)) state.actions.pauseToggle = true;                      // Start/Menu — generic UI, shared with LAB, not combat
+
+      const nextPrevEscape = new Array(b.length);
+      for (let i = 0; i < b.length; i++) nextPrevEscape[i] = pressed(i);
+      state.prevButtons = nextPrevEscape;
+
+      return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: false, focusHeld: false };
+    }
+
     // PART 3 (3rd round): LT(6)/RT(7) held SIMULTANEOUSLY -> STEALTH,
     // unchanged latch shape from round 2 (rising-edge on the AND condition
     // itself — never LT alone, never RT alone, never re-fires while both
@@ -1554,8 +1689,26 @@ const focusBtnEl = document.getElementById('touch-focus');
 focusBtnEl.addEventListener('pointerdown', () => { touchFocusHeld = true; });
 focusBtnEl.addEventListener('pointerup', () => { touchFocusHeld = false; });
 focusBtnEl.addEventListener('pointercancel', () => { touchFocusHeld = false; });
-wireButton('touch-dash-n', () => { state.actions.northDash = true; });
-wireButton('touch-dash-s', () => { state.actions.southDash = true; });
+// ESCAPE-exclusive routing: these two buttons already existed for LAB's
+// NORTH DASH/SOUTH BACKSTEP — reused (same touch slot, same label meaning
+// direction-wise) for ESCAPE's Y NORTH BACKSTEP/A SOUTH DASH, but written
+// into the SEPARATE state.escape.actions bucket, never LAB's state.actions,
+// so the two modes' dash bookkeeping can never collide.
+wireButton('touch-dash-n', () => {
+  if (state.gameMode === 'escape') state.escape.actions.northBackstep = true;
+  else state.actions.northDash = true;
+});
+wireButton('touch-dash-s', () => {
+  if (state.gameMode === 'escape') state.escape.actions.southDash = true;
+  else state.actions.southDash = true;
+});
+// ESCAPE-exclusive: LB/X WEST DASH and RB/B EAST DASH have no gamepad-button
+// touch equivalent anywhere in LAB (LAB's touch bar has no west/east dash
+// button at all), so two new buttons are added (index.html #touch-dash-w/
+// #touch-dash-e, class touch-escape-only — hidden unless body.escape-mode,
+// see style.css) rather than leaving WEST/EAST dash touch-inaccessible.
+wireButton('touch-dash-w', () => { if (state.gameMode === 'escape') state.escape.actions.westDash = true; });
+wireButton('touch-dash-e', () => { if (state.gameMode === 'escape') state.escape.actions.eastDash = true; });
 
 document.querySelectorAll('.theme-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -1563,6 +1716,14 @@ document.querySelectorAll('.theme-btn').forEach((btn) => {
     btn.classList.add('active');
     state.theme = btn.dataset.theme;
     themeLabelEl.textContent = THEMES[state.theme].label;
+    // ESCAPE-exclusive GAMEPLAY mode switch, reusing this SAME existing
+    // button (no new UI) — but kept as its OWN state.gameMode field, never
+    // inferred from state.theme at read-time elsewhere in the code, so
+    // theme (cosmetic corridor palette) and gameMode (PLAYER/input/combat
+    // behavior) stay two genuinely separate concepts. LAB/ARMORED both map
+    // to 'combat' (their existing, completely unchanged behavior).
+    state.gameMode = state.theme === 'escape' ? 'escape' : 'combat';
+    document.body.classList.toggle('escape-mode', state.gameMode === 'escape');
   });
 });
 // PART 10/11 (4th round): ENEMY SELECT — extends the existing BOSS TEST
@@ -1688,6 +1849,17 @@ function consumeActions() {
   const a = state.actions;
   const out = { ...a };
   a.reload = a.stealth = a.northDash = a.southDash = a.eastDash = a.westDash = a.pauseToggle = false;
+  return out;
+}
+
+// ESCAPE-exclusive mirror of consumeActions() above, operating on the
+// separate state.escape.actions bucket — kept as its own function (not a
+// parameter added to consumeActions()) so LAB's own action-consumption
+// logic is untouched.
+function consumeEscapeActions() {
+  const a = state.escape.actions;
+  const out = { ...a };
+  a.westDash = a.eastDash = a.northBackstep = a.southDash = false;
   return out;
 }
 
@@ -1864,6 +2036,85 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     p.facing = 'walk';
   } else {
     p.facing = 'idle';
+  }
+
+  return forwardDelta;
+}
+
+// ---------------------------------------------------------------------
+// ESCAPE-EXCLUSIVE PLAYER UPDATE. A dedicated function, not a branch bolted
+// onto updatePlayer() above — updatePlayer() is LAB's own AIM/FIRE/RELOAD/
+// STEALTH/FOCUS/walk-animation/DASH logic end to end, and per spec this
+// mode must not repurpose or partially share that pipeline. Only called
+// from frame() while state.gameMode === 'escape' (updatePlayer() itself is
+// simply never called in that case). Returns a forwardDelta the same way
+// updatePlayer() does, so it can be handed to the SAME existing
+// applyForwardDelta()/clampForwardDeltaForBarrels() (a real, deliberate
+// reuse: those two are generic world-scroll/collision math, not "LAB
+// control scheme").
+// ---------------------------------------------------------------------
+function updateEscapePlayer(dt, now, moveX, actions) {
+  const p = state.player; // strafeOffset is a generic on-screen-position field, reused as-is (see state.escape's own comment)
+  const es = state.escape;
+  const strafeOffsetAtFrameStart = p.strafeOffset;
+
+  // Continuous lateral dodge — moveX already unifies D-PAD + LEFT STICK
+  // upstream (see pollGamepad()'s ESCAPE-exclusive branch), so this single
+  // read satisfies "D-PAD and LEFT STICK must drive the SAME movement
+  // logic" without any extra plumbing here.
+  p.strafeOffset += moveX * ESCAPE_STRAFE_SPEED * dt;
+  const maxOff = state.cssW * STRAFE_MAX_OFFSET; // reused: a generic screen-fraction clamp bound, not LAB-specific behavior
+  p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset));
+
+  // LB/X WEST DASH, RB/B EAST DASH — ESCAPE's OWN dash state (es.strafeDash*),
+  // never state.player.dashUntil/dashDir (LAB's own strafe-dash fields).
+  if (actions.westDash) { es.strafeDashDir = -1; es.strafeDashUntil = now + ESCAPE_STRAFE_DASH_DURATION_MS; es.strafeDashStart = p.strafeOffset; }
+  if (actions.eastDash) { es.strafeDashDir = 1; es.strafeDashUntil = now + ESCAPE_STRAFE_DASH_DURATION_MS; es.strafeDashStart = p.strafeOffset; }
+  if (now < es.strafeDashUntil) {
+    const tNorm = 1 - (es.strafeDashUntil - now) / ESCAPE_STRAFE_DASH_DURATION_MS;
+    const eased = 1 - Math.pow(1 - tNorm, 2);
+    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, es.strafeDashStart + es.strafeDashDir * ESCAPE_STRAFE_DASH_DISTANCE_PX * eased));
+  }
+
+  // Obstacles: barrels are reused verbatim as ESCAPE's dodgeable obstacles
+  // (same real collision math LAB's own BARREL cover zones already use) —
+  // no separate hazard system invented for this.
+  p.strafeOffset = clampStrafeForBarrels(p.strafeOffset, strafeOffsetAtFrameStart);
+
+  // Continuous, automatic SOUTH-heading auto-scroll — see
+  // ESCAPE_AUTO_SCROLL_SPEED's own comment for the sign-convention
+  // reasoning. A SOUTH DASH briefly ADDS to it (accelerate further in the
+  // direction of travel); Y NORTH BACKSTEP briefly SUBTRACTS from it
+  // (against the direction of travel) — this is what "A=進行方向への加速,
+  // Y=進行方向と逆向きのバックステップ" (spec section 8) actually means in
+  // world-z terms.
+  let forwardDelta = ESCAPE_AUTO_SCROLL_SPEED * dt;
+  if (actions.southDash) { es.fwdDashSign = 1; es.fwdDashUntil = now + ESCAPE_FWD_DASH_DURATION_MS; es.fwdDashCoveredZ = 0; }
+  if (actions.northBackstep) { es.fwdDashSign = -1; es.fwdDashUntil = now + ESCAPE_FWD_DASH_DURATION_MS; es.fwdDashCoveredZ = 0; }
+  if (now < es.fwdDashUntil) {
+    const tNorm = 1 - (es.fwdDashUntil - now) / ESCAPE_FWD_DASH_DURATION_MS;
+    const eased = 1 - Math.pow(1 - tNorm, 2);
+    const totalDist = es.fwdDashSign > 0 ? ESCAPE_SOUTH_DASH_DISTANCE_Z : ESCAPE_NORTH_BACKSTEP_DISTANCE_Z;
+    const coveredNow = totalDist * eased;
+    forwardDelta += es.fwdDashSign * (coveredNow - es.fwdDashCoveredZ);
+    es.fwdDashCoveredZ = coveredNow;
+  }
+
+  // Animation direction: WEST/EAST while lateral input is actually held,
+  // SOUTH (the default travel loop) the instant it's released — a small
+  // deadzone (0.15) so animation doesn't flicker between loops on tiny
+  // analog-stick noise near center.
+  if (moveX < -0.15) es.facing = 'west';
+  else if (moveX > 0.15) es.facing = 'east';
+  else es.facing = 'south';
+
+  // Time-elapsed frame advance (spec: "requestAnimationFrameの実行回数
+  // ベースではなく") — dt is real elapsed seconds, so this holds a stable
+  // cadence regardless of actual frame rate, unlike counting rAF calls.
+  es.animElapsedMs += dt * 1000;
+  if (es.animElapsedMs >= ESCAPE_ANIM_FRAME_MS) {
+    es.animElapsedMs -= ESCAPE_ANIM_FRAME_MS;
+    es.animFrame = (es.animFrame + 1) % 3;
   }
 
   return forwardDelta;
@@ -3129,6 +3380,46 @@ function renderPlayer(theme) {
   }
 }
 
+// ---------------------------------------------------------------------
+// ESCAPE-EXCLUSIVE PLAYER RENDER. A dedicated function (not a branch
+// inside renderPlayer() above) — only called from frame() while
+// state.gameMode === 'escape'; renderPlayer() itself is never called in
+// that case, so the real combat PLAYER sprite (ASSETS.player) can never
+// show up during ESCAPE and vice versa.
+// ---------------------------------------------------------------------
+function renderEscapePlayer() {
+  const p = state.player;
+  const es = state.escape;
+  const cx = state.centerX + p.strafeOffset;
+  const bottomY = state.cssH * 1.02; // same foot/ground anchor line renderPlayer() uses for LAB
+
+  const frames = ASSETS.playerEscape[es.facing];
+  const frame = frames[es.animFrame];
+  if (!imgReady(frame.img)) return; // the LOADING gate already guarantees these 9 are loaded before gameStarted; defensive no-op only
+
+  // Uniform visual size across all 9 frames: reuses computeBodyVisualScale()
+  // verbatim (the SAME normalization ROID1/ROID2/ADAM SPHERE already rely
+  // on) fed this frame's own measured bodyTopFrac/bodyBottomFrac, targeting
+  // the CURRENT LAB player's own on-screen body height — ASSETS.player.aim's
+  // naturalHeight at PLAYER_SCALE_BOOST, p.scale=1 (ESCAPE has no north/
+  // south depth-pulse concept) and no fire-pose boost (ESCAPE never fires) —
+  // so ESCAPE's rider reads as "about the same size as the LAB player", not
+  // judged by source-image resolution (spec section 4).
+  const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST;
+  const bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
+  const drawW = frame.img.naturalWidth * bodyScale;
+  const drawH = frame.img.naturalHeight * bodyScale;
+
+  // Stable anchor: this frame's own measured wheel-bottom/wheel-center-x
+  // point (see escapeSpriteFrame()) is pinned to the SAME fixed screen
+  // point (cx, bottomY) every frame, regardless of each source image's own
+  // padding — so the bike neither grows/shrinks, bounces vertically, nor
+  // drifts horizontally when the sprite switches (spec section 3).
+  const dx = cx - frame.wheelCenterXFrac * drawW;
+  const dy = bottomY - frame.wheelBottomFrac * drawH;
+  ctx.drawImage(frame.img, dx, dy, drawW, drawH);
+}
+
 function renderEnemy(theme) {
   const e = state.enemy;
   if (e.deathState === 'gone') return; // fully defeated — nothing left to draw
@@ -3584,52 +3875,80 @@ function frame(ts) {
   // PART 6: LT/RT + D-PAD manual AIM trim (height/horizontal).
   state.input.aimHeightAdjust = gpInput.aimAdjust.height;
   state.input.aimHorizAdjust = gpInput.aimAdjust.horiz;
-  state.input.fireHeld = gpInput.fire || touchFireHeld;
-  state.input.focusHeld = gpInput.focusHeld || touchFocusHeld;
+  // ESCAPE has zero attack commands (spec section 7) — forced false here,
+  // in addition to pollGamepad()'s ESCAPE branch already returning
+  // fire:false/focusHeld:false and #touch-fire/#touch-focus being hidden
+  // via CSS (body.escape-mode) — defense-in-depth so a single button (e.g.
+  // RB, which is both LAB's FIRE and ESCAPE's EAST-dash trigger key) can
+  // NEVER produce a LAB combat effect while in ESCAPE, no matter what path
+  // set it.
+  state.input.fireHeld = state.gameMode === 'escape' ? false : (gpInput.fire || touchFireHeld);
+  state.input.focusHeld = state.gameMode === 'escape' ? false : (gpInput.focusHeld || touchFocusHeld);
 
   const actions = consumeActions();
   // 4th round: PAUSE (gamepad Start / touch PAUSE button) toggles the
   // overlay — see togglePauseMenu(). Checked before the paused-gate below
   // so the SAME frame that opens/closes PAUSE can still toggle it back.
+  // Shared by both modes (PAUSE is generic UI, not combat) — untouched.
   if (actions.pauseToggle) togglePauseMenu();
 
   if (!state.paused) {
-    const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
-    applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
-    updateEnemy(dt, ts);
-    updateBullets(ts);
-    updateParticles(dt);
+    if (state.gameMode === 'escape') {
+      // ESCAPE: its own dedicated update path — no updatePlayer()/
+      // updateEnemy()/updateBullets()/fireWeapon() call anywhere in this
+      // branch, so no combat state can advance and no shot can ever be
+      // fired while this mode is active (spec section 7).
+      const escActions = consumeEscapeActions();
+      const forwardDelta = updateEscapePlayer(dt, ts, state.input.moveX, escActions);
+      applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
+      updateParticles(dt); // harmless/no-op: ESCAPE never spawns a particle, kept only for pool upkeep symmetry
+    } else {
+      const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
+      applyForwardDelta(clampForwardDeltaForBarrels(forwardDelta));
+      updateEnemy(dt, ts);
+      updateBullets(ts);
+      updateParticles(dt);
 
-    if (state.input.fireHeld) fireWeapon(ts);
+      if (state.input.fireHeld) fireWeapon(ts);
+    }
   }
 
   const theme = THEMES[state.theme];
   renderCorridor(theme);
   renderBarrels();
-  renderEnemy(theme);
-  // 7TH ROUND PART 18 ("射撃エフェクトが主人公より前面にオーバーレイされ
-  // ており不自然"): renderParticles() (the muzzle flash + all other
-  // particle types) used to run AFTER renderPlayer(), drawing the flash on
-  // top of the player sprite. Swapped so it draws BEFORE the player —
-  // background -> 射撃エフェクト -> 主人公, per spec — so the player's own
-  // sprite now naturally overlaps/hides part of the flash instead of the
-  // reverse.
-  renderParticles();
-  renderPlayer(theme);
-  renderFlashlightMask();
-  // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
-  // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
-  // below — otherwise any tracer segment landing outside the lit circle
-  // (i.e. away from wherever AIM/FLASHLIGHT currently points) is nearly
-  // invisible against the 0.90-alpha overlay, which is why the tracer
-  // used to appear to vanish depending on input state.
-  renderBullets();
-  // FOLLOWUP FIX: telegraphs (LOCK boxes/▲/target ellipse/bolts) render
-  // AFTER the darkness mask so they stay legible as warnings no matter
-  // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
-  // comment for the bug this fixes.
-  renderEnemyTelegraphs(theme);
-  renderAimReticle();
+  if (state.gameMode === 'escape') {
+    // No enemy, no muzzle/tracer/telegraph/reticle in ESCAPE — state.enemy
+    // is left completely inert (never updated/rendered) while this mode is
+    // active.
+    renderParticles();
+    renderEscapePlayer();
+    renderFlashlightMask();
+  } else {
+    renderEnemy(theme);
+    // 7TH ROUND PART 18 ("射撃エフェクトが主人公より前面にオーバーレイされ
+    // ており不自然"): renderParticles() (the muzzle flash + all other
+    // particle types) used to run AFTER renderPlayer(), drawing the flash on
+    // top of the player sprite. Swapped so it draws BEFORE the player —
+    // background -> 射撃エフェクト -> 主人公, per spec — so the player's own
+    // sprite now naturally overlaps/hides part of the flash instead of the
+    // reverse.
+    renderParticles();
+    renderPlayer(theme);
+    renderFlashlightMask();
+    // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
+    // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
+    // below — otherwise any tracer segment landing outside the lit circle
+    // (i.e. away from wherever AIM/FLASHLIGHT currently points) is nearly
+    // invisible against the 0.90-alpha overlay, which is why the tracer
+    // used to appear to vanish depending on input state.
+    renderBullets();
+    // FOLLOWUP FIX: telegraphs (LOCK boxes/▲/target ellipse/bolts) render
+    // AFTER the darkness mask so they stay legible as warnings no matter
+    // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
+    // comment for the bug this fixes.
+    renderEnemyTelegraphs(theme);
+    renderAimReticle();
+  }
 
   updateHud();
 
@@ -3702,4 +4021,8 @@ window.__darkoutTps = {
   ENEMY_MAX_HP, ADAM_SPHERE_WORLD_HEIGHT, ROID_WORLD_HEIGHT,
   GABRIEL_Z_MIN, GABRIEL_NORMAL_Z_MIN, ADAM_Z_MIN,
   applyForwardDelta, ATTACK_FLASH_TYPES, fireWeapon,
+  // ESCAPE mode — exposed for automated testing only.
+  updateEscapePlayer, renderEscapePlayer, consumeEscapeActions,
+  computeBodyVisualScale, ASSETS_PLAYER_ESCAPE,
+  ESCAPE_AUTO_SCROLL_SPEED, ESCAPE_STRAFE_SPEED, ESCAPE_ANIM_FRAME_MS,
 };
