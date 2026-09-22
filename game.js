@@ -98,11 +98,36 @@ const ESCAPE_STRAFE_SPEED = 300;             // px/sec continuous lateral dodge 
 // SOUTH DASH (Z-axis, separate constants below) are untouched, matching
 // both the 8th and 10th round's own scoping.
 const ESCAPE_STRAFE_DASH_DISTANCE_PX = 65; // was 32.5 (8th round), was 130 originally
-const ESCAPE_STRAFE_DASH_DURATION_MS = 200;
 const ESCAPE_SOUTH_DASH_DISTANCE_Z = 260;    // A — accelerate further in the direction of travel
 const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 200; // Y — brief backstep against the direction of travel
-const ESCAPE_FWD_DASH_DURATION_MS = 220;
-const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval between SOUTH/WEST/EAST frames (WEST/EAST only as of 8TH ROUND — see updateEscapePlayer())
+// 11TH ROUND (items 6-8): DASH is now a true INSTANT teleport — the full
+// ESCAPE_STRAFE_DASH_DISTANCE_PX / ESCAPE_SOUTH_DASH_DISTANCE_Z /
+// ESCAPE_NORTH_BACKSTEP_DISTANCE_Z is applied in the single frame the
+// input arrives (see updateEscapePlayer()), so the old ESCAPE_STRAFE_
+// DASH_DURATION_MS/ESCAPE_FWD_DASH_DURATION_MS eased-travel window
+// constants are gone — replaced by ESCAPE_DASH_BLINK_MS, a short
+// post-teleport blink+invulnerability window (reuses state.player.
+// invincibleUntil, the SAME i-frame field LAB's own DASH already sets —
+// no second invulnerability system).
+const ESCAPE_DASH_BLINK_MS = 220;
+const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval — now drives the always-on 5-frame RUN LOOP (items 1-4), not the old per-direction facing loop
+// 11TH ROUND (item 5): investigated first — ESCAPE's continuous lateral
+// move had NO separate smoothing/acceleration/interpolation layer at all;
+// it applies raw input directly to strafeOffset every frame
+// (updateEscapePlayer()). The ONE real lever between "stick pushed" and
+// "player visibly reacts" turned out to be the shared applyLightCurve()
+// helper the LEFT STICK path reused (pollGamepad()'s ESCAPE branch) —
+// LIGHT_DEADZONE=0.16/LIGHT_CURVE_POWER=2.0 (tuned for flashlight aiming,
+// not run-and-dodge) meaningfully compresses small/medium stick pushes
+// (e.g. a 50% push only yielded ~16% effective output — see completion
+// report for the exact before/after numbers). A SEPARATE, ESCAPE-only
+// curve — never touching LIGHT_DEADZONE/LIGHT_CURVE_POWER themselves, so
+// LAB's flashlight feel is completely unaffected — with a lower deadzone
+// and gentler curve makes partial-stick input register meaningfully
+// sooner, i.e. a genuinely quicker STICK RESPONSE, without touching
+// ESCAPE_STRAFE_SPEED (the top-speed-once-fully-deflected value).
+const ESCAPE_MOVE_DEADZONE = 0.12;
+const ESCAPE_MOVE_CURVE_POWER = 1.7;
 // 9TH ROUND (item 36-38): ESCAPE MODE had no time-limit clear condition at
 // all before this round — investigated first, confirmed no existing
 // constant of this kind anywhere in the file, so per spec introduced as its
@@ -316,7 +341,9 @@ const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
 // before changing" requirement. Shrunk ~30% so a boss's whole body is never
 // trivially visible without aiming the light at it (verified against
 // GABRIEL/ADAM draw sizes at NORMAL distance during this round's testing).
-const FLASHLIGHT_BASE_RADIUS = 105;
+// 11TH ROUND (item 23): was 105 — shrunk a further ~10% (105 * 0.90 = 94.5).
+// Center position and AIM-follow speed are untouched, only this radius.
+const FLASHLIGHT_BASE_RADIUS = 94.5;
 const LIGHT_RANGE = 152; // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 const AIM_RANGE = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 
@@ -438,7 +465,15 @@ const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
 // FIRE_POSE_HOLD_MS is shorter than FIRE_COOLDOWN_MS (130ms) so consecutive
 // shots read as distinct pulses rather than one continuous enlarged pose.
 const FIRE_POSE_HOLD_MS = 90;
-const FIRE_POSE_SCALE_BOOST = 1.03; // 8TH ROUND: was 1.12 — real-device feedback said the fire-pose enlargement read as too large; anchor/centering math is untouched, only the scale factor shrank
+// 11TH ROUND (item 14): was 1.03 (8TH ROUND). Investigated the FINAL
+// visible size, not just this constant in isolation: player_north_aim.png
+// and player_north_fire.png measure to nearly identical real alpha bounds
+// (topFrac 0.0147 vs 0.0176, bottomFrac both 0.9882 — Python/Pillow
+// row-coverage measurement), so this factor translates almost 1:1 into
+// visible body-height change, with essentially no padding difference
+// absorbing any of it. 1.03 was a genuine ~3% visible growth, over spec's
+// ±2% cap — reduced to 1.02. Anchor/centering math untouched.
+const FIRE_POSE_SCALE_BOOST = 1.02;
 // 7TH ROUND PART 17: the fraction down from the TOP of the player's own
 // drawn sprite rect where the raised-arm/gun sits — read directly off
 // player_north_aim.png/player_north_fire.png (both share the same raised-
@@ -446,6 +481,29 @@ const FIRE_POSE_SCALE_BOOST = 1.03; // 8TH ROUND: was 1.12 — real-device feedb
 // computePlayerDrawRect()/fireWeapon() so the muzzle flash/bullet origin
 // tracks the player's ACTUAL on-screen size instead of a fixed formula.
 const MUZZLE_HEIGHT_FRAC = 0.27;
+// 11TH ROUND (items 24-27, 44-48): SOUTH WALK re-fix. Round 10's continuous
+// sin-based body-bob (a single real image sliding smoothly up/down) was
+// judged on real devices as still reading like "a static image sliding,"
+// not walking. Re-investigated assets/player/ per item 26 — there is still
+// only ONE real south-facing image on disk (player_dash_south.png; see
+// ASSETS.player.southWalk/dashS) — no genuine multi-pose south asset was
+// invented. Per item 26's fallback, this builds DISCRETE Canvas-only
+// "recognizably distinct frames" from that single source image: each of
+// the 3 slots below (stepped through in lockstep with the SAME
+// p.walkFrame index NORTH's own 3-frame walk[] cycle already uses, via the
+// SAME p.walkTimer > 0.14 cadence) applies a small combination of
+// horizontal lean (dxFrac, simulates alternating weight-shift/stride),
+// vertical bob (dyFrac, foot-anchored lift), and body scale — switched
+// discretely per frame (no interpolation between them) so consecutive
+// frames read as distinct poses stepping, not one image smoothly sliding.
+// scale stays within [0.992, 1.008] — a 1.6%-wide band centered on 1.0,
+// comfortably inside the spec's ±2% cap (item 27) with margin for the
+// dxFrac/dyFrac offsets themselves never being read as a size change.
+const SOUTH_WALK_FRAME_OFFSETS = [
+  { dxFrac: 0, dyFrac: 0, scale: 1.0 },
+  { dxFrac: 0.014, dyFrac: -0.018, scale: 1.008 },
+  { dxFrac: -0.014, dyFrac: -0.008, scale: 0.992 },
+];
 
 const GAMEPAD_AXIS_DEADZONE = 0.16;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
@@ -629,6 +687,28 @@ const CLAW_HIT_RANGE_PX = 95;
 const ENEMY_TURN_COOLDOWN_MS = 850; // "heavy mech" — can't re-flip facing more often than this
 const ENEMY_TURN_HYSTERESIS_PX = 36; // player must cross this far past center before a flip is even considered
 
+// 11TH ROUND (items 15-16, 34): investigated first — before this round,
+// EVERY non-claw type (roid1/roid2/adamSphere/drone) shared byte-identical
+// idle-recheck timing (the ONLY thing that actually controls "how often a
+// new attack cycle starts" — see updateEnemy()'s idle-state
+// nextIdleCheckAt assignments below), so there was no per-type
+// differentiation to begin with, and all 6 types read as attacking too
+// rarely on real devices. Rather than "halve every cooldown" (explicitly
+// banned by item 16 — that would also compress CLAW_COOLDOWN_MS/
+// SNIPER_COOLDOWN_MS/MISSILE_COOLDOWN_MS, i.e. the attack's OWN recovery
+// state timing, risking the telegraph/impact/counter-phase state machines
+// item 16 says not to break), this scales ONLY the idle-wait windows
+// (first-attack delay + the random wait rolled after each attack's own
+// cooldown ends) — never the attack sequence itself. Each type gets its
+// own multiplier so the round's own "各敵の個性を維持" requirement holds:
+// DRONE (a real ACTION-GAME "SECURITY DRONE" scout) is tuned most
+// aggressive; ADAM SPHERE (a slow-rotating stationary turret in its own
+// source material) stays the most patient of the group.
+const ENEMY_ATTACK_FREQ_MULT = {
+  drone: 0.55, roid1: 0.75, roid2: 0.70, gabriel: 0.65, adamSphere: 0.80, adam: 0.70,
+};
+function enemyAttackFreqMult(type) { return ENEMY_ATTACK_FREQ_MULT[type] || 1; }
+
 const THEMES = {
   lab: {
     label: 'LAB / EXPERIMENT AREA',
@@ -785,7 +865,16 @@ function r10CollectSnapshot(ts) {
       // BARREL CLUSTER (if any) is providing COVER right now.
       moveDirSouth: !!p.moveDirSouth, walkFrame: p.walkFrame,
       dashDir: dashActive && ts < p.fwdDashUntil ? (p.fwdDashSign > 0 ? 'north' : 'south') : '-',
-      coverCluster: r10DebugCoverClusterId().clusterId },
+      coverCluster: r10DebugCoverClusterId().clusterId,
+      // 11TH ROUND (items 7, 47): DASH blink/invulnerability window — now
+      // shared verbatim between LAB's own DASH and ESCAPE's instant DASH
+      // (both write p.invincibleUntil), so a single field covers either.
+      blinking: ts < p.invincibleUntil,
+      invincibleRemainMs: Math.max(0, Math.round(p.invincibleUntil - ts)) },
+    // 11TH ROUND (items 45-46): ESCAPE run-loop frame index (always-on
+    // 5-frame loop, never direction-selected — see updateEscapePlayer()/
+    // renderEscapePlayer()).
+    escapeRun: { frame: es.runFrame, total: ASSETS_PLAYER_ESCAPE_RUN.length },
     // 9TH ROUND (item 5): AMMO/RELOAD diagnostics.
     ammo: { current: p.ammo, magazine: MAG_SIZE, reserve: p.reserve,
       reloading: p.reloading, reloadType: p.reloadType || '-',
@@ -807,7 +896,12 @@ function r10CollectSnapshot(ts) {
       z: Math.round(e.z),
       approachState: (e.type === 'gabriel' || e.type === 'adam')
         ? (e.z > (e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : ADAM_NORMAL_Z_MIN) ? 'stalking' : 'normal')
-        : '-' },
+        : '-',
+      // 11TH ROUND (item 48): per-type attack-frequency multiplier actually
+      // applied to this enemy's idle-recheck wait window (see
+      // ENEMY_ATTACK_FREQ_MULT/enemyAttackFreqMult()) — lower = more
+      // frequent attacks; 1 = unchanged from pre-Round-11 baseline.
+      freqMult: enemyAttackFreqMult(e.type) },
     input: { mode: d.inputMode, fireBtn: state.input.fireHeld,
       stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
       aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0) },
@@ -846,7 +940,9 @@ function r10UpdateDebugPanel(ts) {
     ' cover=' + s.player.cover + '(' + s.player.coverFacing + ')' +
     ' dash=' + s.player.dash +
     '\n moveDirSouth=' + s.player.moveDirSouth + ' walkFrame=' + s.player.walkFrame +
-    ' dashDir=' + s.player.dashDir + ' coverCluster=' + s.player.coverCluster;
+    ' dashDir=' + s.player.dashDir + ' coverCluster=' + s.player.coverCluster +
+    '\n blinking=' + s.player.blinking + ' invincibleRemain=' + s.player.invincibleRemainMs +
+    (s.game.mode === 'escape' ? ' escRunFrame=' + s.escapeRun.frame + '/' + s.escapeRun.total : '');
 
   r10DbgAmmoEl.textContent = 'AMMO ' + s.ammo.current + '/' + s.ammo.magazine + ' reserve=' + s.ammo.reserve +
     '\n reloading=' + s.ammo.reloading + '(' + s.ammo.reloadType + ')' +
@@ -867,7 +963,7 @@ function r10UpdateDebugPanel(ts) {
     ' hits=' + s.enemy.hits + ' miss=' + s.enemy.miss +
     '\n invuln=' + s.enemy.invulnerable + ' counterRemain=' + s.enemy.counterPhaseRemainMs +
     ' thresholds=' + (s.enemy.triggeredThresholds || '-') +
-    '\n z=' + s.enemy.z + ' approach=' + s.enemy.approachState;
+    '\n z=' + s.enemy.z + ' approach=' + s.enemy.approachState + ' freqMult=' + s.enemy.freqMult;
 
   r10DbgInputEl.textContent = 'INPUT mode=' + s.input.mode + ' fireBtn=' + s.input.fireBtn +
     '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim +
@@ -906,6 +1002,9 @@ function r10FormatDebugText(s) {
   lines.push('walkFrame: ' + s.player.walkFrame);
   lines.push('dashDir: ' + s.player.dashDir);
   lines.push('coverCluster: ' + s.player.coverCluster);
+  lines.push('blinking: ' + s.player.blinking);
+  lines.push('invincibleRemainMs: ' + s.player.invincibleRemainMs);
+  if (s.game.mode === 'escape') lines.push('escapeRunFrame: ' + s.escapeRun.frame + '/' + s.escapeRun.total);
   lines.push('');
   lines.push('AMMO');
   lines.push('current: ' + s.ammo.current);
@@ -945,6 +1044,7 @@ function r10FormatDebugText(s) {
   lines.push('triggeredThresholds: ' + (s.enemy.triggeredThresholds || '-'));
   lines.push('z: ' + s.enemy.z);
   lines.push('approachState: ' + s.enemy.approachState);
+  lines.push('attackFreqMult: ' + s.enemy.freqMult);
   lines.push('');
   lines.push('INPUT');
   lines.push('mode: ' + s.input.mode);
@@ -1069,6 +1169,19 @@ function spriteFrame(src, bodyTopFrac, bodyBottomFrac) {
   return { img: loadImg(src), bodyTopFrac, bodyBottomFrac };
 }
 
+// 11TH ROUND (items 17-19): extends spriteFrame() with the frame's own
+// HEAD WEAK POINT, alpha-channel-measured the same way bodyTopFrac/
+// bodyBottomFrac are (never guessed/centered-on-sprite) — for each of
+// ROID1/ROID2's 9 real frames, measured via Python/Pillow as the alpha-
+// weighted centroid of the top 16% of the body's own alpha bounds (the
+// head sits at the top of a bipedal silhouette), with headRadiusFrac from
+// that band's own pixel width. headCenterXFrac/headCenterYFrac are
+// fractions of the RAW image (same space bodyTopFrac/bodyBottomFrac use),
+// converted to screen space in computeEnemyDrawRect() below.
+function roidSpriteFrame(src, bodyTopFrac, bodyBottomFrac, headCenterXFrac, headCenterYFrac, headRadiusFrac) {
+  return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac), { headCenterXFrac, headCenterYFrac, headRadiusFrac });
+}
+
 // ESCAPE-exclusive: extends spriteFrame() with a per-frame stable-anchor
 // point (wheelBottomFrac/wheelCenterXFrac), alpha-channel-measured the same
 // row-coverage-threshold way bodyTopFrac/bodyBottomFrac are (thin
@@ -1121,34 +1234,56 @@ const ASSETS_PLAYER_ESCAPE = {
   ],
 };
 
+// 11TH ROUND (items 1-4, 28): the 5 user-attached motorcycle-front images
+// used as ESCAPE's ONLY run-loop art now, in strict attachment order
+// (1->2->3->4->5->1...) — saved verbatim (no recompression/edits to the
+// person/bike artwork itself) as escape_bike_run_01..05.png, matching the
+// order Claude Code confirmed against the actual uploaded file paths, not
+// guessed. bodyTopFrac/bodyBottomFrac and wheelCenterXFrac are this
+// project's own real alpha-channel measurement (Python/Pillow, same
+// row/column-coverage method as every other *SpriteFrame() table in this
+// file) of the 5 real files — wheelBottomFrac uses bodyBottomFrac itself
+// (the lowest opaque row IS the front tire's bottom edge on these
+// particular renders, no separate shadow layer beneath it, unlike the old
+// escape_south/west/east set). The OLD ASSETS_PLAYER_ESCAPE above is left
+// completely untouched/still loaded (item 28: no asset deletion required),
+// simply no longer referenced by renderEscapePlayer() (item 2).
+const ASSETS_PLAYER_ESCAPE_RUN = [
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_01.png', 0.0089, 0.9975, 0.9975, 0.4825),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_02.png', 0.0077, 0.9968, 0.9968, 0.5086),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_03.png', 0.0077, 0.9968, 0.9968, 0.5127),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_04.png', 0.0076, 0.9968, 0.9968, 0.5130),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_05.png', 0.0089, 0.9962, 0.9962, 0.4932),
+];
+
 const ROID1_SPRITES = {
   search: [
-    spriteFrame('assets/roid1/roid1_search_01.png', 0.0016, 0.9984),
-    spriteFrame('assets/roid1/roid1_search_02.png', 0.0016, 0.9984),
-    spriteFrame('assets/roid1/roid1_search_03.png', 0.0011, 0.9977),
-    spriteFrame('assets/roid1/roid1_search_04.png', 0.0023, 0.9977),
-    spriteFrame('assets/roid1/roid1_search_05.png', 0.0012, 0.9979),
+    roidSpriteFrame('assets/roid1/roid1_search_01.png', 0.0016, 0.9984, 0.4132, 0.0975, 0.2070),
+    roidSpriteFrame('assets/roid1/roid1_search_02.png', 0.0016, 0.9984, 0.4594, 0.1090, 0.2500),
+    roidSpriteFrame('assets/roid1/roid1_search_03.png', 0.0011, 0.9977, 0.4962, 0.1117, 0.2466),
+    roidSpriteFrame('assets/roid1/roid1_search_04.png', 0.0023, 0.9977, 0.4926, 0.1031, 0.2047),
+    roidSpriteFrame('assets/roid1/roid1_search_05.png', 0.0012, 0.9979, 0.4925, 0.0974, 0.1714),
   ],
   fire: [
-    spriteFrame('assets/roid1/roid1_fire_01.png', 0.0023, 0.9984),
-    spriteFrame('assets/roid1/roid1_fire_02.png', 0.0023, 0.9984),
-    spriteFrame('assets/roid1/roid1_fire_03.png', 0.0023, 0.9984),
-    spriteFrame('assets/roid1/roid1_fire_04.png', 0.0023, 0.9984),
+    roidSpriteFrame('assets/roid1/roid1_fire_01.png', 0.0023, 0.9984, 0.5336, 0.1070, 0.2109),
+    roidSpriteFrame('assets/roid1/roid1_fire_02.png', 0.0023, 0.9984, 0.5314, 0.1070, 0.2109),
+    roidSpriteFrame('assets/roid1/roid1_fire_03.png', 0.0023, 0.9984, 0.5342, 0.1070, 0.2109),
+    roidSpriteFrame('assets/roid1/roid1_fire_04.png', 0.0023, 0.9984, 0.5334, 0.1070, 0.2109),
   ],
 };
 const ROID2_SPRITES = {
   search: [
-    spriteFrame('assets/roid2/roid2_search_01.png', 0.0031, 0.9984),
-    spriteFrame('assets/roid2/roid2_search_02.png', 0.0031, 0.9977),
-    spriteFrame('assets/roid2/roid2_search_03.png', 0.0023, 0.9977),
-    spriteFrame('assets/roid2/roid2_search_04.png', 0.0031, 0.9984),
-    spriteFrame('assets/roid2/roid2_search_05.png', 0.0031, 0.9969),
+    roidSpriteFrame('assets/roid2/roid2_search_01.png', 0.0031, 0.9984, 0.5500, 0.0984, 0.2445),
+    roidSpriteFrame('assets/roid2/roid2_search_02.png', 0.0031, 0.9977, 0.4339, 0.0980, 0.2664),
+    roidSpriteFrame('assets/roid2/roid2_search_03.png', 0.0023, 0.9977, 0.3774, 0.0991, 0.2953),
+    roidSpriteFrame('assets/roid2/roid2_search_04.png', 0.0031, 0.9984, 0.5481, 0.0953, 0.2180),
+    roidSpriteFrame('assets/roid2/roid2_search_05.png', 0.0031, 0.9969, 0.4826, 0.0988, 0.2109),
   ],
   fire: [
-    spriteFrame('assets/roid2/roid2_fire_01.png', 0.0556, 0.9802),
-    spriteFrame('assets/roid2/roid2_fire_02.png', 0.1091, 0.9286),
-    spriteFrame('assets/roid2/roid2_fire_03.png', 0.0734, 0.9593),
-    spriteFrame('assets/roid2/roid2_fire_04.png', 0.0853, 0.9831),
+    roidSpriteFrame('assets/roid2/roid2_fire_01.png', 0.0556, 0.9802, 0.5476, 0.1460, 0.1088),
+    roidSpriteFrame('assets/roid2/roid2_fire_02.png', 0.1091, 0.9286, 0.5283, 0.1892, 0.1550),
+    roidSpriteFrame('assets/roid2/roid2_fire_03.png', 0.0734, 0.9593, 0.4044, 0.1657, 0.2355),
+    roidSpriteFrame('assets/roid2/roid2_fire_04.png', 0.0853, 0.9831, 0.3930, 0.1727, 0.1367),
   ],
 };
 // 5TH ROUND PART 7: ADAM SPHERE — real ACTION-GAME asset (adam_sphere_01..04,
@@ -1380,6 +1515,10 @@ const ASSETS = {
   // already does for every other character's art — real load-failure
   // reporting for free, no separate gate needed.
   playerEscape: ASSETS_PLAYER_ESCAPE,
+  // 11TH ROUND (items 1-4): registered the same way, so the 5 new real
+  // files are covered by the existing LOADING gate/REQUIRED_IMAGES scan
+  // too — no separate preload path invented for them.
+  playerEscapeRun: ASSETS_PLAYER_ESCAPE_RUN,
 };
 
 function imgReady(img) {
@@ -1783,9 +1922,17 @@ const state = {
   // IS still reused — it is a generic on-screen-position field, not
   // LAB-specific behavior, and both modes need "current lateral offset".
   escape: {
-    facing: 'south',      // 'south' | 'west' | 'east' — which ASSETS.playerEscape[...] loop is showing
-    animFrame: 0,          // 0..2 index into that loop
-    animElapsedMs: 0,      // time-elapsed accumulator (see ESCAPE_ANIM_FRAME_MS) — NOT a rAF frame counter
+    facing: 'south',      // 'south' | 'west' | 'east' — UNUSED for rendering as of 11TH ROUND (see
+    animFrame: 0,          // renderEscapePlayer()'s comment) but left populated/harmless — item 28
+    animElapsedMs: 0,      // says not to delete the old asset/state, only stop using it for the sprite.
+    // 11TH ROUND (items 1-4): the new always-on 5-frame RUN LOOP — cycles
+    // continuously while ESCAPE is running, completely independent of
+    // facing/moveX (see updateEscapePlayer()).
+    runFrame: 0, runElapsedMs: 0,
+    // 11TH ROUND (items 6-8): DASH is now INSTANT (the full distance is
+    // applied in the single frame the input arrives — no eased travel), so
+    // strafeDashUntil/fwdDashUntil no longer drive any interpolation; kept
+    // only as harmless legacy fields nothing reads anymore.
     strafeDashUntil: 0, strafeDashDir: 0, strafeDashStart: 0, // LB/X WEST, RB/B EAST
     fwdDashUntil: 0, fwdDashSign: 0, fwdDashCoveredZ: 0,       // A SOUTH DASH (+1) / Y NORTH BACKSTEP (-1)
     // edge-triggered ESCAPE-exclusive actions, consumed each frame by
@@ -2091,6 +2238,9 @@ function applyStickCurve(raw, deadzone, power) {
 }
 function applyAimCurve(raw) { return applyStickCurve(raw, AIM_DEADZONE, AIM_CURVE_POWER); }
 function applyLightCurve(raw) { return applyStickCurve(raw, LIGHT_DEADZONE, LIGHT_CURVE_POWER); }
+// 11TH ROUND (item 5) — see ESCAPE_MOVE_DEADZONE/ESCAPE_MOVE_CURVE_POWER's
+// own comment for why this is separate from applyLightCurve().
+function applyEscapeMoveCurve(raw) { return applyStickCurve(raw, ESCAPE_MOVE_DEADZONE, ESCAPE_MOVE_CURVE_POWER); }
 
 function pollGamepad(now) {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -2223,7 +2373,7 @@ function pollGamepad(now) {
       let lateral;
       if (dpadLeft && !dpadRight) lateral = -1;
       else if (dpadRight && !dpadLeft) lateral = 1;
-      else lateral = applyLightCurve(gp.axes[0] || 0); // LEFT STICK — reuses the existing generic deadzone/curve helper, unified with D-PAD above (spec: same movement logic)
+      else lateral = applyEscapeMoveCurve(gp.axes[0] || 0); // LEFT STICK — 11TH ROUND item 5: was applyLightCurve() (flashlight-tuned, too compressed for run/dodge); D-PAD above is unaffected either way (already binary)
       gpMove.x = lateral;
 
       if (edge(4) || edge(2)) state.escape.actions.westDash = true;      // LB or X = WEST DASH
@@ -2871,84 +3021,64 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
 function updateEscapePlayer(dt, now, moveX, actions) {
   const p = state.player; // strafeOffset is a generic on-screen-position field, reused as-is (see state.escape's own comment)
   const es = state.escape;
-  const strafeOffsetAtFrameStart = p.strafeOffset;
 
   // Continuous lateral dodge — moveX already unifies D-PAD + LEFT STICK
-  // upstream (see pollGamepad()'s ESCAPE-exclusive branch), so this single
-  // read satisfies "D-PAD and LEFT STICK must drive the SAME movement
-  // logic" without any extra plumbing here.
+  // upstream (see pollGamepad()'s ESCAPE-exclusive branch, now using
+  // applyEscapeMoveCurve() — item 5), so this single read satisfies
+  // "D-PAD and LEFT STICK must drive the SAME movement logic" without any
+  // extra plumbing here.
   p.strafeOffset += moveX * ESCAPE_STRAFE_SPEED * dt;
   const maxOff = state.cssW * STRAFE_MAX_OFFSET; // reused: a generic screen-fraction clamp bound, not LAB-specific behavior
   p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset));
 
-  // LB/X WEST DASH, RB/B EAST DASH — ESCAPE's OWN dash state (es.strafeDash*),
-  // never state.player.dashUntil/dashDir (LAB's own strafe-dash fields).
-  if (actions.westDash) { es.strafeDashDir = -1; es.strafeDashUntil = now + ESCAPE_STRAFE_DASH_DURATION_MS; es.strafeDashStart = p.strafeOffset; }
-  if (actions.eastDash) { es.strafeDashDir = 1; es.strafeDashUntil = now + ESCAPE_STRAFE_DASH_DURATION_MS; es.strafeDashStart = p.strafeOffset; }
-  if (now < es.strafeDashUntil) {
-    const tNorm = 1 - (es.strafeDashUntil - now) / ESCAPE_STRAFE_DASH_DURATION_MS;
-    const eased = 1 - Math.pow(1 - tNorm, 2);
-    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, es.strafeDashStart + es.strafeDashDir * ESCAPE_STRAFE_DASH_DISTANCE_PX * eased));
+  // 11TH ROUND (items 6-8, 32): DASH is now a true INSTANT teleport — the
+  // full distance is applied in THIS single frame (no eased travel window
+  // to accumulate across), and a short blink+invulnerability window starts
+  // at the same instant, reusing p.invincibleUntil (the SAME i-frame field
+  // LAB's own DASH already sets — no second invulnerability system, per
+  // item 7's explicit "reuse existing" instruction). All 4 directions
+  // funnel through the same two lines of logic (item 8's "統一") — only
+  // WHICH value (screen-x vs world-z) and WHICH distance constant differs.
+  if (actions.westDash) {
+    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset - ESCAPE_STRAFE_DASH_DISTANCE_PX));
+    p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
   }
-
-  // Obstacles: barrels are reused verbatim as ESCAPE's dodgeable obstacles
-  // (same real collision math LAB's own BARREL cover zones already use) —
-  // no separate hazard system invented for this.
-  p.strafeOffset = clampStrafeForBarrels(p.strafeOffset, strafeOffsetAtFrameStart);
+  if (actions.eastDash) {
+    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + ESCAPE_STRAFE_DASH_DISTANCE_PX));
+    p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
+  }
 
   // Continuous, automatic SOUTH-heading auto-scroll. 8TH ROUND (item 13,
-  // real-device feedback): the ORIGINAL sign here (matching LAB's own
-  // forward-walk convention, +forwardDelta -> structure z decreases) made
-  // ESCAPE's background visibly scroll the SAME direction as LAB/ARMORED,
-  // which testing confirmed reads wrong — ESCAPE must scroll the OPPOSITE
-  // way. ESCAPE_DIR_SIGN flips the WHOLE travel axis (base auto-scroll AND
-  // both dash terms together) rather than just negating player input, so
-  // this is a genuine background-scroll reversal, not an input remap.
-  // A SOUTH DASH still briefly ADDS to fwdDashSign (accelerate further in
-  // the, now-reversed, direction of travel); Y NORTH BACKSTEP still
-  // SUBTRACTS (against it) — their RELATIVE meaning to each other and to
-  // the base scroll is completely unchanged, only the shared overall
-  // direction flips. LAB/ARMORED's own applyForwardDelta()/updatePlayer()
-  // north-walk code is untouched — this sign lives only in this function.
+  // real-device feedback): ESCAPE's background must scroll the OPPOSITE
+  // direction from LAB/ARMORED's own forward-walk convention —
+  // ESCAPE_DIR_SIGN flips the whole travel axis (base auto-scroll AND both
+  // dash terms), a genuine background-scroll reversal, never an input
+  // remap. LAB/ARMORED's own applyForwardDelta()/updatePlayer() north-walk
+  // code is untouched — this sign lives only in this function.
   const ESCAPE_DIR_SIGN = -1;
   let forwardDelta = ESCAPE_DIR_SIGN * ESCAPE_AUTO_SCROLL_SPEED * dt;
-  if (actions.southDash) { es.fwdDashSign = 1; es.fwdDashUntil = now + ESCAPE_FWD_DASH_DURATION_MS; es.fwdDashCoveredZ = 0; }
-  if (actions.northBackstep) { es.fwdDashSign = -1; es.fwdDashUntil = now + ESCAPE_FWD_DASH_DURATION_MS; es.fwdDashCoveredZ = 0; }
-  if (now < es.fwdDashUntil) {
-    const tNorm = 1 - (es.fwdDashUntil - now) / ESCAPE_FWD_DASH_DURATION_MS;
-    const eased = 1 - Math.pow(1 - tNorm, 2);
-    const totalDist = es.fwdDashSign > 0 ? ESCAPE_SOUTH_DASH_DISTANCE_Z : ESCAPE_NORTH_BACKSTEP_DISTANCE_Z;
-    const coveredNow = totalDist * eased;
-    forwardDelta += ESCAPE_DIR_SIGN * es.fwdDashSign * (coveredNow - es.fwdDashCoveredZ);
-    es.fwdDashCoveredZ = coveredNow;
+  // 11TH ROUND (items 6-8): SOUTH/NORTH DASH — same instant-teleport
+  // treatment, applied to the world-scroll axis instead of screen-x (item
+  // 8 explicitly allows different axes/distances per direction, since a
+  // literal x-pixel jump has no equivalent meaning in z-depth).
+  if (actions.southDash) {
+    forwardDelta += ESCAPE_DIR_SIGN * ESCAPE_SOUTH_DASH_DISTANCE_Z;
+    p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
+  }
+  if (actions.northBackstep) {
+    forwardDelta += ESCAPE_DIR_SIGN * -ESCAPE_NORTH_BACKSTEP_DISTANCE_Z;
+    p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
   }
 
-  // Animation direction: WEST/EAST while lateral input is actually held,
-  // SOUTH (the default travel loop) the instant it's released — a small
-  // deadzone (0.15) so animation doesn't flicker between loops on tiny
-  // analog-stick noise near center.
-  if (moveX < -0.15) es.facing = 'west';
-  else if (moveX > 0.15) es.facing = 'east';
-  else es.facing = 'south';
-
-  // Time-elapsed frame advance (spec: "requestAnimationFrameの実行回数
-  // ベースではなく") — dt is real elapsed seconds, so this holds a stable
-  // cadence regardless of actual frame rate, unlike counting rAF calls.
-  // 8TH ROUND (item 15, real-device feedback): the SOUTH loop no longer
-  // advances through escape_south_01/02/03 — cycling them read as visually
-  // discontinuous (hair/body didn't connect smoothly frame to frame).
-  // SOUTH now always shows frame 0 (escape_south_01) only; 02/03 stay
-  // registered in ASSETS.playerEscape.south, completely untouched, for
-  // possible future use. WEST/EAST keep their own existing 3-frame cycle
-  // exactly as before — this only changes the SOUTH branch.
-  if (es.facing === 'south') {
-    es.animFrame = 0;
-  } else {
-    es.animElapsedMs += dt * 1000;
-    if (es.animElapsedMs >= ESCAPE_ANIM_FRAME_MS) {
-      es.animElapsedMs -= ESCAPE_ANIM_FRAME_MS;
-      es.animFrame = (es.animFrame + 1) % 3;
-    }
+  // 11TH ROUND (items 1-4): the always-on 5-frame RUN LOOP — cycles
+  // continuously for as long as ESCAPE is running, completely independent
+  // of moveX/facing/dash (see renderEscapePlayer(): it no longer reads
+  // es.facing at all). es.facing/animFrame above are left populated
+  // (harmless, unused) per item 28 — nothing deletes the old asset/state.
+  es.runElapsedMs += dt * 1000;
+  if (es.runElapsedMs >= ESCAPE_ANIM_FRAME_MS) {
+    es.runElapsedMs -= ESCAPE_ANIM_FRAME_MS;
+    es.runFrame = (es.runFrame + 1) % ASSETS_PLAYER_ESCAPE_RUN.length;
   }
 
   return forwardDelta;
@@ -3469,7 +3599,7 @@ function updateEnemy(dt, now) {
         e.z = Math.max(stalkFloor, e.z - CLAW_STALK_SPEED * dt);
       }
     }
-    if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500;
+    if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500 * enemyAttackFreqMult(e.type);
     if (now >= e.nextIdleCheckAt && e.z < 900) {
       const stealthMul = p.stealth ? 1.8 : 1.0;
       if (e.type === 'gabriel' || e.type === 'adam') {
@@ -3585,7 +3715,7 @@ function updateEnemy(dt, now) {
         e.attackUntil = now + CLAW_COOLDOWN_MS;
       }
     } else if (e.attackState === 'cooldown') {
-      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + 900 + Math.random() * 1400; }
+      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (900 + Math.random() * 1400) * enemyAttackFreqMult(e.type); }
     }
     return;
   }
@@ -3623,7 +3753,7 @@ function updateEnemy(dt, now) {
     } else if (e.attackState === 'impact') {
       if (now >= e.attackUntil) { e.attackState = 'cooldown'; e.attackUntil = now + SNIPER_COOLDOWN_MS; }
     } else if (e.attackState === 'cooldown') {
-      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + 700 + Math.random() * 1200; }
+      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (700 + Math.random() * 1200) * enemyAttackFreqMult(e.type); }
     }
     return;
   }
@@ -3648,7 +3778,7 @@ function updateEnemy(dt, now) {
     } else if (e.attackState === 'impact') {
       if (now >= e.attackUntil) { e.attackState = 'cooldown'; e.attackUntil = now + MISSILE_COOLDOWN_MS; }
     } else if (e.attackState === 'cooldown') {
-      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + 900 + Math.random() * 1400; }
+      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (900 + Math.random() * 1400) * enemyAttackFreqMult(e.type); }
     }
   }
 }
@@ -3747,9 +3877,19 @@ function computeEnemyDrawRect() {
   const dx = proj.x - w / 2;
   const dy = proj.y - frame.bodyBottomFrac * h;
 
+  // 11TH ROUND (items 17-19): ROID1/ROID2 HEAD WEAK POINT — only present
+  // when the current frame carries real measured head metadata
+  // (roidSpriteFrame(), i.e. only roid1/roid2's own 9 frames each); every
+  // other enemy type's frame() lacks these fields, so headX stays
+  // undefined for them and updateBullets() falls back to the existing
+  // generic body hit-test unchanged.
+  const hasHead = frame.headCenterXFrac != null;
   return {
     img, proj, x: dx, y: dy, w, h, cx: proj.x,
     cy: dy + h * ((frame.bodyTopFrac + frame.bodyBottomFrac) / 2),
+    headX: hasHead ? dx + frame.headCenterXFrac * w : undefined,
+    headY: hasHead ? dy + frame.headCenterYFrac * h : undefined,
+    headR: hasHead ? frame.headRadiusFrac * Math.max(w, h) : undefined,
   };
 }
 
@@ -3917,7 +4057,43 @@ function updateBullets(now) {
     const rect = computeEnemyDrawRect();
     const hitRadius = enemyHitRadius(rect);
     const dist = Math.hypot(b.x2 - rect.cx, b.y2 - rect.cy);
-    if (dist <= hitRadius) {
+    // 11TH ROUND (items 17-20): ROID1/ROID2 HEAD WEAK POINT. Investigated
+    // first (item 17-18): the previous hit-test treated the whole body
+    // silhouette as equally "effective" (hitRadius = rect.w*0.42 centered
+    // on the body midpoint) — no headshot concept existed at all. Chosen
+    // design (item 19, reported honestly): the body hit-test STILL
+    // resolves the shot (impact spark, so it never reads as a pure whiff)
+    // but deals ZERO damage unless it also falls within the real, per-
+    // frame measured head circle — "どこを撃っても同じ" is explicitly
+    // rejected in favor of "頭部を狙うことに意味がある設計". Every other
+    // enemy type (rect.headX undefined) is completely unaffected — falls
+    // through to the exact same generic body-hit damage path as before.
+    const isRoidType = e.type === 'roid1' || e.type === 'roid2';
+    const hasHeadPoint = isRoidType && rect.headX != null;
+    const headDist = hasHeadPoint ? Math.hypot(b.x2 - rect.headX, b.y2 - rect.headY) : Infinity;
+    const headHit = hasHeadPoint && headDist <= rect.headR;
+    // Playwright-measured live-hit-test verification (this round) caught a
+    // real bug here: hitRadius/dist are centered on the body's VERTICAL
+    // MIDPOINT (rect.cy — see computeEnemyDrawRect()'s cy formula), but the
+    // real measured head sits well above that midpoint — for roid1 in a
+    // typical mid-range pose, headDist-from-cy alone already exceeds
+    // hitRadius, so a shot landing dead-center in the real head circle was
+    // being rejected by THIS outer gate before ever reaching the headHit
+    // check below, i.e. an accurate headshot silently MISSED. Fixed by
+    // OR-ing in headHit here: the real, per-frame-measured head circle is
+    // now its own authoritative hit region, independent of the old body-
+    // center circle, so a headshot can never again be gated out by it.
+    if (dist <= hitRadius || headHit) {
+      if (isRoidType && !headHit) {
+        // BODY HIT (outside the head weak point): shot resolves visually
+        // but the design intentionally withholds damage — see comment above.
+        spawnPlayerImpact(b.x2, b.y2, now);
+        if (DEBUG_MODE) {
+          r10DebugState.lastHitTestResult = 'BODY HIT dist=' + dist.toFixed(1) + ' headDist=' + headDist.toFixed(1) + '/headR=' + rect.headR.toFixed(1);
+          r10DebugLog('BODY HIT ' + (ENEMY_LABEL[e.type] || e.type) + ' headDist=' + headDist.toFixed(1) + ' (no damage — HEAD required)');
+        }
+        continue;
+      }
       // ROOT CAUSE (PART 21/22): this hit-test always fired correctly, but
       // NOTHING here ever touched enemy.hp — a full-repo search before this
       // change confirmed enemy.hp had no writer anywhere in the codebase
@@ -3930,7 +4106,7 @@ function updateBullets(now) {
       // shot landed) but HP is untouched while e.invulnerable is true.
       if (e.invulnerable) {
         spawnPlayerImpact(b.x2, b.y2, now);
-        if (DEBUG_MODE) r10DebugLog('DAMAGE BLOCKED: INVULNERABLE (' + (ENEMY_LABEL[e.type] || e.type) + ')');
+        if (DEBUG_MODE) r10DebugLog('DAMAGE BLOCKED: INVULNERABLE (' + (ENEMY_LABEL[e.type] || e.type) + (headHit ? ' HEAD HIT' : '') + ')');
       } else {
         const hpBefore = e.hp;
         e.hp = Math.max(0, e.hp - BULLET_DAMAGE);
@@ -3938,10 +4114,10 @@ function updateBullets(now) {
         spawnPlayerImpact(b.x2, b.y2, now);
         if (DEBUG_MODE) {
           r10DebugState.hitCount++;
-          r10DebugState.lastHitTestResult = 'HIT dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
+          r10DebugState.lastHitTestResult = (headHit ? 'HIT HEAD ' : 'HIT ') + 'dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
           r10DebugState.lastDamage = BULLET_DAMAGE;
           r10DebugState.lastDamageAt = now;
-          r10DebugLog('HIT ' + (ENEMY_LABEL[e.type] || e.type) + ' dist=' + dist.toFixed(1) + ' r=' + hitRadius.toFixed(1));
+          r10DebugLog((headHit ? 'HIT HEAD ' : 'HIT ') + (ENEMY_LABEL[e.type] || e.type) + ' dist=' + dist.toFixed(1) + ' r=' + hitRadius.toFixed(1));
           r10DebugLog('DAMAGE ' + BULLET_DAMAGE + ' HP ' + hpBefore + '->' + e.hp);
         }
         // 10TH ROUND (items 41-48): ROID1/ROID2 20%-threshold counter phase.
@@ -4096,6 +4272,21 @@ function renderStructure(s, theme) {
       break;
     }
     case 'pipe': {
+      // 11TH ROUND (items 21-22): investigated first — 'pipe' used to draw
+      // unconditionally in EVERY theme (part of the original shared 8-kind
+      // pool, never theme-gated), a full-corridor-width horizontal line at
+      // a FIXED height (CORRIDOR_CEIL_Y*0.35 — well below the true ceiling
+      // line 'gantry' already draws), repeated at every one of its own
+      // spacing instances. Confirmed via a live monkey-patch test
+      // (disabling only this case) that this exact line is the "stray
+      // horizontal line crossing the upper screen, not the ceiling itself"
+      // reported in both ARMORED and ESCAPE screenshots — LAB was never
+      // reported because its own busy labTank clutter visually absorbed
+      // it. 'gantry' (the real ceiling/floor/wall outline) and the new
+      // 'armorGate' lattice are untouched — only this redundant, non-
+      // structural decorative line is now gated to LAB only, where it
+      // reads as legitimate overhead piping.
+      if (state.theme !== 'lab') break;
       const p1 = project(-half * 1.02, CORRIDOR_CEIL_Y * 0.35, s.z);
       const p2 = project(half * 1.02, CORRIDOR_CEIL_Y * 0.35, s.z);
       ctx.strokeStyle = theme.wallDark;
@@ -4625,18 +4816,24 @@ function renderPlayer(theme) {
     drawW = img.naturalWidth * baseScale * p.scale;
     dx = cx - drawW / 2;
     dy = bottomY - drawH;
-    // 10TH ROUND (items 3-4): SOUTH WALK has only ONE real south-facing
-    // image on disk (see ASSETS.player.southWalk/dashS above) — no 3-frame
-    // cycle like NORTH's walk[] exists, so holding D-PAD/STICK DOWN used
-    // to show a single frozen picture instead of reading as walking.
-    // Rather than fabricate frames or fake it with an unrelated pose swap,
-    // this applies a small Canvas-only body-bob (foot-anchored: only dy
-    // moves, drawH/dx stay fixed so the feet never visibly slide off the
-    // ground plane) synced to the SAME p.walkTimer/walkFrame cadence NORTH's
-    // own walk cycle already uses, so the footstep rhythm matches exactly.
+    // 11TH ROUND (items 24-27, 44-48): 10TH ROUND's continuous sin-based
+    // body-bob read on real devices as "a static image sliding," not
+    // walking — see SOUTH_WALK_FRAME_OFFSETS' own comment above for the
+    // re-investigation (still only ONE real south image on disk). Replaced
+    // with a DISCRETE step through SOUTH_WALK_FRAME_OFFSETS, indexed
+    // directly by p.walkFrame (0/1/2, no interpolation between slots) —
+    // the SAME index NORTH's own walk[] array cycle already uses, so the
+    // footstep rhythm/cadence matches exactly, but the SOUTH pose now
+    // visibly switches (lean + bob + scale) once per step instead of
+    // smoothly sliding.
     if (img === ASSETS.player.southWalk) {
-      const walkPhase = (p.walkFrame + p.walkTimer / 0.14) / 3;
-      dy += Math.sin(walkPhase * Math.PI * 2) * (drawH * 0.012);
+      const off = SOUTH_WALK_FRAME_OFFSETS[p.walkFrame];
+      const scaledW = drawW * off.scale;
+      const scaledH = drawH * off.scale;
+      dx = cx - scaledW / 2 + off.dxFrac * drawW;
+      dy = bottomY - scaledH + off.dyFrac * drawH;
+      drawW = scaledW;
+      drawH = scaledH;
     }
   }
   // 5TH ROUND PART 12: short damage-blink — a brief brightness flash on the
@@ -4687,37 +4884,35 @@ function renderPlayer(theme) {
 function renderEscapePlayer() {
   const p = state.player;
   const es = state.escape;
+  const now = performance.now();
   const cx = state.centerX + p.strafeOffset;
   const bottomY = state.cssH * 1.02; // same foot/ground anchor line renderPlayer() uses for LAB
 
-  const frames = ASSETS.playerEscape[es.facing];
-  const frame = frames[es.animFrame];
-  if (!imgReady(frame.img)) return; // the LOADING gate already guarantees these 9 are loaded before gameStarted; defensive no-op only
+  // 11TH ROUND (items 1-4, 7): the 5-frame RUN LOOP replaces the old
+  // facing-based (south/west/east) sprite selection entirely — moveX/
+  // direction input no longer changes WHICH image shows, only the
+  // player's on-screen x position (updateEscapePlayer()), matching item
+  // 2's explicit "方向入力しても方向別spriteへ変わらない".
+  const frame = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
+  if (!imgReady(frame.img)) return; // the LOADING gate already guarantees these 5 are loaded before gameStarted; defensive no-op only
 
-  // Uniform visual size across all 9 frames: reuses computeBodyVisualScale()
-  // verbatim (the SAME normalization ROID1/ROID2/ADAM SPHERE already rely
-  // on) fed this frame's own measured bodyTopFrac/bodyBottomFrac, targeting
-  // the CURRENT LAB player's own on-screen body height — ASSETS.player.aim's
-  // naturalHeight at PLAYER_SCALE_BOOST, p.scale=1 (ESCAPE has no north/
-  // south depth-pulse concept) and no fire-pose boost (ESCAPE never fires) —
-  // so ESCAPE's rider reads as "about the same size as the LAB player", not
-  // judged by source-image resolution (spec section 4).
+  // 11TH ROUND (item 13): uniform visual size across all 5 frames — reuses
+  // computeBodyVisualScale() verbatim (the SAME normalization every other
+  // *SpriteFrame() table in this file relies on) fed this frame's own real
+  // measured bodyTopFrac/bodyBottomFrac, targeting the same LAB-player-
+  // relative height the old ESCAPE art used. Because bodyTopFrac/
+  // bodyBottomFrac are per-frame real alpha measurements, this makes the
+  // rendered body height IDENTICAL (not just close) across all 5 frames —
+  // comfortably inside item 4's ±2% cap without a separate breathing pulse
+  // (removed — see below).
   const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST;
-  let bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
-  // 8TH ROUND (item 16): since SOUTH is now a single static image
-  // (escape_south_01 only, see updateEscapePlayer()), a small continuous
-  // ~100%->~103%->100% scale "breathing" pulse simulates forward motion on
-  // its own. A smooth raised-cosine (never a discrete step) driven by
-  // state.timeSec (a continuous real-elapsed-seconds clock, not a rAF
-  // count) so the cycle reads as a natural periodic pulse, never flickery.
-  // Applied to bodyScale BEFORE drawW/drawH are derived from it, so the
-  // wheel-bottom/wheel-center-x anchor below (computed FROM drawW/drawH)
-  // scales together with the sprite and never drifts.
-  if (es.facing === 'south') {
-    const phase = (state.timeSec % (SOUTH_PULSE_PERIOD_MS / 1000)) / (SOUTH_PULSE_PERIOD_MS / 1000);
-    const pulse = 1 + SOUTH_PULSE_AMPLITUDE * (0.5 - 0.5 * Math.cos(phase * Math.PI * 2));
-    bodyScale *= pulse;
-  }
+  const bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
+  // 11TH ROUND (item 4): the old SOUTH_PULSE_AMPLITUDE (~3%) "breathing"
+  // scale pulse is REMOVED for this new loop — it existed only because the
+  // old SOUTH pose was a single static image with nothing else to convey
+  // motion; the new 5-frame loop already conveys motion by cycling real
+  // frames, and item 4 explicitly caps frame-to-frame size variation at
+  // ±2%, which a further multiplicative pulse would blow through.
   const drawW = frame.img.naturalWidth * bodyScale;
   const drawH = frame.img.naturalHeight * bodyScale;
 
@@ -4728,6 +4923,15 @@ function renderEscapePlayer() {
   // drifts horizontally when the sprite switches (spec section 3).
   const dx = cx - frame.wheelCenterXFrac * drawW;
   const dy = bottomY - frame.wheelBottomFrac * drawH;
+
+  // 11TH ROUND (item 7): DASH blink — reuses p.invincibleUntil, the SAME
+  // i-frame window updateEscapePlayer() now sets on any instant DASH (no
+  // second blink/invulnerability system). A short on/off flicker (toggling
+  // every 60ms of REAL time, not rAF count) that is never long enough to
+  // lose track of the player's position, per item 7's explicit "操作位置
+  // が分からなくなるほど長時間消さないでください".
+  const blinking = now < p.invincibleUntil;
+  if (blinking && Math.floor(now / 60) % 2 === 0) return; // skip this frame's draw — the "off" half of the blink
   ctx.drawImage(frame.img, dx, dy, drawW, drawH);
 }
 
@@ -5072,6 +5276,22 @@ function renderBullets() {
     const width = BULLET_WIDTH_NEAR + (BULLET_WIDTH_FAR - BULLET_WIDTH_NEAR) * t;
 
     ctx.save();
+    // 11TH ROUND (items 12-13): investigated first — the muzzle FLASH
+    // particle already draws BEHIND the player (renderParticles() runs
+    // before renderPlayer(), a 7TH ROUND fix, still correct). The actual
+    // "effect pasted on top of the body" visual traces to THIS traveling
+    // bullet: it necessarily draws AFTER renderPlayer() (so it stays
+    // visible against the darkness mask — see renderFlashlightMask()'s own
+    // ordering comment, a real constraint this round must not break), so
+    // its earliest segment — right as it leaves the muzzle, still
+    // overlapping the player's own silhouette — reads as "on top of the
+    // body." Fading it in over the first 12% of travel keeps the bullet
+    // fully visible for the vast majority of its flight (near the enemy,
+    // where it needs to read against the dark corridor) while it starts
+    // near-invisible at the muzzle itself, satisfying "emerges near the
+    // muzzle, never pasted flat on the body" without touching the
+    // darkness-mask ordering this same code protects elsewhere.
+    ctx.globalAlpha = Math.min(1, t / 0.12);
     ctx.lineCap = 'round';
     // soft outer glow, fading toward the tail
     const glowGrad = ctx.createLinearGradient(tx, ty, hx, hy);
@@ -5151,6 +5371,17 @@ function renderFlashlightMask() {
 function isAimOnEffectiveHit() {
   const aim = getAimPoint();
   const rect = computeEnemyDrawRect();
+  const e = state.enemy;
+  // 11TH ROUND (items 17-19): for roid1/roid2, "effective hit" now means
+  // the real measured HEAD circle specifically (a body-only hit deals no
+  // damage — see updateBullets()), so the crosshair's white->red feedback
+  // must track headHit, not the old body-center circle, to keep this
+  // function's own promise ("matches an ACTUAL registered hit") true under
+  // the new head-weak-point damage rule. Every other enemy type (no
+  // rect.headX) is completely unchanged.
+  if ((e.type === 'roid1' || e.type === 'roid2') && rect.headX != null) {
+    return Math.hypot(aim.x - rect.headX, aim.y - rect.headY) <= rect.headR;
+  }
   return Math.hypot(aim.x - rect.cx, aim.y - rect.cy) <= enemyHitRadius(rect);
 }
 function renderAimReticle() {
@@ -5493,7 +5724,12 @@ function frame(ts) {
 
   const theme = THEMES[state.theme];
   renderCorridor(theme);
-  renderBarrels();
+  // 11TH ROUND (item 9): ESCAPE never shows BARRELs — COMBAT's own BARREL/
+  // COVER system (renderBarrels()/renderBarrelForeground()/isPlayerInCover()
+  // etc.) is completely untouched and still runs exactly as before for
+  // state.gameMode==='combat'; this is the ONLY change, a render-time skip
+  // gated on GAME MODE (never STAGE TYPE, per the existing decoupling).
+  if (state.gameMode !== 'escape') renderBarrels();
   if (state.gameMode === 'escape') {
     // 8TH ROUND (item 14): the enemy is no longer inert here — render it
     // and its attack telegraphs same as COMBAT (item 23: same warning/
@@ -5650,4 +5886,13 @@ window.__darkoutTps = {
   // be exercised through the actual code path it lives in (updateBullets())
   // instead of a test faking the resulting state directly.
   updateBullets,
+  // 11TH ROUND: ESCAPE run-loop rewrite, enemy attack-frequency multiplier,
+  // ROID HEAD WEAK POINT, SOUTH WALK discrete frames — exposed for
+  // automated testing only.
+  ASSETS_PLAYER_ESCAPE_RUN, applyEscapeMoveCurve,
+  ENEMY_ATTACK_FREQ_MULT, enemyAttackFreqMult,
+  SOUTH_WALK_FRAME_OFFSETS,
+  ESCAPE_DASH_BLINK_MS, ESCAPE_STRAFE_DASH_DISTANCE_PX,
+  ESCAPE_SOUTH_DASH_DISTANCE_Z, ESCAPE_NORTH_BACKSTEP_DISTANCE_Z,
+  FLASHLIGHT_BASE_RADIUS, FIRE_POSE_SCALE_BOOST,
 };
