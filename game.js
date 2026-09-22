@@ -142,6 +142,10 @@ const ESCAPE_DEPTH_SPEED = 0.9; // depthPos units/sec at full stick deflection
 const ESCAPE_DEPTH_SCALE_RANGE = 0.18;
 const ESCAPE_DEPTH_SCREEN_RANGE_PX = 46;
 const ESCAPE_DEPTH_DASH_NUDGE = 0.35; // brief depthPos push on NORTH/SOUTH instant DASH, on top of the world-z burst
+// 13TH ROUND (item 1): decay rate for the NORTH/SOUTH DASH scale pulse
+// (1/rate ~= the time constant) — ~120ms, short enough to read as a snap,
+// never a residual offset from the normal depth-based perspective scale.
+const ESCAPE_DASH_SCALE_PULSE_DECAY_RATE = 8;
 // 10TH ROUND (items 33-36): investigated current value first, per spec —
 // 8TH ROUND had cut this from 130 to 32.5 (~25%) after "dash travels too
 // far" feedback, but real-device play now reports the opposite problem:
@@ -174,8 +178,21 @@ const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 260; // was 200 (11th round) — Y, bri
 // 300ms window at a 75ms toggle period: 300/75=4 phase transitions
 // (on->off->on->off->on), i.e. exactly 2 distinct "off" flashes, per the
 // explicit "約2回程度の落ち着いたblink" request.
+// 13TH ROUND (items 7-8, real-device re-test): 2 flashes still read as too
+// much on a real device. Rather than shrinking ESCAPE_DASH_BLINK_MS itself
+// (that would just shorten the SAME invincibility/blink window and could
+// silently "hide" the flash count reduction inside a shorter duration,
+// which item 8 explicitly rejects), the render-side blink algorithm below
+// was redesigned to be DASH-START-ANCHORED (phase computed from p.
+// invincibleUntil - ESCAPE_DASH_BLINK_MS, never raw wall-clock modulo) and
+// driven by an explicit cycle COUNT — ESCAPE_DASH_BLINK_CYCLES=1 halves
+// the previous 2 "off" flashes to exactly 1: DASH -> visible for the first
+// half of the window -> one deliberate fade for the second half -> normal
+// display resumes the instant invincibility ends. ESCAPE_DASH_BLINK_MS
+// itself (the actual invincibility/blink WINDOW duration) is unchanged.
 const ESCAPE_DASH_BLINK_MS = 300;
-const ESCAPE_DASH_BLINK_TOGGLE_MS = 75;
+const ESCAPE_DASH_BLINK_TOGGLE_MS = 75; // legacy — no longer read by the blink render logic, kept only for the existing test-export
+const ESCAPE_DASH_BLINK_CYCLES = 1; // exact number of "visible -> invisible" flashes per DASH, deterministic regardless of wall-clock phase
 const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval — now drives the always-on 5-frame RUN LOOP (items 1-4), not the old per-direction facing loop
 // 11TH ROUND (item 5): investigated first — ESCAPE's continuous lateral
 // move had NO separate smoothing/acceleration/interpolation layer at all;
@@ -619,6 +636,10 @@ const GAMEPAD_SETTLE_MS = 350;
 // own raw -1..1 drag feeds this exact same velocity integration — see
 // updatePlayer()'s AIM section).
 const AIM_MOVE_SPEED_PX_S = 620;
+// 13TH ROUND (items 9-19): LIGHT's own persistent-position move speed —
+// same role as AIM_MOVE_SPEED_PX_S, deliberately a bit slower since
+// sweeping the flashlight is a broader gesture than fine AIM adjustment.
+const LIGHT_MOVE_SPEED_PX_S = 520;
 
 // FOCUS / AUTO AIM (4th round) — LB replaces the retired FLASH action.
 // Bare, testable starting values (spec explicitly says exact balance is
@@ -817,7 +838,16 @@ const ENEMY_LANE_TRACK_MULT = {
 const ENEMY_ATTACK_FREQ_MULT = {
   drone: 0.55, roid1: 0.75, roid2: 0.70, gabriel: 0.65, adamSphere: 0.80, adam: 0.70,
 };
-function enemyAttackFreqMult(type) { return ENEMY_ATTACK_FREQ_MULT[type] || 1; }
+// 13TH ROUND (item 4): ESCAPE keeps continuous attack pressure (SURVIVE +
+// dodge, not a quiet run) — reuses the SAME ENEMY_ATTACK_FREQ_MULT/
+// enemyAttackFreqMult() every idle-recheck/cooldown site already calls
+// (no parallel frequency system), just with this extra ESCAPE-only
+// multiplier stacked on top. <1 = shorter wait = more frequent attacks.
+const ESCAPE_ATTACK_FREQ_MULT = 0.55;
+function enemyAttackFreqMult(type) {
+  const base = ENEMY_ATTACK_FREQ_MULT[type] || 1;
+  return state.gameMode === 'escape' ? base * ESCAPE_ATTACK_FREQ_MULT : base;
+}
 
 const THEMES = {
   lab: {
@@ -1965,7 +1995,12 @@ const state = {
     // trims, unaffected either way.
     aimLiveX: 0, aimLiveY: 0,
     aimManualOffsetX: 0, aimManualOffsetY: 0,
-    lightFocusOffsetX: 0, lightFocusOffsetY: 0, // 12TH ROUND (items 57-58): see getFlashlightCenter()
+    // 13TH ROUND (items 9-19): LIGHT's own persistent position — see
+    // getFlashlightCenter()/updatePlayer(). Replaces Round 12's
+    // lightFocusOffsetX/Y (a separate additive offset on top of a raw,
+    // non-persistent stick read, which was the root cause of LIGHT
+    // snapping back to center on stick release).
+    lightPersistX: 0, lightPersistY: 0,
     // PART 12/13 (3rd round): 0..1 smoothed "how deep in a barrel's touch
     // radius" state, driving the COVER visual (see renderPlayer()) —
     // smoothed the same dt-based way p.scale already is, so leaving cover
@@ -2092,6 +2127,12 @@ const state = {
     // ESCAPE_DEPTH_SPEED's own comment for why this has NO auto-recovery,
     // unlike COMBAT's p.depthPos.
     depthPos: 0,
+    // 13TH ROUND (item 1): short multiplicative DASH scale pulse, layered
+    // ON TOP of (never replacing) the existing depth-based perspective
+    // scale — see renderEscapePlayer()'s targetBodyHeightPx and the decay
+    // tick in updateEscapePlayer(). Always decays back to exactly 1 (no
+    // residual +2%/-2%).
+    dashScalePulse: 1,
     // 11TH ROUND (items 6-8): DASH is now INSTANT (the full distance is
     // applied in the single frame the input arrives — no eased travel), so
     // strafeDashUntil/fwdDashUntil no longer drive any interpolation; kept
@@ -3165,19 +3206,27 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
     p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
     p.aimLiveY += (targetLiveY - p.aimLiveY) * approachT;
-    // items 57-58: LIGHT's own center follows the SAME hit point while
-    // FOCUS is active, via a persistent additive offset on top of the raw
-    // stick/touch light input (never overwrites it — releasing FOCUS simply
-    // leaves LIGHT wherever it ended up, same persistent-not-recenter
-    // philosophy as AIM's own aimLiveX/Y above), so AIM never gets clamped
-    // back to the LIGHT circle's edge by a LIGHT that didn't follow FOCUS's
-    // own target.
-    const rawLightX = state.centerX + clampAxis(state.input.lightX) * LIGHT_RANGE;
-    const rawLightY = state.horizonY + state.cssH * 0.06 + clampAxis(state.input.lightY) * LIGHT_RANGE;
-    const targetLightOffX = hitPt.x - rawLightX;
-    const targetLightOffY = hitPt.y - rawLightY;
-    p.lightFocusOffsetX += (targetLightOffX - p.lightFocusOffsetX) * approachT;
-    p.lightFocusOffsetY += (targetLightOffY - p.lightFocusOffsetY) * approachT;
+    // 13TH ROUND (items 9-19, real-device fix): LIGHT's own center follows
+    // the SAME hit point while FOCUS is active, by moving p.lightPersistX/Y
+    // DIRECTLY — the SAME single persistent-position field manual LEFT
+    // STICK input drives below (see the else-branch and getFlashlightCenter()).
+    // Round 12 used a SEPARATE additive p.lightFocusOffsetX/Y layered on top
+    // of a raw (non-persistent) stick read — that was the root cause of two
+    // real-device bugs: (1) LIGHT snapping back to the base center the
+    // instant the stick returned to neutral (state.input.lightX/Y is an
+    // absolute per-frame stick deflection, not a delta — reading it directly
+    // as "the base position" meant releasing the stick always recomputed
+    // base=center), and (2) AIM then reading as permanently stuck to the
+    // LIGHT circle's outer edge, because getAimPoint()'s own clamp (which is
+    // otherwise correct) was clamping AIM's stable absolute position against
+    // a LIGHT that snapped back to center every single frame. Using ONE
+    // persistent LIGHT position field — exactly the architecture aimLiveX/Y
+    // already used successfully — removes both the recenter bug and the
+    // "two variables competing" risk in one fix.
+    const targetLightPersistX = clamp(hitPt.x - state.centerX, -LIGHT_RANGE, LIGHT_RANGE);
+    const targetLightPersistY = clamp(hitPt.y - (state.horizonY + state.cssH * 0.06), -LIGHT_RANGE, LIGHT_RANGE);
+    p.lightPersistX += (targetLightPersistX - p.lightPersistX) * approachT;
+    p.lightPersistY += (targetLightPersistY - p.lightPersistY) * approachT;
   } else {
     // Manual AIM: stick input (already deadzoned/curved upstream by
     // applyAimCurve()) drives VELOCITY, not absolute position. Deadzone
@@ -3186,6 +3235,15 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     // branch for "stick released".
     p.aimLiveX = clamp(p.aimLiveX + state.input.aimX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
     p.aimLiveY = clamp(p.aimLiveY + state.input.aimY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
+    // 13TH ROUND (items 9-19): manual LEFT STICK LIGHT control — the SAME
+    // persistent-position pattern as AIM directly above (velocity input,
+    // deadzone already zeroes state.input.lightX/Y at neutral so this is a
+    // natural no-op when the stick is released — LIGHT simply stays exactly
+    // where it was, never recentering). Only runs outside FOCUS — FOCUS
+    // owns p.lightPersistX/Y exclusively above, the identical mutual-
+    // exclusion rule aimLiveX/Y already uses.
+    p.lightPersistX = clamp(p.lightPersistX + state.input.lightX * LIGHT_MOVE_SPEED_PX_S * dt, -LIGHT_RANGE, LIGHT_RANGE);
+    p.lightPersistY = clamp(p.lightPersistY + state.input.lightY * LIGHT_MOVE_SPEED_PX_S * dt, -LIGHT_RANGE, LIGHT_RANGE);
   }
   // PART 6 (3rd round): persistent manual AIM trim — LT+D-PAD up/down
   // moves height only (X untouched), RT+D-PAD left/right moves horizontal
@@ -3311,14 +3369,27 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     forwardDelta += ESCAPE_DIR_SIGN * ESCAPE_SOUTH_DASH_DISTANCE_Z;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
     es.depthPos = Math.max(-1, es.depthPos - ESCAPE_DEPTH_DASH_NUDGE);
+    // 13TH ROUND (item 1): SOUTH DASH = lunging toward the camera, so a
+    // brief +2% scale pulse on top of the normal depth perspective — never
+    // a replacement for it (see the decay tick below and the multiply in
+    // renderEscapePlayer()).
+    es.dashScalePulse = 1.02;
     spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 0, 1, now);
   }
   if (actions.northBackstep) {
     forwardDelta += ESCAPE_DIR_SIGN * -ESCAPE_NORTH_BACKSTEP_DISTANCE_Z;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
     es.depthPos = Math.min(1, es.depthPos + ESCAPE_DEPTH_DASH_NUDGE);
+    // NORTH DASH = lunging away, so a brief -2% pulse (same decay).
+    es.dashScalePulse = 0.98;
     spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 0, -1, now);
   }
+  // 13TH ROUND (item 1): decay dashScalePulse back to exactly 1 — runs
+  // every ESCAPE frame regardless of whether a dash just fired, so it can
+  // never get stuck away from 1. ~120ms time constant: "short time", never
+  // a residual +2%/-2%. WEST/EAST DASH never sets this field, so it stays
+  // untouched (already decayed to 1) for lateral dashes, per spec.
+  es.dashScalePulse += (1 - es.dashScalePulse) * Math.min(1, dt * ESCAPE_DASH_SCALE_PULSE_DECAY_RATE);
 
   // 11TH ROUND (items 1-4): the always-on 5-frame RUN LOOP — cycles
   // continuously for as long as ESCAPE is running, completely independent
@@ -3423,13 +3494,30 @@ function applyForwardDelta(forwardDelta) {
   // rendered at the intended close distance. Only the player's own forward
   // walking is gated by this floor now; ROID/ADAM SPHERE (non-claw types)
   // are unaffected, matching their unchanged existing behavior.
-  const isClawIdle = (e.type === 'gabriel' || e.type === 'adam') ? e.attackState === 'idle' : true;
-  if (isClawIdle) {
-    const zMin = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (e.type === 'adam' ? ADAM_NORMAL_Z_MIN : approachZMinForRoid());
-    e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
-  } else if (e.type !== 'gabriel' && e.type !== 'adam') {
-    const zMin = approachZMinForRoid();
-    e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
+  // 13TH ROUND (item 2, real-device fix): this whole player-driven z-floor
+  // represents "the PLAYER is walking toward/away from the enemy on foot" —
+  // a COMBAT-only concept. In ESCAPE, forwardDelta is the automatic,
+  // always-on, non-player-driven auto-scroll (ESCAPE_AUTO_SCROLL_SPEED,
+  // now 2x as of Round 12), so this same clamp was running every single
+  // ESCAPE frame for every non-claw type (isClawIdle was unconditionally
+  // true for them, so it was NEVER gated by attackState) and continuously
+  // dragging e.z toward ENEMY_Z_MAX during the enemy's OWN attack windup —
+  // verified live: z climbed ~890->1500 over the course of a single
+  // sniper/missile attack sequence, receding the enemy to a tiny, distant
+  // speck exactly while it was supposed to be attacking. ESCAPE already has
+  // its own dedicated z owner, updateEscapeEnemyPursuit() (oscillates while
+  // idle, freezes during any attack — the exact "attack owns z exclusively"
+  // rule COMBAT's claw types already follow), so this block is simply
+  // skipped in ESCAPE and left entirely to that system.
+  if (state.gameMode !== 'escape') {
+    const isClawIdle = (e.type === 'gabriel' || e.type === 'adam') ? e.attackState === 'idle' : true;
+    if (isClawIdle) {
+      const zMin = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (e.type === 'adam' ? ADAM_NORMAL_Z_MIN : approachZMinForRoid());
+      e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
+    } else if (e.type !== 'gabriel' && e.type !== 'adam') {
+      const zMin = approachZMinForRoid();
+      e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
+    }
   }
 }
 
@@ -4561,20 +4649,22 @@ function updateParticles(dt) {
 // PART 3 (3rd round): FLASHLIGHT is its own independent LEFT-STICK-driven
 // point again (round 2's "merged view" is retired) — resting at the same
 // default point it always has (screen-center-ish, slightly below horizon).
+// 13TH ROUND (items 9-19, real-device fix): LIGHT CENTER is now a genuine
+// PERSISTENT POSITION (p.lightPersistX/Y) — the LEFT STICK moves it (as a
+// velocity, see updatePlayer()'s manual branch) and it simply STAYS where
+// it was left when the stick returns to neutral, never recentering. FOCUS
+// (autoAimActive) drives the SAME field directly toward the current
+// effective-hit point (updatePlayer()'s autoAimActive branch) — there is
+// only ever ONE light-position variable, matching AIM's own aimLiveX/Y
+// architecture, so the two can never compete or fight over LIGHT's
+// position.
 function getFlashlightCenter() {
-  const lx = clampAxis(state.input.lightX) * LIGHT_RANGE;
-  const ly = clampAxis(state.input.lightY) * LIGHT_RANGE;
   const p = state.player;
-  // 12TH ROUND (items 57-58): lightFocusOffsetX/Y is FOCUS's persistent
-  // pull toward the current effective-hit point (see updatePlayer()'s
-  // autoAimActive branch) — additive on top of the raw stick/touch light
-  // position, never overwriting manual control.
   return {
-    x: state.centerX + lx + (p.lightFocusOffsetX || 0),
-    y: state.horizonY + state.cssH * 0.06 + ly + (p.lightFocusOffsetY || 0),
+    x: state.centerX + p.lightPersistX,
+    y: state.horizonY + state.cssH * 0.06 + p.lightPersistY,
   };
 }
-function clampAxis(v) { return Math.max(-1, Math.min(1, v)); }
 
 // PART 5/6 (3rd round): AIM's own resting point is the player's own
 // screen-space centerline (X, tracks strafeOffset as the player moves) at
@@ -5332,8 +5422,13 @@ function renderEscapePlayer() {
   // the SAME target height at the CURRENT depth (the ±2% cross-frame cap
   // from the 11th round is preserved exactly; only the baseline itself now
   // tracks es.depthPos).
+  // 13TH ROUND (item 1): dashScalePulse multiplies ON TOP of the existing
+  // depth-based perspective scale — never replaces it — and decays back to
+  // 1 on its own (see updateEscapePlayer()), so a South/North DASH reads as
+  // a brief +-2% snap layered on whatever depth scale was already in
+  // effect, then a clean return to that same normal scale.
   const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST
-    * perspectiveScaleFromDepth(es.depthPos, ESCAPE_DEPTH_SCALE_RANGE);
+    * perspectiveScaleFromDepth(es.depthPos, ESCAPE_DEPTH_SCALE_RANGE) * es.dashScalePulse;
   const bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
   // 11TH ROUND (item 4): the old SOUTH_PULSE_AMPLITUDE (~3%) "breathing"
   // scale pulse is REMOVED for this new loop — it existed only because the
@@ -5352,14 +5447,25 @@ function renderEscapePlayer() {
   const dx = cx - frame.wheelCenterXFrac * drawW;
   const dy = bottomY - frame.wheelBottomFrac * drawH;
 
-  // 11TH ROUND (item 7): DASH blink — reuses p.invincibleUntil, the SAME
-  // i-frame window updateEscapePlayer() now sets on any instant DASH (no
-  // second blink/invulnerability system). A short on/off flicker (toggling
-  // every 60ms of REAL time, not rAF count) that is never long enough to
-  // lose track of the player's position, per item 7's explicit "操作位置
-  // が分からなくなるほど長時間消さないでください".
+  // 11TH ROUND (item 7) / 13TH ROUND (items 7-8): DASH blink — reuses
+  // p.invincibleUntil, the SAME i-frame window updateEscapePlayer() sets on
+  // any instant DASH (no second blink/invulnerability system). Redesigned
+  // this round to be DASH-START-ANCHORED (phase from elapsed-since-dash,
+  // never raw wall-clock modulo) with an explicit ESCAPE_DASH_BLINK_CYCLES
+  // count, so the number of visible->invisible flashes is deterministic —
+  // with CYCLES=1: visible for the first half of ESCAPE_DASH_BLINK_MS, one
+  // deliberate fade for the second half, then normal display resumes the
+  // instant invincibility ends. Still never long enough to lose track of
+  // the player's position, per item 7's original "操作位置が分からなくな
+  // るほど長時間消さないでください".
   const blinking = now < p.invincibleUntil;
-  if (blinking && Math.floor(now / ESCAPE_DASH_BLINK_TOGGLE_MS) % 2 === 0) return; // skip this frame's draw — the "off" half of the blink
+  if (blinking) {
+    const dashStartAt = p.invincibleUntil - ESCAPE_DASH_BLINK_MS;
+    const elapsed = now - dashStartAt;
+    const cycleMs = ESCAPE_DASH_BLINK_MS / (ESCAPE_DASH_BLINK_CYCLES * 2);
+    const phase = Math.floor(elapsed / cycleMs) % 2;
+    if (phase === 1) return; // skip this frame's draw — the single "off" half of the blink
+  }
   ctx.drawImage(frame.img, dx, dy, drawW, drawH);
 }
 
@@ -6421,4 +6527,9 @@ window.__darkoutTps = {
   MISSILE_TARGET_BASE_WORLD_Z, MISSILE_TARGET_WORLD_Z_RANGE,
   MISSILE_PROJECTILE_START_HEIGHT, MISSILE_PROJECTILE_HIT_RADIUS_PX,
   AMBIENT_FLOOR_CRAWL_SPEED, ENEMY_LANE_TRACK_MULT,
+  // 13TH ROUND: DASH scale pulse, ESCAPE attack-gate fix, blink-count
+  // redesign, LIGHT persistent-position — exposed for automated testing
+  // only.
+  ESCAPE_DASH_SCALE_PULSE_DECAY_RATE, ESCAPE_DASH_BLINK_CYCLES,
+  ESCAPE_ATTACK_FREQ_MULT, LIGHT_MOVE_SPEED_PX_S, updatePlayer,
 };
