@@ -321,6 +321,29 @@ const CLAW_RECOVERY_MS = 900;
 const GABRIEL_STALK_Z = GABRIEL_NORMAL_Z_MIN + 180;
 const ADAM_STALK_Z = ADAM_NORMAL_Z_MIN + 180;
 const CLAW_STALK_SPEED = 40; // world-z units/sec of autonomous idle approach
+// 14TH ROUND (items 9-11): DRONE/ROID1/ROID2/ADAM SPHERE (non-claw types)
+// spawn at e.z===900 (spawnEnemy()) and, unlike GABRIEL/ADAM (CLAW_STALK_SPEED
+// above, added 10TH ROUND), had no autonomous way to ever close that gap —
+// only the player's OWN forward walk ever decreased e.z, and the idle->attack
+// gate requires e.z < 900 STRICTLY. A player who doesn't walk forward left
+// e.z pinned at exactly 900 forever, so the enemy could never even begin an
+// attack roll (confirmed via live measurement: z stayed at 900 for 3+
+// straight seconds of idle play with zero drift, in COMBAT). Same
+// autonomous-creep pattern as CLAW_STALK_SPEED, applied to non-claw types.
+const ENEMY_IDLE_APPROACH_SPEED = 40; // world-z units/sec, COMBAT-mode only (see updateEnemy())
+// 14TH ROUND (items 5-8): compressed chain-explosion, ported from ACTION-
+// GAME's (DARKOUT 1's) own boss-death explosion pattern — updateRoidDeath()/
+// updateAdamSphereCombat()'s "targetCount = min(COUNT, floor(elapsed/WINDOW*
+// COUNT)+1), spawn while spawned<targetCount, scatter around a center" time-
+// driven progressive-spawn algorithm — the SAME shape, reused rather than
+// inventing a new effect from scratch, but compressed from that codebase's
+// ~1300-5000ms boss-death chains down to ~900ms for a normal attack impact
+// (spec: "バババババッ", read instantly, not a spectacle). Reuses this
+// game's OWN existing particle types (explosionFlash/spark/smoke/shockwave)
+// rather than porting ACTION-GAME's separate particle engine literally.
+const EXPLOSION_CHAIN_COUNT = 6;
+const EXPLOSION_CHAIN_WINDOW_MS = 900;
+const EXPLOSION_CHAIN_SCATTER_PX = 30; // base scatter radius, scaled by e.explosionChainScale
 const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, never actually reached in practice
 // Enemy sprite height expressed in the SAME world-unit space the corridor
 // projection uses (see project()), so proj.scale converts it to pixels
@@ -801,6 +824,30 @@ const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
 // by accident (deadzone/idle drift alone won't clear 95px).
 const CLAW_HIT_RANGE_PX = 95;
 
+// 14TH ROUND (items 22-43): GABRIEL/ADAM-only DEFENSE/re-aim/COUNTER system.
+// Investigated first (see ASSETS.adam's own 5TH-round comment: "ACTION-
+// GAME's fuller DEFENSE/counter-attack system for ADAM is NOT ported — out
+// of this round's scope"): ACTION-GAME's GABRIEL/ADAM boss has a real
+// DEFENSE state (boss.state==='defense') and a forced COUNTER at
+// WEAKPOINT_FORCED_COUNTER_HITS=5 total weak-point hits — this round adapts
+// that SAME design pattern (accumulate real hits -> forced counter at a
+// hit total) rather than inventing an unrelated mechanic, scaled down to
+// this game's simpler single-hitbox CLAW system (no separate weak point/
+// guard-break/ARC-CLAW/DARK-PHASE machinery — out of scope here). ROID1/
+// ROID2's own, completely separate 80/60/40/20 counter-phase system
+// (ROID_COUNTER_THRESHOLDS et al.) is NEVER touched by any of this — see
+// item 42 / the isClawBoss guards throughout.
+const GABRIEL_ADAM_DEFENSE_HIT_CYCLE = 2; // real hits accepted before DEFENSE begins (3rd+ within the same cycle deals 0)
+const GABRIEL_ADAM_COUNTER_TOTAL_HITS = 5; // total real (re-armed) hits -> forced COUNTER, mirrors ACTION-GAME's WEAKPOINT_FORCED_COUNTER_HITS
+const GABRIEL_ADAM_DAMAGE_INTERVAL_MS = 300; // minimum ms between damage-eligible hits — item 27
+// item 39: horizontal re-aim threshold, chosen relative to FLASHLIGHT_BASE_
+// RADIUS/AIM's own reachable range inside LIGHT (see getAimPoint()) — half
+// the LIGHT radius is a deliberate, clearly-not-jitter move that still stays
+// reachable without also having to reposition LIGHT itself.
+const GABRIEL_ADAM_REAIM_THRESHOLD_PX = FLASHLIGHT_BASE_RADIUS * 0.5;
+const GABRIEL_ADAM_DEFENSE_MS = 1100; // item 36: bounded, non-permanent — always exits back to normal battle (or into COUNTER at 5 hits)
+const GABRIEL_ADAM_COUNTER_APPROACH_MS = 260; // fast, visibly-tweened lunge — never an instant teleport (item 38)
+
 const ENEMY_TURN_COOLDOWN_MS = 850; // "heavy mech" — can't re-flip facing more often than this
 const ENEMY_TURN_HYSTERESIS_PX = 36; // player must cross this far past center before a flip is even considered
 
@@ -966,6 +1013,12 @@ const r10DebugState = DEBUG_MODE ? {
   lastDamageAt: 0,
   inputMode: 'controller', // set from handleModeSelect()
   log: [], // capped ring buffer of {t, text}
+  // 14TH ROUND (items 43-44): edge-triggered FIRE INPUT/FIRE BLOCKED logging
+  // state — see fireWeapon()'s own comment. null = nothing currently logged
+  // for this held-FIRE press (reset on release); otherwise the last reason
+  // actually written to the log ('INPUT', 'COVER', 'RELOADING', 'NO AMMO',
+  // 'COOLDOWN', or 'FIRED').
+  lastFireLogReason: null,
 } : null;
 
 // Event-driven only (FIRE input, shot created/rejected, hit, miss, damage
@@ -2540,7 +2593,28 @@ function pollGamepad(now) {
     // DEBUG panel, regardless of gameStarted/mode. Never read by any
     // control-flow logic.
     for (let i = 0; i < b.length; i++) {
-      if (pressed(i) && !prev[i]) { state.lastGamepadButtonIndex = i; state.lastGamepadInputAt = now || 0; break; }
+      if (pressed(i) && !prev[i]) {
+        state.lastGamepadButtonIndex = i; state.lastGamepadInputAt = now || 0;
+        // 14TH ROUND (items 12-14): root cause — tryStartBgm() was only ever
+        // called from ONE place (handleModeSelect(), on the very first mode-
+        // select click), despite its own comment describing a "first genuine
+        // input" design meant to retry from ANY subsequent pointerdown/
+        // keydown/gamepad-button press. That retry wiring never actually
+        // existed in code, so if the single mode-select attempt's play()
+        // didn't stick (a real-device-only timing/autoplay-policy race this
+        // headless test environment could not reproduce — Playwright/
+        // Chromium played BGM correctly on the very first attempt every
+        // time), BGM stayed permanently silent for the whole session, since
+        // nothing ever called tryStartBgm() again. This restores that missing
+        // retry path for CONTROLLER players (who may never touch the
+        // screen). tryStartBgm() itself is unconditionally safe to call
+        // repeatedly (the existing bgmStarted guard makes every call after
+        // the real first successful start a no-op) — never reverts the
+        // non-blocking BGM loading, never risks a second overlapping
+        // instance.
+        if (!bgmStarted) tryStartBgm();
+        break;
+      }
     }
 
     // 6TH ROUND PART 9 fix: the mode-select trigger (any first button press
@@ -2936,6 +3010,34 @@ function tryStartBgm() {
     }
   }
 }
+
+// 14TH ROUND (items 12-14): the comment above has always described
+// tryStartBgm() as retrying from "a touch/mouse pointerdown, a keydown, or
+// the first detected gamepad button press" — but until this round, the ONLY
+// real call site was the single tryStartBgm() inside handleModeSelect()
+// (the gamepad-button retry was added to pollGamepad() above this round;
+// these two listeners are the touch/mouse/keyboard half of the same fix).
+// Root cause of "実機で音が全く鳴らない": if that one mode-select-click
+// attempt's play() didn't result in genuinely-started playback (a real-
+// device-only autoplay-policy/timing race — this could not be reproduced in
+// headless Chromium/Playwright testing, where BGM played correctly on the
+// very first attempt every time), NOTHING ever called tryStartBgm() again
+// for the rest of the session, leaving it permanently silent despite
+// bgmAudioEl itself being perfectly valid. tryStartBgm() is safe to call
+// repeatedly (bgmStarted guards every call after the real first success into
+// a no-op — never a second overlapping instance, never reverts the non-
+// blocking BGM loading), so these listeners simply keep giving it more
+// chances until one sticks, then remove themselves.
+function bgmRetryOnGesture() {
+  if (bgmStarted) {
+    window.removeEventListener('pointerdown', bgmRetryOnGesture);
+    window.removeEventListener('keydown', bgmRetryOnGesture);
+    return;
+  }
+  tryStartBgm();
+}
+window.addEventListener('pointerdown', bgmRetryOnGesture, { passive: true });
+window.addEventListener('keydown', bgmRetryOnGesture);
 
 // 6TH ROUND PART 7/8/9/10: replaces the 5th round's "any input starts the
 // game" handleFirstGesture() with an explicit MODE SELECT screen (spec:
@@ -3701,6 +3803,59 @@ function getMissileProjectileVisual(e) {
   };
 }
 
+// 14TH ROUND (items 5-8): spawns ONE scattered burst of the chain — a small
+// offset from the true impact point (upper-left/right/center/lower-right
+// etc., per spec: "決して1点から同じ形で", "本当の着弾点から大きく離れない"),
+// Y-flattened for floor perspective (mirrors ACTION-GAME's own radius*0.6
+// pattern). burstIndex 0 is always dead-center (the instant, legible "着弾
+// した" read); later indices scatter.
+function spawnExplosionChainBurst(e, now, burstIndex) {
+  const sc = e.explosionChainScale || 1;
+  let ox = 0, oy = 0;
+  if (burstIndex > 0) {
+    const ang = Math.random() * Math.PI * 2;
+    const r = (0.35 + Math.random() * 0.65) * EXPLOSION_CHAIN_SCATTER_PX * sc;
+    ox = Math.cos(ang) * r;
+    oy = Math.sin(ang) * r * 0.55; // flattened to read as sitting on the floor
+  }
+  const x = e.explosionChainX + ox;
+  const y = e.explosionChainY + oy;
+  const big = burstIndex === 0;
+  spawnParticle({ type: 'explosionFlash', x, y, r: (big ? 34 : 20 + Math.random() * 10) * sc, born: now, until: now + 130 });
+  for (let i = 0; i < (big ? 3 : 2); i++) {
+    spawnParticle({ type: 'spark', x: x + (i - 1) * 8, y, born: now, until: now + 180 + i * 30 });
+  }
+  spawnParticle({ type: 'smoke', x, y, r: (big ? 26 : 16 + Math.random() * 8) * sc, born: now, until: now + 380 });
+  // Only the FIRST burst gets the expanding floor SHOCKWAVE ring (one ring
+  // per impact reads clearly; six overlapping rings would just look like
+  // one soup) — later bursts stay small blasts/flash/sparks/smoke only.
+  if (big) {
+    spawnParticle({ type: 'shockwave', x, y, r: 40 * sc, born: now, until: now + 260 });
+  }
+}
+
+// 14TH ROUND (items 5-8): the per-frame driver that spreads the remaining
+// EXPLOSION_CHAIN_COUNT-1 scattered bursts across EXPLOSION_CHAIN_WINDOW_MS
+// of REAL time — resolveMissileImpact() only fires burst 0 synchronously
+// (attackState's own 'impact'/'cooldown' window is far shorter than ~900ms),
+// so this must be ticked every frame independent of attackState, from
+// frame() directly, exactly like updateParticles(). Called for every enemy
+// type (only ever does anything while e.explosionChainActive is true, which
+// only 'missile'-kind impacts ever set).
+function updateExplosionChain(now) {
+  const e = state.enemy;
+  if (!e.explosionChainActive) return;
+  const elapsed = now - e.explosionChainStartAt;
+  const targetCount = Math.min(EXPLOSION_CHAIN_COUNT, Math.floor((elapsed / EXPLOSION_CHAIN_WINDOW_MS) * EXPLOSION_CHAIN_COUNT) + 1);
+  while (e.explosionChainSpawned < targetCount) {
+    spawnExplosionChainBurst(e, now, e.explosionChainSpawned);
+    e.explosionChainSpawned++;
+  }
+  if (elapsed >= EXPLOSION_CHAIN_WINDOW_MS) {
+    e.explosionChainActive = false;
+  }
+}
+
 function resolveMissileImpact(now) {
   const e = state.enemy;
   const p = state.player;
@@ -3713,20 +3868,20 @@ function resolveMissileImpact(now) {
   // moved out of the (frozen, visible-in-advance) target ellipse does.
   const inSplash = dist < 62;
 
-  spawnParticle({ type: 'explosionFlash', x: e.missileTargetX, y: e.missileTargetY, r: 34, born: now, until: now + 130 });
-  for (let i = 0; i < 3; i++) {
-    spawnParticle({ type: 'spark', x: e.missileTargetX + (i - 1) * 10, y: e.missileTargetY, born: now, until: now + 200 + i * 30 });
-  }
-  spawnParticle({ type: 'smoke', x: e.missileTargetX, y: e.missileTargetY, r: 26, born: now, until: now + 420 });
-  // 8TH ROUND (items 21/22/29): new floor-anchored expanding SHOCKWAVE ring
-  // — the concrete missing piece the warning->impact sequence needed (the
-  // OTHER particles above already existed and were already floor-anchored
-  // at e.missileTargetX/Y, never the player's own position — unchanged).
-  // Spawned here regardless of invincible/inSplash below, exactly like the
-  // existing explosionFlash/spark/smoke: the floor visibly explodes at the
-  // target point even when the player dodged out of it, per spec (a
-  // dodge is confirmed by "the floor still explodes, but no damage/blink").
-  spawnParticle({ type: 'shockwave', x: e.missileTargetX, y: e.missileTargetY, r: 40, born: now, until: now + 260 });
+  // 14TH ROUND (items 5-8): start the compressed chain-explosion — freeze
+  // the center at the real impact point NOW (never re-derived later, so it
+  // can never drift/track anything), fire the first (biggest, centered)
+  // burst immediately for an instant "着弾した" read, then let
+  // updateExplosionChain() spread EXPLOSION_CHAIN_COUNT-1 more scattered
+  // bursts across the following ~900ms.
+  e.explosionChainX = e.missileTargetX;
+  e.explosionChainY = e.missileTargetY;
+  e.explosionChainScale = e.missileTargetScale || 1;
+  e.explosionChainActive = true;
+  e.explosionChainStartAt = now;
+  e.explosionChainSpawned = 0;
+  spawnExplosionChainBurst(e, now, 0);
+  e.explosionChainSpawned = 1;
 
   if (invincible) {
     showCenterMsg('AVOIDED', '#7fffb0');
@@ -3866,6 +4021,23 @@ function spawnEnemy(type) {
   e.deathState = 'alive';
   e.deathStartedAt = 0;
   e.deathUntil = 0;
+  // 14TH ROUND (items 5-8): chain-explosion state — see updateExplosionChain()
+  e.explosionChainActive = false;
+  e.explosionChainStartAt = 0;
+  e.explosionChainSpawned = 0;
+  e.explosionChainX = 0;
+  e.explosionChainY = 0;
+  e.explosionChainScale = 1;
+  // 14TH ROUND (items 22-43): GABRIEL/ADAM DEFENSE/re-aim/COUNTER state —
+  // see updateBullets()/updateEnemy()'s 'claw' branch. Field names per the
+  // spec's own suggestion (item 29). No-ops for every non-claw type (never
+  // read outside the isClawBoss-guarded branches).
+  e.hitInCurrentDefenseCycle = 0;
+  e.defenseHitsTotal = 0;
+  e.damageAimArmed = true; // armed from a fresh spawn — the very first hit always counts
+  e.lastDamageAimX = null;
+  e.aimMovedAwaySinceHit = false;
+  e.lastDamageHitAt = 0;
 }
 
 // PART 10/11: ENEMY SELECT entry point. AUTO starts the AUTO_SEQUENCE from
@@ -4011,6 +4183,15 @@ function updateEnemy(dt, now) {
       if (e.z > stalkFloor) {
         e.z = Math.max(stalkFloor, e.z - CLAW_STALK_SPEED * dt);
       }
+    } else if (state.gameMode === 'combat') {
+      // 14TH ROUND (items 9-11): see ENEMY_IDLE_APPROACH_SPEED above — the
+      // same autonomous-creep fix as GABRIEL/ADAM got in the 10TH ROUND,
+      // applied to DRONE/ROID1/ROID2/ADAM SPHERE. COMBAT-mode only: ESCAPE
+      // already owns e.z for these types via updateEscapeEnemyPursuit().
+      const zMin = approachZMinForRoid();
+      if (e.z > zMin) {
+        e.z = Math.max(zMin, e.z - ENEMY_IDLE_APPROACH_SPEED * dt);
+      }
     }
     if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500 * enemyAttackFreqMult(e.type);
     if (now >= e.nextIdleCheckAt && e.z < 900) {
@@ -4129,6 +4310,65 @@ function updateEnemy(dt, now) {
       }
     } else if (e.attackState === 'cooldown') {
       if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (900 + Math.random() * 1400) * enemyAttackFreqMult(e.type); }
+    } else if (e.attackState === 'defense') {
+      // 14TH ROUND (items 22-39): triggered directly from updateBullets() the
+      // instant hitInCurrentDefenseCycle reaches GABRIEL_ADAM_DEFENSE_HIT_CYCLE
+      // — DAMAGE=0 unconditionally while here (see updateBullets()'s own
+      // isClawBoss gate). Bounded, non-permanent (item 36): always exits back
+      // to normal battle after GABRIEL_ADAM_DEFENSE_MS, UNLESS the 5-hit total
+      // was already reached, in which case it skips straight to the forced
+      // COUNTER instead of resuming normal battle.
+      if (now >= e.attackUntil) {
+        if (e.defenseHitsTotal >= GABRIEL_ADAM_COUNTER_TOTAL_HITS) {
+          e.attackState = 'counterApproach';
+          e.attackUntil = now + GABRIEL_ADAM_COUNTER_APPROACH_MS;
+          e.clawApproachStartZ = e.z;
+          e.invulnerable = true; // item 31: INVULNERABLE through the approach+attack, cleared the instant the attack resolves (item 37)
+        } else {
+          e.attackState = 'cooldown';
+          e.attackUntil = now + CLAW_COOLDOWN_MS;
+        }
+      }
+    } else if (e.attackState === 'counterApproach') {
+      // item 38: a visibly fast lunge toward the player, never an instant
+      // teleport — same eased-tween shape the normal 'approach' sub-state
+      // above already uses, just over its own (shorter) duration.
+      const zMin = e.type === 'gabriel' ? GABRIEL_Z_MIN : ADAM_Z_MIN;
+      const tNorm = clamp(1 - (e.attackUntil - now) / GABRIEL_ADAM_COUNTER_APPROACH_MS, 0, 1);
+      const eased = 1 - Math.pow(1 - tNorm, 2);
+      e.z = e.clawApproachStartZ + (zMin - e.clawApproachStartZ) * eased;
+      if (now >= e.attackUntil) {
+        e.z = zMin;
+        e.attackState = 'counterAttack';
+        e.attackUntil = now + CLAW_WINDUP_MS; // reuses the SAME windup reaction-window duration/warning-ring the normal attack already uses
+      }
+    } else if (e.attackState === 'counterAttack') {
+      // Close-range attack (item 32/33): GABRIEL reuses its existing CLAW hit-
+      // test/impact resolution EXACTLY (same CLAW_HIT_RANGE_PX/DASH-avoidance
+      // rule, same CLAW_DAMAGE) rather than a second, parallel attack system
+      // — ADAM shares the identical code path (it already reuses GABRIEL's
+      // CLAW machinery everywhere else in this file).
+      if (now >= e.attackUntil) {
+        const rect = computeEnemyDrawRect();
+        const playerScreenX = state.centerX + p.strafeOffset;
+        const lateralDist = Math.abs(playerScreenX - rect.cx);
+        const outOfRange = lateralDist > CLAW_HIT_RANGE_PX;
+        const dashInvincible = now < p.invincibleUntil;
+        if (!outOfRange && !dashInvincible) {
+          p.hp = Math.max(0, p.hp - CLAW_DAMAGE);
+          p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
+        } else {
+          showCenterMsg(dashInvincible ? 'AVOIDED' : 'MISS', '#7fffb0');
+        }
+        // item 37: invulnerability ends the instant the attack itself
+        // resolves — never lingers through the recovery tail below.
+        e.invulnerable = false;
+        e.defenseHitsTotal = 0;
+        e.hitInCurrentDefenseCycle = 0;
+        e.attackState = 'recovery'; // reuses the existing recovery->cooldown->idle tail unchanged
+        e.attackUntil = now + CLAW_RECOVERY_MS;
+        e.clawApproachStartZ = e.z;
+      }
     }
     return;
   }
@@ -4263,10 +4503,16 @@ function computeEnemyDrawRect() {
     // idle image here — its "alive" motion cue is a Canvas-only body-bob
     // applied in renderEnemy() instead, never a fabricated/alternating hack.
     const isWalking = e.attackState === 'idle';
+    // 14TH ROUND (items 22-39): DEFENSE/COUNTER pose reuse — no new image
+    // assets fabricated ("新しい画像は生成しないでください"). DEFENSE and the
+    // COUNTER lunge (counterApproach) both reuse the existing claw-raised
+    // windup art (already reads as a guarded/ready stance); the COUNTER's
+    // actual strike (counterAttack) reuses the existing swing-connecting
+    // release art — the exact same images 'telegraph'/'impact' already use.
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
-      : (e.attackState === 'telegraph' ? set.windup
-        : (e.attackState === 'impact' ? set.release
+      : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach' ? set.windup
+        : (e.attackState === 'impact' || e.attackState === 'counterAttack' ? set.release
         : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle)));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 2.6;
@@ -4386,7 +4632,25 @@ function fireWeapon(now) {
   // never just the first. Completely inert on a normal URL (DEBUG_MODE
   // false short-circuits every line below before r10DebugState — which is
   // null — is ever touched).
-  if (DEBUG_MODE) { r10DebugState.fireCallCount++; r10DebugLog('FIRE INPUT'); }
+  // 14TH ROUND (items 43-44): fireCallCount/fireRejectCount/fireRejectReason
+  // below are running DIAGNOSTIC COUNTERS (read live by the DEBUG panel) and
+  // keep updating every single call exactly as before — gameplay/diagnostic
+  // behavior is unchanged. Only the r10DebugLog() CALLS (the lines that
+  // actually get pushed into the ring-buffer EVENT LOG) are now gated to
+  // fire once per REASON TRANSITION via r10DebugState.lastFireLogReason,
+  // not once per frame — real-device report: holding FIRE during RELOAD was
+  // writing a fresh 'FIRE INPUT'/'FIRE BLOCKED: RELOADING' pair every ~16ms,
+  // flooding the 60-entry ring buffer with duplicate noise. The reason is
+  // reset to null (so the next distinct press logs 'FIRE INPUT' fresh again)
+  // wherever FIRE stops being held — see frame()'s own reset next to the
+  // `if (state.input.fireHeld) fireWeapon(ts);` call.
+  if (DEBUG_MODE) {
+    r10DebugState.fireCallCount++;
+    if (r10DebugState.lastFireLogReason === null) {
+      r10DebugLog('FIRE INPUT');
+      r10DebugState.lastFireLogReason = 'INPUT';
+    }
+  }
   // 9TH ROUND (item 9): FIRE is now blocked entirely while the player is
   // actively using COVER (checked before the reload/ammo guards below, so
   // a COVER-blocked attempt never consumes ammo or starts a reload either)
@@ -4397,7 +4661,10 @@ function fireWeapon(now) {
     if (DEBUG_MODE) {
       r10DebugState.fireRejectCount++;
       r10DebugState.fireRejectReason = 'COVER';
-      r10DebugLog('FIRE BLOCKED: COVER');
+      if (r10DebugState.lastFireLogReason !== 'COVER') {
+        r10DebugLog('FIRE BLOCKED: COVER');
+        r10DebugState.lastFireLogReason = 'COVER';
+      }
     }
     return;
   }
@@ -4405,7 +4672,10 @@ function fireWeapon(now) {
     if (DEBUG_MODE) {
       r10DebugState.fireRejectCount++;
       r10DebugState.fireRejectReason = p.reloading ? 'RELOADING' : 'NO AMMO';
-      r10DebugLog('FIRE BLOCKED: ' + r10DebugState.fireRejectReason);
+      if (r10DebugState.lastFireLogReason !== r10DebugState.fireRejectReason) {
+        r10DebugLog('FIRE BLOCKED: ' + r10DebugState.fireRejectReason);
+        r10DebugState.lastFireLogReason = r10DebugState.fireRejectReason;
+      }
     }
     return;
   }
@@ -4413,10 +4683,14 @@ function fireWeapon(now) {
     if (DEBUG_MODE) {
       r10DebugState.fireRejectCount++;
       r10DebugState.fireRejectReason = 'COOLDOWN';
-      r10DebugLog('FIRE BLOCKED: COOLDOWN (' + Math.ceil(p.fireCooldownUntil - now) + 'ms left)');
+      if (r10DebugState.lastFireLogReason !== 'COOLDOWN') {
+        r10DebugLog('FIRE BLOCKED: COOLDOWN (' + Math.ceil(p.fireCooldownUntil - now) + 'ms left)');
+        r10DebugState.lastFireLogReason = 'COOLDOWN';
+      }
     }
     return;
   }
+  if (DEBUG_MODE) r10DebugState.lastFireLogReason = 'FIRED';
   p.fireCooldownUntil = now + FIRE_COOLDOWN_MS;
   p.ammo -= 1;
   p.lastShotAt = now; // 7TH ROUND PART 15 — drives renderPlayer()'s synced fire-pose pulse
@@ -4502,6 +4776,27 @@ function spawnDashStreak(x, y, dirX, dirY, now) {
   }
 }
 
+// 14TH ROUND (items 27-30): the re-arm tracker for GABRIEL/ADAM's damage-
+// interval rule. Must run every frame (not just at hit-resolve time) since
+// the "AIM moved away, then came back" gesture happens continuously as the
+// player moves RIGHT STICK, independent of when the next shot actually
+// fires. Only ever touches e.damageAimArmed/aimMovedAwaySinceHit for
+// GABRIEL/ADAM — a complete no-op for every other type (lastDamageAimX
+// stays null until their first real hit, see spawnEnemy()/updateBullets()).
+function updateGabrielAdamReaim(now) {
+  const e = state.enemy;
+  if ((e.type !== 'gabriel' && e.type !== 'adam') || e.lastDamageAimX == null) return;
+  const aim = getAimPoint();
+  if (!e.aimMovedAwaySinceHit && Math.abs(aim.x - e.lastDamageAimX) >= GABRIEL_ADAM_REAIM_THRESHOLD_PX) {
+    e.aimMovedAwaySinceHit = true;
+  }
+  const elapsedOk = now - e.lastDamageHitAt >= GABRIEL_ADAM_DAMAGE_INTERVAL_MS;
+  // item 30: 0.3s elapsing ALONE never re-arms — ALL THREE conditions must
+  // hold together: elapsed time, having moved away at some point since the
+  // hit, AND being back on the effective-hit point right now.
+  e.damageAimArmed = elapsedOk && e.aimMovedAwaySinceHit && isAimOnEffectiveHit();
+}
+
 function updateBullets(now) {
   const e = state.enemy;
   for (const b of state.bullets) {
@@ -4581,6 +4876,32 @@ function updateBullets(now) {
       // itself never decreased — not a gauge-only display bug (no gauge
       // existed at all yet either, see the new #enemy-hud markup/updateHud()
       // below). This is the actual fix: apply real damage here.
+      // 14TH ROUND (items 22-43): GABRIEL/ADAM DEFENSE/COUNTER gates — both
+      // checked BEFORE the shared e.invulnerable branch below (COUNTER's own
+      // invulnerable=true would otherwise just fall into that ROID-authored
+      // branch and look identical to a ROID counter-phase block; this keeps
+      // GABRIEL/ADAM's own distinct blocked-hit feedback and re-arm
+      // bookkeeping instead). ROID1/ROID2 never reach here (isClawBoss is
+      // false for them) — item 42.
+      const isClawBoss = e.type === 'gabriel' || e.type === 'adam';
+      if (isClawBoss && (e.attackState === 'defense' || e.attackState === 'counterApproach' || e.attackState === 'counterAttack')) {
+        // item 25-26: visually distinct 0-damage block — a small blue-white
+        // spark burst (reuses the existing 'spark' particle type, just at a
+        // cool tint via a dedicated color, never the plain player-impact
+        // spark alone) rather than a silent HP-side no-op.
+        spawnPlayerImpact(b.x2, b.y2, now);
+        spawnParticle({ type: 'defenseBlock', x: b.x2, y: b.y2, born: now, until: now + 160 });
+        if (DEBUG_MODE) r10DebugLog('DAMAGE BLOCKED: DEFENSE/COUNTER (' + (ENEMY_LABEL[e.type] || e.type) + ' state=' + e.attackState + ')');
+        continue;
+      }
+      if (isClawBoss && !e.damageAimArmed) {
+        // item 27-30: repeated fire at the same point after a hit deals 0
+        // damage until the player has ALSO moved AIM away and re-acquired
+        // the point (not just waited 0.3s) — see updateGabrielAdamReaim().
+        spawnPlayerImpact(b.x2, b.y2, now);
+        if (DEBUG_MODE) r10DebugLog('DAMAGE BLOCKED: NOT RE-ARMED (' + (ENEMY_LABEL[e.type] || e.type) + ')');
+        continue;
+      }
       // 10TH ROUND (items 45/48): ROID1/ROID2 counter-phase invulnerability
       // — a real hit still spawns the impact spark (visual confirmation the
       // shot landed) but HP is untouched while e.invulnerable is true.
@@ -4620,6 +4941,33 @@ function updateBullets(now) {
               if (DEBUG_MODE) r10DebugLog('COUNTER PHASE START (' + (ENEMY_LABEL[e.type] || e.type) + ' @' + Math.round(t * 100) + '%)');
               break;
             }
+          }
+        }
+        // 14TH ROUND (items 22-39): GABRIEL/ADAM 2-hit-then-DEFENSE / 5-hit-
+        // total-forced-COUNTER bookkeeping — this only runs on a hit that
+        // JUST passed both new gates above (a real, re-armed, non-blocked
+        // hit), matching item 24's "1st/2nd hit -> DAMAGE" + item 31's
+        // "5 total real hits -> forced COUNTER" spec exactly.
+        if (isClawBoss && e.hp > 0) {
+          e.hitInCurrentDefenseCycle++;
+          e.defenseHitsTotal++;
+          e.lastDamageHitAt = now;
+          e.damageAimArmed = false;
+          e.lastDamageAimX = b.x2;
+          e.aimMovedAwaySinceHit = false;
+          if (e.defenseHitsTotal >= GABRIEL_ADAM_COUNTER_TOTAL_HITS) {
+            // item 31-32: skip DEFENSE entirely — straight to the forced COUNTER.
+            e.attackState = 'counterApproach';
+            e.attackUntil = now + GABRIEL_ADAM_COUNTER_APPROACH_MS;
+            e.clawApproachStartZ = e.z;
+            e.invulnerable = true;
+            e.hitInCurrentDefenseCycle = 0;
+            if (DEBUG_MODE) r10DebugLog('COUNTER TRIGGERED (' + (ENEMY_LABEL[e.type] || e.type) + ' @' + e.defenseHitsTotal + ' total hits)');
+          } else if (e.hitInCurrentDefenseCycle >= GABRIEL_ADAM_DEFENSE_HIT_CYCLE) {
+            e.attackState = 'defense';
+            e.attackUntil = now + GABRIEL_ADAM_DEFENSE_MS;
+            e.hitInCurrentDefenseCycle = 0;
+            if (DEBUG_MODE) r10DebugLog('DEFENSE TRIGGERED (' + (ENEMY_LABEL[e.type] || e.type) + ')');
           }
         }
         if (e.hp <= 0) startEnemyDeath(now);
@@ -5070,22 +5418,33 @@ function barrelCoverRadiusPx(proj) {
   return BARREL_TOUCH_RADIUS_PX * proj.scale + COVER_TOUCH_SLOP_PX;
 }
 
-function drawOneBarrel(b, proj) {
+// 14TH ROUND (items 15-16): the shadow and the physical barrel body are now
+// split into two separate draw functions. Previously drawOneBarrel() drew
+// BOTH together, and renderBarrelForeground() (below) called it a SECOND
+// time AFTER renderPlayer() to redraw the covering barrel on top of the
+// player for the COVER occlusion effect — which meant the SHADOW also got
+// redrawn a second time, on top of the player, every time the player stood
+// in a barrel's cover footprint (exactly the real-device report: the floor
+// shadow rendering over the player sprite). Root cause: shadow + body were
+// never independent layers. Fix: FLOOR -> BARREL SHADOW -> PLAYER -> (only
+// when in cover) foreground BARREL BODY — the shadow is drawn exactly once,
+// in the pre-player pass, and never again.
+function drawBarrelShadow(b, proj) {
+  if (b.z > BARREL_TOUCH_Z_MAX) return;
+  const shadowR = barrelCoverRadiusPx(proj);
+  const inCover = isPlayerInCover();
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(proj.x, proj.y - 2, shadowR, shadowR * 0.4, 0, 0, Math.PI * 2);
+  ctx.fillStyle = inCover ? 'rgba(10,10,14,0.55)' : 'rgba(8,8,10,0.38)';
+  ctx.filter = 'blur(3px)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBarrelBody(b, proj) {
   const drawH = BARREL_DRAW_H * proj.scale;
   if (drawH < 1.5) return;
-
-  if (b.z <= BARREL_TOUCH_Z_MAX) {
-    const shadowR = barrelCoverRadiusPx(proj);
-    const inCover = isPlayerInCover();
-    ctx.save();
-    ctx.beginPath();
-    ctx.ellipse(proj.x, proj.y - 2, shadowR, shadowR * 0.4, 0, 0, Math.PI * 2);
-    ctx.fillStyle = inCover ? 'rgba(10,10,14,0.55)' : 'rgba(8,8,10,0.38)';
-    ctx.filter = 'blur(3px)';
-    ctx.fill();
-    ctx.restore();
-  }
-
   const img = ASSETS.barrel;
   if (imgReady(img)) {
     const aspect = img.naturalWidth / img.naturalHeight;
@@ -5095,6 +5454,13 @@ function drawOneBarrel(b, proj) {
     ctx.fillStyle = '#6b2a20';
     ctx.fillRect(proj.x - drawH * 0.28, proj.y - drawH, drawH * 0.56, drawH);
   }
+}
+
+function drawOneBarrel(b, proj) {
+  const drawH = BARREL_DRAW_H * proj.scale;
+  if (drawH < 1.5) return;
+  drawBarrelShadow(b, proj);
+  drawBarrelBody(b, proj);
 }
 
 function renderBarrels() {
@@ -5110,6 +5476,9 @@ function renderBarrels() {
 // hidden behind it. This redraws only the specific barrel(s) currently
 // providing cover, on top of the (already-drawn) player, to create real
 // depth/occlusion — never touches barrels the player isn't using.
+// 14TH ROUND (items 15-16): BODY ONLY — the shadow was already drawn once
+// by renderBarrels() before the player, and must never be redrawn here (see
+// drawBarrelShadow()'s comment above).
 function renderBarrelForeground() {
   if (!isPlayerInCover()) return;
   const playerScreenX = state.centerX + state.player.strafeOffset;
@@ -5117,7 +5486,7 @@ function renderBarrelForeground() {
     if (b.z > BARREL_TOUCH_Z_MAX) continue;
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
     const radius = barrelCoverRadiusPx(proj);
-    if (Math.abs(proj.x - playerScreenX) < radius) drawOneBarrel(b, proj);
+    if (Math.abs(proj.x - playerScreenX) < radius) drawBarrelBody(b, proj);
   }
 }
 
@@ -5504,12 +5873,21 @@ function renderEnemy(theme) {
   // explicitly SKIPPED whenever a real hit-flash is already active, so the
   // two never fight for priority on the same frame.
   const attackFlashStates = e.kind === 'claw'
-    ? ['blink', 'telegraph', 'impact']
+    ? ['blink', 'telegraph', 'impact', 'counterApproach', 'counterAttack']
     : ['lock_red', 'lock_yellow', 'fire', 'lockon', 'target', 'impact'];
   const inAttackFlashWindow = ATTACK_FLASH_TYPES.has(e.type)
     && e.deathState === 'alive' && attackFlashStates.includes(e.attackState);
+  // 14TH ROUND (items 25-26): DEFENSE must read as visually distinct from a
+  // normal attack-flash pulse — not "HP just didn't move," a real, different
+  // look (steady cool-blue tint + a thin guard-glow rim), so the player can
+  // tell at a glance "further shots here won't count right now" without
+  // reading the HP bar. Deliberately its own branch, never sharing the
+  // brightness-pulse attackFlashStates treatment above.
+  const inDefense = e.deathState === 'alive' && e.attackState === 'defense';
   if (flashing) {
     ctx.filter = 'brightness(2.2)';
+  } else if (inDefense) {
+    ctx.filter = 'brightness(0.9) saturate(1.4) hue-rotate(175deg)';
   } else if (inAttackFlashWindow) {
     const lit = Math.sin(now / 65) > 0;
     ctx.globalAlpha = lit ? 1 : 0.3;
@@ -5591,12 +5969,16 @@ function renderEnemyTelegraphs(theme) {
   const e = state.enemy;
   const now = performance.now();
 
-  if (e.kind === 'claw' && (e.attackState === 'telegraph' || e.attackState === 'impact')) {
+  if (e.kind === 'claw' && (e.attackState === 'telegraph' || e.attackState === 'impact' || e.attackState === 'counterAttack')) {
     // GABRIEL's melee telegraph is unchanged from before this batch: a
     // simple growing warning ring at the player's position.
+    // 14TH ROUND (items 31-39): COUNTER's own windup reuses this exact same
+    // warning ring (grown over CLAW_WINDUP_MS, same as a normal telegraph)
+    // rather than inventing a second warning visual — a real DASH-avoidable
+    // tell, per item 37/spec ("プレイヤーはDASHで回避可能").
     const m = playerMarkerPos();
     const tRemain = Math.max(0, e.attackUntil - now);
-    const grow = e.attackState === 'telegraph' ? (1 - tRemain / 700) : 1;
+    const grow = (e.attackState === 'telegraph' || e.attackState === 'counterAttack') ? (1 - tRemain / 700) : 1;
     ctx.save();
     ctx.strokeStyle = e.attackState === 'impact' ? '#fff' : theme.warn;
     ctx.lineWidth = 3;
@@ -5664,56 +6046,37 @@ function renderEnemyTelegraphs(theme) {
         ctx.restore();
       }
     } else if (e.attackState === 'target') {
-      // 12TH ROUND (items 20-24): the old "yellow dotted rotating circle"
-      // (8 rim ticks spinning via now*0.0015, fixed screen-pixel radius) is
-      // gone. Replaced with a genuine floor-perspective TARGET AREA driven
-      // by e.missileTargetWorldX/Z -> project() -> e.missileTargetX/Y/Scale
-      // (refreshed every tick by refreshMissileTargetScreenPos(), called
-      // from updateEnemy() above) — radii scale with e.missileTargetScale
-      // so the ellipse reads as sitting ON THE FLOOR at a real world depth,
-      // not a fixed-size screen decal. Visual: semi-transparent glow
-      // ellipse + thin static rim (no rotation) + STATIC converging light
-      // rays pointing in at the impact point (never spinning), brightening
-      // — never flashing — as impact nears. Scoped to 'missile' kind only
-      // (ROID1/ROID2/ADAM SPHERE) — GABRIEL/ADAM's 'claw' telegraph and
-      // SNIPER's lock-box/bolt telegraph are both untouched.
+      // 14TH ROUND (items 1-4): the 12TH ROUND's orange/warm glow ellipse +
+      // rim + 6 converging light rays (real-device report: "茶色/橙色の楕円
+      // +放射状の線", read as a cheap symbolic marker) is gone. Replaced with
+      // a plain, brief, pale white/gray semi-transparent floor shadow —
+      // still driven by the SAME world-space pipeline (e.missileTargetWorldX/
+      // Z -> project() -> e.missileTargetX/Y/Scale, refreshed every tick by
+      // refreshMissileTargetScreenPos() from updateEnemy()), so it still sits
+      // ON THE FLOOR at the real locked world depth and never tracks the
+      // player once locked — only its OWN visual style changed. No rays, no
+      // saturated color, no rotation: a single soft ellipse that brightens
+      // slightly toward impact, kept deliberately understated because the
+      // NEW chain-explosion effect (below, at impact) is where the emphasis
+      // now belongs. Scoped to 'missile' kind only (ROID1/ROID2/ADAM SPHERE)
+      // — GABRIEL/ADAM's 'claw' telegraph and SNIPER's lock-box/bolt
+      // telegraph are both untouched. The PROJECTILE + PROJECTILE SHADOW
+      // block right below this is a SEPARATE, pre-existing system (12TH
+      // ROUND) and must not be confused with this floor-shadow warning.
       const progress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
       const sc = e.missileTargetScale || 1;
-      const rx = (30 + progress * 28) * sc, ry = (12 + progress * 10) * sc;
-      const brighten = 0.5 + 0.5 * progress; // ramps up smoothly toward impact, never flickers
+      const rx = (24 + progress * 10) * sc, ry = (9 + progress * 4) * sc;
+      const brighten = 0.4 + 0.3 * progress; // brief, understated -- never flickers
       ctx.save();
-      const grad = ctx.createRadialGradient(e.missileTargetX, e.missileTargetY, 0, e.missileTargetX, e.missileTargetY, rx);
-      grad.addColorStop(0, 'rgba(255,210,120,' + (0.55 * brighten) + ')');
-      grad.addColorStop(0.55, 'rgba(255,110,40,' + (0.38 * brighten) + ')');
-      grad.addColorStop(1, 'rgba(255,60,30,0)');
-      ctx.fillStyle = grad;
+      ctx.fillStyle = 'rgba(230,230,236,' + (0.28 * brighten) + ')';
       ctx.beginPath();
       ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
       ctx.fill();
-
-      // Thin rim — static, brightening only.
-      ctx.strokeStyle = 'rgba(255,150,70,' + (0.45 + 0.4 * brighten) + ')';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(240,240,245,' + (0.3 + 0.25 * brighten) + ')';
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
       ctx.stroke();
-
-      // Converging light rays — fixed angles (no now*speed rotation term),
-      // drawn from outside the rim inward toward the impact center, longer/
-      // brighter as impact nears.
-      ctx.strokeStyle = 'rgba(255,220,160,' + (0.35 + 0.5 * brighten) + ')';
-      ctx.lineWidth = 1.5;
-      const rayCount = 6;
-      const rayReach = 1.5 + progress * 0.9;
-      for (let i = 0; i < rayCount; i++) {
-        const ang = (i / rayCount) * Math.PI * 2;
-        const ox = Math.cos(ang) * rx * rayReach, oy = Math.sin(ang) * ry * rayReach;
-        const ix = Math.cos(ang) * rx * 0.55, iy = Math.sin(ang) * ry * 0.55;
-        ctx.beginPath();
-        ctx.moveTo(e.missileTargetX + ox, e.missileTargetY + oy);
-        ctx.lineTo(e.missileTargetX + ix, e.missileTargetY + iy);
-        ctx.stroke();
-      }
       ctx.restore();
 
       // 12TH ROUND (items 60-75): the interceptable PROJECTILE + its own
@@ -5799,6 +6162,19 @@ function renderParticles() {
       }
       ctx.fillStyle = 'rgba(255,255,255,' + fadeAlpha + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, 2.5, 0, Math.PI * 2); ctx.fill();
+    } else if (pt.type === 'defenseBlock') {
+      // 14TH ROUND (items 25-26): DEFENSE/COUNTER's own 0-damage block
+      // feedback — a small, brief, cool-blue ring + flat "shield" chord,
+      // deliberately never the warm amber 'spark' (which already means "a
+      // real hit landed") and never a text/symbol glyph. Fades fast, same
+      // lifetime class as 'spark'.
+      ctx.strokeStyle = 'rgba(150,195,255,' + fadeAlpha + ')';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 10 + 6 * (1 - fadeAlpha), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(210,230,255,' + fadeAlpha + ')';
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, 2, 0, Math.PI * 2); ctx.fill();
     } else if (pt.type === 'explosionFlash') {
       ctx.fillStyle = 'rgba(255,255,255,' + fadeAlpha + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.r || 30, 0, Math.PI * 2); ctx.fill();
@@ -5986,6 +6362,18 @@ function isAimOnEffectiveHit() {
   const aim = getAimPoint();
   const rect = computeEnemyDrawRect();
   const e = state.enemy;
+  // 14TH ROUND (items 40-41): RED must never show while GABRIEL/ADAM is in
+  // DEFENSE/COUNTER — firing right now would deal 0 damage (see
+  // updateBullets()'s own isClawBoss gate), and this single shared function
+  // is what BOTH manual AIM and FOCUS's own auto-aim target read (FOCUS
+  // drives LIGHT/AIM toward getEffectiveHitPoint() but never bypasses this
+  // check), so neither path can ever "see through" DEFENSE. Scoped to
+  // GABRIEL/ADAM only — ROID1/ROID2's own counter-phase is untouched
+  // (item 42; it never checked e.invulnerable here before this round either).
+  if ((e.type === 'gabriel' || e.type === 'adam') &&
+      (e.attackState === 'defense' || e.attackState === 'counterApproach' || e.attackState === 'counterAttack')) {
+    return false;
+  }
   // 12TH ROUND (items 60-75, item f): the live falling PROJECTILE is its
   // OWN independently-aimable effective-hit area — checked first so AIM
   // turns RED over it exactly where updateBullets()'s own intercept
@@ -6327,6 +6715,7 @@ function frame(ts) {
       applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
       updateEnemy(dt, ts);
       updateEscapeEnemyPursuit(ts);
+      updateExplosionChain(ts); // 14TH ROUND (items 5-8): outlives the brief attackState impact/cooldown window, so must tick every frame independent of it
       updateParticles(dt); // ESCAPE itself still spawns no particles directly, but the now-active enemy's own attack impacts do (spark/smoke/shockwave) — no longer a pure no-op
       // 9TH ROUND (item 36): real elapsed-time countdown, ticked only while
       // unpaused and the CLEAR SEQUENCE isn't already running (guarded
@@ -6341,9 +6730,20 @@ function frame(ts) {
       applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
       updateEnemy(dt, ts);
       updateBullets(ts);
+      updateGabrielAdamReaim(ts); // 14TH ROUND (items 27-30): must tick every frame, independent of firing, so AIM-moved-away tracking never misses a frame
+      updateExplosionChain(ts); // 14TH ROUND (items 5-8): outlives the brief attackState impact/cooldown window, so must tick every frame independent of it
       updateParticles(dt);
 
-      if (state.input.fireHeld) fireWeapon(ts);
+      if (state.input.fireHeld) {
+        fireWeapon(ts);
+      } else if (DEBUG_MODE && r10DebugState.lastFireLogReason !== null) {
+        // 14TH ROUND (items 43-44): FIRE released — clear the edge-tracking
+        // state so the NEXT press logs a fresh 'FIRE INPUT', per spec ("FIRE
+        // being released" is one of the three things allowed to re-arm the
+        // log). fireWeapon() itself is never called while released, so this
+        // reset can't live there.
+        r10DebugState.lastFireLogReason = null;
+      }
     }
   }
 
@@ -6532,4 +6932,15 @@ window.__darkoutTps = {
   // only.
   ESCAPE_DASH_SCALE_PULSE_DECAY_RATE, ESCAPE_DASH_BLINK_CYCLES,
   ESCAPE_ATTACK_FREQ_MULT, LIGHT_MOVE_SPEED_PX_S, updatePlayer,
+  // 14TH ROUND: COMBAT autonomous idle-approach, chain-explosion, exploded
+  // BARREL SHADOW draw-order, DEBUG log de-spam — exposed for automated
+  // testing only.
+  ENEMY_IDLE_APPROACH_SPEED, updateExplosionChain, resolveMissileImpact,
+  EXPLOSION_CHAIN_COUNT, EXPLOSION_CHAIN_WINDOW_MS,
+  // 14TH ROUND: GABRIEL/ADAM DEFENSE/re-aim/COUNTER, BGM retry — exposed for
+  // automated testing only.
+  updateGabrielAdamReaim, GABRIEL_ADAM_DEFENSE_HIT_CYCLE,
+  GABRIEL_ADAM_COUNTER_TOTAL_HITS, GABRIEL_ADAM_DAMAGE_INTERVAL_MS,
+  GABRIEL_ADAM_REAIM_THRESHOLD_PX, GABRIEL_ADAM_DEFENSE_MS,
+  GABRIEL_ADAM_COUNTER_APPROACH_MS, updateEnemy,
 };
