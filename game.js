@@ -75,6 +75,17 @@ const ENEMY_Z_MAX = 1500;
 // — ROID's own ~247 floor (a live, viewport-height-solved value; see
 // approachZMinForRoid()), satisfying "GABRIELの方がROIDより近づける".)
 const GABRIEL_Z_MIN = 145;
+// 7TH ROUND PART 9 ("GABRIELが通常時に近づきすぎる"): GABRIEL_Z_MIN (145)
+// used to be the SAME floor for both normal player-driven approach
+// (applyForwardDelta()) AND the CLAW attack's own fast-approach target
+// (updateEnemy()'s 'claw' branch) — meaning normal walking could already
+// push GABRIEL all the way to its closest possible distance, leaving the
+// attack's "fast close-the-distance dash" with nothing left to actually
+// close. GABRIEL_NORMAL_Z_MIN is a SEPARATE, larger floor used only for
+// the normal-state approach clamp; GABRIEL_Z_MIN itself is UNCHANGED and
+// still governs the CLAW attack's own approach target/closeBoost render
+// math, so "攻撃時は現在の接近距離でよい" holds exactly as before.
+const GABRIEL_NORMAL_Z_MIN = 260;
 // 5TH ROUND PART 7: ADAM shares GABRIEL's own crop-toward-upper-body
 // approach formula (same "family" boss in ACTION-GAME, same human scale) —
 // given its own, independently-tunable constant rather than literally
@@ -94,6 +105,25 @@ const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, neve
 const ROID_WORLD_HEIGHT = 700; // unchanged value from round 1 (was ENEMY_WORLD_HEIGHT)
 const GABRIEL_WORLD_HEIGHT = 480;
 const ADAM_WORLD_HEIGHT = 480; // 5TH ROUND PART 7: seeded at GABRIEL's own value (same human scale), independently tunable
+// 7TH ROUND PART 5 ("ADAM SPHEREが約2.5倍大きすぎる"): ADAM SPHERE went
+// through the SAME ROID-style render branch as ROID1/ROID2 in
+// computeEnemyDrawRect(), which used to target ROID_WORLD_HEIGHT (700) for
+// EVERY enemy on that code path — i.e. ADAM SPHERE was drawn at the same
+// on-screen size as a giant ROID mech. Given its own target height
+// (=ROID_WORLD_HEIGHT/2.5, per spec's own "現在サイズ÷2.5" guidance),
+// ROID1/ROID2 themselves are completely untouched (they still read
+// ROID_WORLD_HEIGHT directly). Aspect ratio is preserved automatically —
+// computeBodyVisualScale()/the ROID-style branch derive width from the
+// SAME uniform scale factor as height, for whichever real source image is
+// actually drawn.
+const ADAM_SPHERE_WORLD_HEIGHT = ROID_WORLD_HEIGHT / 2.5; // = 280
+// 7TH ROUND PART 7 ("常時回転しているように見せる"): continuous rotation
+// cadence for ADAM SPHERE's own 4 real frames (adam_sphere_01..04.png) —
+// independent of ROID_FIRE_FRAME_MS (which only ever applies to ROID1/
+// ROID2's attack-only FIRE ping-pong). Slower than ROID_FIRE_FRAME_MS
+// (110ms) since this plays constantly, not just during a brief attack
+// flourish — reads as a steady rotation, not a flicker.
+const ADAM_SPHERE_ROTATE_FRAME_MS = 220;
 // 5TH ROUND ROOT CAUSE FIX ("最大接近時、敵の足付近しか見えない"): the old
 // PART4 value (0.92) only ever solved for "drawH equals this fraction of
 // screen height" — it never accounted for WHERE the anchor point (ROID's
@@ -165,7 +195,16 @@ const AIM_RANGE = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower
 const LIGHT_DEADZONE = 0.16;
 const LIGHT_CURVE_POWER = 2.0;
 const AIM_DEADZONE = 0.16;
-const AIM_CURVE_POWER = 2.9; // was 2.6 (2nd round), was 2.2 (1st round)
+// 7TH ROUND PART 10 ("AIMの反応が悪い" investigation): 2.9 heavily
+// suppressed small/medium stick deflections (output ~0.134 at half
+// deflection per the old comment below) — a real, deliberate cause of
+// "細かな操作に反応しない". Eased to 2.2 (between round 1's original 2.2
+// and round 2/3's steeper 2.6/2.9) so low/medium input produces
+// proportionally more output while full deflection still reaches the same
+// max range — a moderate curve change, not a blanket sensitivity hike
+// (AIM_DEADZONE/AIM_RANGE are both unchanged, still the same anti-drift/
+// max-reach bounds as before).
+const AIM_CURVE_POWER = 2.2; // was 2.9 (3rd round), 2.6 (2nd round), 2.2 (1st round)
 
 // PART 5/6 (3rd round): AIM is no longer "flashlight-relative" — it has its
 // own resting point (the player's own screen-space centerline, PART 5) plus
@@ -176,6 +215,28 @@ const AIM_CURVE_POWER = 2.9; // was 2.6 (2nd round), was 2.2 (1st round)
 // comment used to describe was exactly the bug this round was asked to fix.
 const AIM_MANUAL_SPEED = 140; // px/sec, D-PAD-driven height/horizontal trim while LT/RT is held alone
 const AIM_MANUAL_MAX_OFFSET = 70; // px, clamp on each manual-offset axis
+
+// 7TH ROUND PART 12 ("画面端でAIM可動範囲が変わる" investigation): the
+// underlying AIM INPUT (aimLiveX/Y, ±AIM_RANGE) was already confirmed to
+// be completely independent of the player's own screen position/
+// strafeOffset — nothing clamps it against cssW/cssH anywhere. What
+// genuinely does need edge-safety is the FINAL resolved screen point
+// (getAimPoint()'s return value — the same point the crosshair renders at
+// AND fire()/AUTO AIM/hit-testing all read), since baseX itself shifts
+// with strafeOffset and can otherwise carry the reticle very close to (or
+// past) the canvas edge when the player is strafed to an extreme. This
+// margin bounds ONLY that final exported point — never aimLiveX/Y, never
+// AIM_RANGE — so the input range itself is never shrunk, exactly per spec
+// ("入力レンジそのものを縮めることではありません").
+const AIM_SCREEN_SAFE_MARGIN_PX = 26;
+
+// 7TH ROUND PART 11: CONTROLLER-only AIM sensitivity, adjustable from
+// PAUSE (see #aim-sens-row in index.html / the click handlers below).
+// Applied ONLY to the gamepad's own curved aim axis before it's written
+// into state.input.aimX/Y — TOUCH AIM's contribution is read completely
+// unaffected by this, per spec ("TOUCH側とは必要に応じて別管理").
+const AIM_SENSITIVITY_PRESETS = { low: 0.7, normal: 1.0, high: 1.4 };
+let controllerAimSensitivity = AIM_SENSITIVITY_PRESETS.normal;
 
 const FIRE_COOLDOWN_MS = 130;
 const MAG_SIZE = 12;
@@ -214,6 +275,25 @@ const PLAYER_HIT_FLASH_MS = 160;
 // judgment, not player-sprite distance checks — so render size and
 // gameplay judgment are already fully decoupled by construction).
 const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
+// 7TH ROUND PART 14/15/16: FIRE no longer swaps to the separate
+// player_north_fire.png art (which has its own baked-in flash drawn at a
+// DIFFERENT screen position than the procedural muzzle particle, and read
+// as a jarring pose-jump when it stayed on-screen for the whole button
+// hold regardless of the real ~130ms shot cadence). Firing now reuses the
+// SAME north-facing aim image, briefly enlarged, synced to each REAL shot
+// (see fireWeapon()'s p.lastShotAt) instead of the raw held-button state —
+// a held FIRE now visibly pulses normal->enlarged once per actual shot.
+// FIRE_POSE_HOLD_MS is shorter than FIRE_COOLDOWN_MS (130ms) so consecutive
+// shots read as distinct pulses rather than one continuous enlarged pose.
+const FIRE_POSE_HOLD_MS = 90;
+const FIRE_POSE_SCALE_BOOST = 1.12;
+// 7TH ROUND PART 17: the fraction down from the TOP of the player's own
+// drawn sprite rect where the raised-arm/gun sits — read directly off
+// player_north_aim.png/player_north_fire.png (both share the same raised-
+// arm pose), not a guessed absolute pixel offset. Used by
+// computePlayerDrawRect()/fireWeapon() so the muzzle flash/bullet origin
+// tracks the player's ACTUAL on-screen size instead of a fixed formula.
+const MUZZLE_HEIGHT_FRAC = 0.27;
 
 const GAMEPAD_AXIS_DEADZONE = 0.16;
 const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
@@ -240,7 +320,13 @@ const GAMEPAD_SETTLE_MS = 350;
 // AIM_CURVE_POWER above) is completely unchanged — only what the curved
 // output DRIVES (velocity instead of absolute position) is new, per spec
 // ("既存AIM感度について、今回の目的と無関係な大幅変更はしない").
-const AIM_MOVE_SPEED_PX_S = 460;
+// 7TH ROUND PART 10: raised from 460 (still a deliberate, bounded sweep —
+// AIM_RANGE itself is unchanged — not an "extreme sensitivity" jump) so a
+// held full-deflection input catches up to the target noticeably faster,
+// addressing "遅れてついてくる感覚" for BOTH gamepad and touch AIM (touch's
+// own raw -1..1 drag feeds this exact same velocity integration — see
+// updatePlayer()'s AIM section).
+const AIM_MOVE_SPEED_PX_S = 620;
 
 // FOCUS / AUTO AIM (4th round) — LB replaces the retired FLASH action.
 // Bare, testable starting values (spec explicitly says exact balance is
@@ -264,7 +350,15 @@ const DEATH_BURN_MS = 950;    // GABRIEL/ADAM: burn-down/dissolve, see startEnem
 // the minimum new constant required to make hits actually reduce HP. Picked
 // so a fresh 100HP enemy takes ~9 hits (close to one MAG_SIZE=12 magazine).
 const BULLET_DAMAGE = 12;
-const ENEMY_MAX_HP = 100;
+// 7TH ROUND PART 20 ("ボスHPを現在の3倍へ"): this prototype has exactly
+// one enemy-HP concept — ENEMY_MAX_HP — shared by every selectable
+// identity (ROID1/ROID2/GABRIEL/ADAM/ADAM SPHERE). Investigated first:
+// there is no separate "regular enemy"/mob tier anywhere in this repo
+// (DRONE, the only non-boss-scale identity in ENEMY_SELECT_ORDER, has no
+// asset/AI/HP of its own at all — see ENEMY_IMPLEMENTED) — every single
+// entity this constant applies to IS a boss fight, so tripling it here
+// cannot accidentally also triple some other, non-boss enemy's HP.
+const ENEMY_MAX_HP = 100 * 3; // was 100
 
 // ---------------------------------------------------------------------
 // STEALTH — matched to ACTION-GAME's actual DARK OUT implementation
@@ -555,6 +649,12 @@ const ENEMY_DEATH_FAMILY = {
 // this gap — nothing here pretends DRONE/ADAM SPHERE/ADAM are playable.
 const ENEMY_SELECT_ORDER = ['drone', 'roid1', 'roid2', 'gabriel', 'adamSphere', 'adam'];
 const AUTO_SEQUENCE = ENEMY_SELECT_ORDER.filter((t) => ENEMY_IMPLEMENTED[t]);
+// 7TH ROUND PART 22: which enemy types get the attack-time flicker (see
+// renderEnemy()'s inAttackFlashWindow) — explicitly ADAM/GABRIEL/ADAM
+// SPHERE only, per spec. ROID1/ROID2 are deliberately excluded (out of
+// this round's scope) and keep their existing, completely unrelated
+// FIRE-pose visual with no added flicker.
+const ATTACK_FLASH_TYPES = new Set(['adam', 'gabriel', 'adamSphere']);
 
 const ASSETS = {
   player: {
@@ -596,6 +696,16 @@ const ASSETS = {
     idle: loadImg('assets/adam/adam_idle_south.png'),
     windup: loadImg('assets/adam/adam_attack_south.png'),
     release: loadImg('assets/adam/adam_straight_claw.png'),
+    // 7TH ROUND PART 21: the two user-supplied attack images, copied
+    // read-only into assets/adam/ (adam_attack_variant1/2.png). Used ONLY
+    // during ADAM's own telegraph/impact attack frames (see
+    // computeEnemyDrawRect()) in place of windup/release — GABRIEL is
+    // completely untouched and still uses its own gabriel_claw_windup/
+    // release art.
+    attackVariants: [
+      loadImg('assets/adam/adam_attack_variant1.png'),
+      loadImg('assets/adam/adam_attack_variant2.png'),
+    ],
   },
   adamSphere: ADAM_SPHERE_SPRITES,
   barrel: loadImg('assets/objects/barrel.png'),
@@ -663,18 +773,31 @@ const modeSelectScreenEl = document.getElementById('mode-select-screen');
 // or the real frame() loop — PART 14 requires this stay 100% cosmetic and
 // never touch real game state, and this implementation has no code path
 // that could (it only ever writes to a decorative <img>'s src).
-const LOADING_WALK_FRAME_MS = 140; // matches the real player's own walk-frame cadence (see updatePlayer()'s p.walkTimer > 0.14)
+// 7TH ROUND PART 2 ("歩行アニメーションが速すぎる"): the old 140ms cadence
+// directly copied the real player's own IN-GAME walk-frame speed
+// (updatePlayer()'s p.walkTimer > 0.14) — appropriate for actual combat
+// movement, but far too brisk for "暗闇の中を慎重に、警戒しながらゆっくり
+// 歩いている" on the LOADING screen. LOADING_WALK_FRAME_MS is now its own,
+// independent, much slower base cadence (3x), and each step's actual delay
+// is jittered by up to ±LOADING_WALK_JITTER_MS so the tempo reads as
+// deliberate/cautious rather than a perfectly metronomic slow-motion loop
+// — a real setTimeout recursion (not setInterval) so each step can vary.
+const LOADING_WALK_FRAME_MS = 420; // was 140 — no longer tied to the real player's own walk speed
+const LOADING_WALK_JITTER_MS = 70;
 let loadingWalkTimerHandle = null;
 let loadingWalkFrameIndex = 0;
 function startLoadingWalkAnimation() {
   if (loadingWalkTimerHandle !== null) return;
-  loadingWalkTimerHandle = setInterval(() => {
+  const step = () => {
     loadingWalkFrameIndex = (loadingWalkFrameIndex + 1) % ASSETS.player.walk.length;
     loadingWalkSpriteEl.src = ASSETS.player.walk[loadingWalkFrameIndex].src;
-  }, LOADING_WALK_FRAME_MS);
+    const delay = LOADING_WALK_FRAME_MS + (Math.random() * 2 - 1) * LOADING_WALK_JITTER_MS;
+    loadingWalkTimerHandle = setTimeout(step, delay);
+  };
+  loadingWalkTimerHandle = setTimeout(step, LOADING_WALK_FRAME_MS);
 }
 function stopLoadingWalkAnimation() {
-  if (loadingWalkTimerHandle !== null) { clearInterval(loadingWalkTimerHandle); loadingWalkTimerHandle = null; }
+  if (loadingWalkTimerHandle !== null) { clearTimeout(loadingWalkTimerHandle); loadingWalkTimerHandle = null; }
 }
 
 // 6TH ROUND PART 11: wireless-controller purchase link. No real store URL
@@ -834,6 +957,7 @@ const state = {
     reloading: false,
     reloadUntil: 0,
     fireCooldownUntil: 0,
+    lastShotAt: -Infinity, // 7TH ROUND PART 15 — timestamp of the last REAL shot, drives the enlarged fire pose window (see FIRE_POSE_HOLD_MS)
     lastHpFillPct: -1,
     lastAmmoText: '',
     lastStealthText: '',
@@ -1019,6 +1143,19 @@ const STRUCTURE_KINDS = [
   { kind: 'pipe', spacing: 150 },
   { kind: 'panel', spacing: 180 },
   { kind: 'warningLight', spacing: 260 },
+  // 7TH ROUND PART 19 ("LAB/ARMORED/ESCAPEが色違いにしか見えない"): these
+  // 6 kinds are added to the SAME shared pool (recycle/space exactly like
+  // the 8 above via applyForwardDelta()) but renderStructure() only ever
+  // actually draws a given one while state.theme matches its own theme
+  // (see each case's own guard) — real per-theme equipment/signage
+  // silhouettes layered onto the shared corridor skeleton, not a second
+  // color filter over the same 8 generic shapes.
+  { kind: 'labTank', spacing: 340 },     // LAB only: cylindrical experiment tank along the wall
+  { kind: 'labConsole', spacing: 260 },  // LAB only: wall-mounted monitor/console glow
+  { kind: 'armorPlate', spacing: 220 },  // ARMORED only: riveted bulkhead reinforcement band
+  { kind: 'armorHatch', spacing: 300 },  // ARMORED only: recessed blast-hatch panel
+  { kind: 'escapeArrow', spacing: 190 }, // ESCAPE only: floor directional chevron toward the exit
+  { kind: 'escapeStrip', spacing: 130 }, // ESCAPE only: emergency edge-lighting strip
 ];
 
 const structures = [];
@@ -1042,7 +1179,14 @@ for (const def of STRUCTURE_KINDS) {
 // SPACING units is visually indistinguishable at the wrap instant — never
 // a jump/pop (spec: "継ぎ目で大きくジャンプ...しないように").
 const AMBIENT_FLOOR_CRAWL_SPACING = { floorSeam: 95, grating: 210 };
-const AMBIENT_FLOOR_CRAWL_SPEED = 70; // world-z units/sec — gentler than WALK_FORWARD_SPEED (150) so it never reads as if the player is actually walking
+// 7TH ROUND PART 13 ("スクロール速度が遅い"): raised from 70. Purely
+// cosmetic and render-time-only by construction (see the comment above —
+// it NEVER touches structures[].z/applyForwardDelta()/enemy z/barrel z),
+// so this can never affect actual gameplay pacing or collision no matter
+// how high it's set; kept comfortably under WALK_FORWARD_SPEED (150) so it
+// still doesn't read as literal player walking, while being clearly faster
+// than before.
+const AMBIENT_FLOOR_CRAWL_SPEED = 115; // was 70
 
 // ---------------------------------------------------------------------
 // BARRELS (drum-can COVER ZONE objects — PART 4). Alternating left/right
@@ -1523,6 +1667,19 @@ document.getElementById('pause-btn').addEventListener('pointerdown', (e) => { e.
 document.getElementById('pause-resume-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
 touchToggleBtnEl.addEventListener('pointerdown', (e) => { e.preventDefault(); setTouchControlsVisible(!state.touchControlsVisible); });
 
+// 7TH ROUND PART 11: CONTROLLER AIM SENSITIVITY (LOW/NORMAL/HIGH) — takes
+// effect immediately (controllerAimSensitivity is read fresh every frame
+// in frame()'s own input section), no separate "apply" step. TOUCH AIM is
+// never affected — see controllerAimSensitivity's own comment.
+document.querySelectorAll('.aim-sens-btn').forEach((btn) => {
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    document.querySelectorAll('.aim-sens-btn').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    controllerAimSensitivity = AIM_SENSITIVITY_PRESETS[btn.dataset.sens] || AIM_SENSITIVITY_PRESETS.normal;
+  });
+});
+
 // ---------------------------------------------------------------------
 // UPDATE
 // ---------------------------------------------------------------------
@@ -1788,7 +1945,11 @@ function applyForwardDelta(forwardDelta) {
   // much farther out than GABRIEL/ADAM (human-scale), see the constants
   // above. ADAM SPHERE has no dedicated floor of its own (5TH ROUND PART
   // 7) — it reuses the ROID-style dynamic solve, same as DRONE would.
-  const zMin = e.type === 'gabriel' ? GABRIEL_Z_MIN : (e.type === 'adam' ? ADAM_Z_MIN : approachZMinForRoid());
+  // 7TH ROUND PART 9: GABRIEL's NORMAL-state approach floor is now its own,
+  // larger GABRIEL_NORMAL_Z_MIN — the CLAW attack sequence still closes the
+  // rest of the distance down to the original (unchanged) GABRIEL_Z_MIN on
+  // its own, separate from this player-driven clamp (see updateEnemy()).
+  const zMin = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (e.type === 'adam' ? ADAM_Z_MIN : approachZMinForRoid());
   e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
 }
 
@@ -1947,17 +2108,33 @@ function stepPingPong(index, dir, len) {
 
 function updateRoidAnimation(dt, now) {
   const e = state.enemy;
-  if (e.type !== 'roid1' && e.type !== 'roid2') return;
-  if (isRoidActivelyFiring(now)) {
+  if (e.type === 'roid1' || e.type === 'roid2') {
+    if (isRoidActivelyFiring(now)) {
+      e.roidFireFrameElapsedMs += dt * 1000;
+      if (e.roidFireFrameElapsedMs >= ROID_FIRE_FRAME_MS) {
+        e.roidFireFrameElapsedMs = 0;
+        const step = stepPingPong(e.roidFireFrame, e.roidFireDir, ASSETS[e.type].fire.length);
+        e.roidFireFrame = step.index;
+        e.roidFireDir = step.dir;
+      }
+    } else {
+      e.roidFireFrame = 0; e.roidFireDir = 1; e.roidFireFrameElapsedMs = 0;
+    }
+  } else if (e.type === 'adamSphere') {
+    // 7TH ROUND PART 7: unlike ROID1/ROID2 (which only ping-pong their
+    // FIRE frames while actively firing), ADAM SPHERE cycles continuously
+    // for as long as it's alive — this whole branch is new; ADAM SPHERE
+    // previously never reached this function's ping-pong logic at all
+    // (the old `if (e.type !== 'roid1' && e.type !== 'roid2') return;`
+    // guard exited before ever touching its frame index), which is why it
+    // rendered as a static, non-rotating sphere before this round.
     e.roidFireFrameElapsedMs += dt * 1000;
-    if (e.roidFireFrameElapsedMs >= ROID_FIRE_FRAME_MS) {
+    if (e.roidFireFrameElapsedMs >= ADAM_SPHERE_ROTATE_FRAME_MS) {
       e.roidFireFrameElapsedMs = 0;
-      const step = stepPingPong(e.roidFireFrame, e.roidFireDir, ASSETS[e.type].fire.length);
+      const step = stepPingPong(e.roidFireFrame, e.roidFireDir, ASSETS.adamSphere.fire.length);
       e.roidFireFrame = step.index;
       e.roidFireDir = step.dir;
     }
-  } else {
-    e.roidFireFrame = 0; e.roidFireDir = 1; e.roidFireFrameElapsedMs = 0;
   }
 }
 
@@ -1988,6 +2165,7 @@ function spawnEnemy(type) {
   e.roidFireFrame = 0;
   e.roidFireDir = 1;
   e.roidFireFrameElapsedMs = 0;
+  e.adamAttackVariantIndex = 0; // 7TH ROUND PART 21 — re-rolled each time a new ADAM attack begins, see updateEnemy()
   e.lastShotFiredAt = -Infinity;
   e.lockX = 0; e.lockY = 0;
   e.fireFromX = 0; e.fireFromY = 0; e.fireToX = 0; e.fireToY = 0;
@@ -2103,6 +2281,13 @@ function updateEnemy(dt, now) {
         e.kind = 'claw';
         e.attackState = 'blink';
         e.attackUntil = now + CLAW_BLINK_MS * stealthMul;
+        // 7TH ROUND PART 21: rolled ONCE per attack instance, right here at
+        // the moment a new attack begins — held unchanged through blink/
+        // approach/telegraph/impact (nothing else writes this field until
+        // the NEXT idle->blink transition), so "その攻撃中は選択した画像
+        // を使用" holds for the whole sequence, not just the render frame
+        // it happened to be picked on.
+        if (e.type === 'adam') e.adamAttackVariantIndex = Math.random() < 0.5 ? 0 : 1;
       } else {
         e.kind = Math.random() < 0.45 ? 'missile' : 'sniper';
         if (e.kind === 'sniper') {
@@ -2282,7 +2467,15 @@ function computeEnemyDrawRect() {
     const set = isGabriel ? ASSETS.gabriel : ASSETS.adam;
     const zMin = isGabriel ? GABRIEL_Z_MIN : ADAM_Z_MIN;
     const worldHeight = isGabriel ? GABRIEL_WORLD_HEIGHT : ADAM_WORLD_HEIGHT;
-    const img = e.attackState === 'telegraph' ? set.windup : (e.attackState === 'impact' ? set.release : set.idle);
+    // 7TH ROUND PART 21: ADAM's own telegraph/impact frames swap to the
+    // randomly-selected attack-variant image (see updateEnemy()'s
+    // idle->blink transition) instead of its usual windup/release art.
+    // GABRIEL is untouched — isGabriel short-circuits this before it ever
+    // reads e.adamAttackVariantIndex.
+    const inAttackPose = e.attackState === 'telegraph' || e.attackState === 'impact';
+    const img = (!isGabriel && inAttackPose)
+      ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
+      : (e.attackState === 'telegraph' ? set.windup : (e.attackState === 'impact' ? set.release : set.idle));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 2.6;
     const drawH = worldHeight * proj.scale * closeBoost;
@@ -2303,11 +2496,20 @@ function computeEnemyDrawRect() {
   // body, never cropped (PART 4: stays that way all the way down to this
   // type's own approachZMinForRoid() floor).
   const sprites = ASSETS[e.type];
-  const zoneIndex = ROID_FACE_FRAME[e.zone] != null ? ROID_FACE_FRAME[e.zone] : 2;
-  const frame = isRoidActivelyFiring(performance.now()) ? sprites.fire[e.roidFireFrame] : sprites.search[zoneIndex];
+  // 7TH ROUND PART 6/7: ADAM SPHERE always shows its own continuously-
+  // rotating frame (e.roidFireFrame, now advanced every frame by
+  // updateRoidAnimation() regardless of firing state — see there) instead
+  // of the zone-based search-frame selection ROID1/ROID2 use. Defaulting
+  // to index 0 (adam_sphere_01.png, the frame where its "eye" faces the
+  // camera/player — i.e. this game's "south") on spawn (spawnEnemy() resets
+  // roidFireFrame to 0) satisfies "デフォルト方向を南向きへ" without any
+  // new asset or a second, ROID-only-shared facing map.
+  const frame = e.type === 'adamSphere'
+    ? sprites.fire[e.roidFireFrame]
+    : (isRoidActivelyFiring(performance.now()) ? sprites.fire[e.roidFireFrame] : sprites.search[ROID_FACE_FRAME[e.zone] != null ? ROID_FACE_FRAME[e.zone] : 2]);
   const img = frame.img;
 
-  const targetBodyHeightPx = ROID_WORLD_HEIGHT * proj.scale;
+  const targetBodyHeightPx = (e.type === 'adamSphere' ? ADAM_SPHERE_WORLD_HEIGHT : ROID_WORLD_HEIGHT) * proj.scale;
   const ready = imgReady(img);
   const scale = ready ? computeBodyVisualScale(frame, targetBodyHeightPx) : targetBodyHeightPx / 900;
   const nativeW = ready ? img.naturalWidth : 640;
@@ -2353,15 +2555,38 @@ function triggerFireHaptics() {
 // full-length line is ever drawn between muzzle and target. The bullet is
 // resolved (hit-test, then spark on a hit) by updateBullets() once it
 // actually arrives, not here at fire-time — see BULLET_TRAVEL_MS.
+// 7TH ROUND PART 17: shared by fireWeapon() (muzzle/bullet origin) so the
+// effect position always tracks the player's ACTUAL current on-screen
+// size (cssH, PLAYER_SCALE_BOOST, p.scale's own north/south depth pulse —
+// all real, live values) rather than a fixed formula unrelated to it. Uses
+// ASSETS.player.aim as the representative pose purely for its native
+// width/height (every player pose shares near-identical proportions), not
+// tied to whichever specific image renderPlayer() happens to be drawing
+// this frame.
+function computePlayerDrawRect() {
+  const p = state.player;
+  const cx = state.centerX + p.strafeOffset;
+  const bottomY = state.cssH * 1.02;
+  const baseScale = (state.cssH / 900) * PLAYER_SCALE_BOOST * p.scale;
+  const img = ASSETS.player.aim;
+  const nativeH = imgReady(img) ? img.naturalHeight : 900;
+  const nativeW = imgReady(img) ? img.naturalWidth : 640;
+  const h = nativeH * baseScale;
+  const w = nativeW * baseScale;
+  return { cx, bottomY, topY: bottomY - h, w, h };
+}
+
 function fireWeapon(now) {
   const p = state.player;
   if (p.reloading || p.ammo <= 0) return;
   if (now < p.fireCooldownUntil) return;
   p.fireCooldownUntil = now + FIRE_COOLDOWN_MS;
   p.ammo -= 1;
+  p.lastShotAt = now; // 7TH ROUND PART 15 — drives renderPlayer()'s synced fire-pose pulse
 
-  const muzzleX = state.centerX + p.strafeOffset;
-  const muzzleY = state.cssH * 0.86 - 60;
+  const rect = computePlayerDrawRect();
+  const muzzleX = rect.cx;
+  const muzzleY = rect.topY + rect.h * MUZZLE_HEIGHT_FRAC;
   const aim = getAimPoint();
 
   spawnParticle({ type: 'muzzle', x: muzzleX, y: muzzleY, born: now, until: now + 45 });
@@ -2468,9 +2693,14 @@ function getAimPoint() {
   const p = state.player;
   const baseX = state.centerX + p.strafeOffset;
   const baseY = state.horizonY + state.cssH * 0.06;
+  const rawX = baseX + p.aimManualOffsetX + p.aimLiveX;
+  const rawY = baseY + p.aimManualOffsetY + p.aimLiveY;
+  // 7TH ROUND PART 12: safety clamp on the FINAL resolved point only — see
+  // AIM_SCREEN_SAFE_MARGIN_PX's own comment. This only ever engages near
+  // the true canvas edge; everywhere else it's a no-op.
   return {
-    x: baseX + p.aimManualOffsetX + p.aimLiveX,
-    y: baseY + p.aimManualOffsetY + p.aimLiveY,
+    x: clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX),
+    y: clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX),
   };
 }
 
@@ -2577,6 +2807,114 @@ function renderStructure(s, theme) {
         ctx.fill();
         ctx.globalAlpha = 1;
       }
+      break;
+    }
+
+    // 7TH ROUND PART 19: theme-exclusive structural elements — see the
+    // STRUCTURE_KINDS comment for why these are in the same shared pool
+    // but each only ever draws under its own theme.
+    case 'labTank': {
+      if (state.theme !== 'lab') break;
+      const side = s.phase > Math.PI ? 1 : -1;
+      const top = project(side * half * 0.9, CORRIDOR_CEIL_Y * 0.55, s.z);
+      const bot = project(side * half * 0.9, CORRIDOR_FLOOR_Y * 0.85, s.z);
+      const rx = Math.max(2, 16 * top.scale);
+      const cy = (top.y + bot.y) / 2;
+      const ry = Math.max(4, (bot.y - top.y) / 2);
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = theme.wallDark;
+      ctx.beginPath(); ctx.ellipse(top.x, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+      const pulse = 0.4 + 0.35 * (0.5 + 0.5 * Math.sin(state.timeSec * 2 + s.phase));
+      ctx.globalAlpha = pulse * Math.min(1, top.scale * 1.5);
+      ctx.strokeStyle = theme.accent;
+      ctx.lineWidth = Math.max(1, 2 * top.scale);
+      ctx.beginPath(); ctx.ellipse(top.x, cy, rx * 0.6, ry * 0.85, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case 'labConsole': {
+      if (state.theme !== 'lab') break;
+      const side = s.phase > Math.PI ? -1 : 1;
+      const pt = project(side * half * 0.98, CORRIDOR_CEIL_Y * 0.15, s.z);
+      const w = Math.max(2, 22 * pt.scale), h = Math.max(2, 14 * pt.scale);
+      ctx.save();
+      ctx.fillStyle = theme.wallDark;
+      ctx.fillRect(pt.x - w / 2, pt.y, w, h);
+      if (Math.sin(state.timeSec * 5 + s.phase) > 0.2) {
+        ctx.fillStyle = theme.accent;
+        ctx.globalAlpha = 0.85 * Math.min(1, pt.scale * 1.6);
+        ctx.fillRect(pt.x - w * 0.35, pt.y + h * 0.25, w * 0.7, h * 0.3);
+      }
+      ctx.restore();
+      break;
+    }
+    case 'armorPlate': {
+      if (state.theme !== 'armored') break;
+      const l = project(-half, CORRIDOR_FLOOR_Y * 0.15, s.z);
+      const r = project(half, CORRIDOR_FLOOR_Y * 0.15, s.z);
+      ctx.save();
+      ctx.strokeStyle = theme.wallDark;
+      ctx.lineWidth = Math.max(2, 7 * l.scale);
+      ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(r.x, r.y); ctx.stroke();
+      const rivets = 5;
+      ctx.fillStyle = theme.accent;
+      ctx.globalAlpha = 0.8;
+      for (let i = 1; i < rivets; i++) {
+        const rx = l.x + ((r.x - l.x) * i) / rivets;
+        const ry = l.y + ((r.y - l.y) * i) / rivets;
+        ctx.beginPath(); ctx.arc(rx, ry, Math.max(1, 2 * l.scale), 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+      break;
+    }
+    case 'armorHatch': {
+      if (state.theme !== 'armored') break;
+      const side = s.phase > Math.PI ? 1 : -1;
+      const a = project(side * half * 0.97, CORRIDOR_CEIL_Y * 0.45, s.z);
+      const size = Math.max(3, 30 * a.scale);
+      ctx.save();
+      ctx.strokeStyle = theme.warn;
+      ctx.lineWidth = Math.max(1, 2 * a.scale);
+      ctx.globalAlpha = 0.75;
+      ctx.strokeRect(a.x - size / 2, a.y - size / 2, size, size);
+      ctx.beginPath();
+      ctx.moveTo(a.x - size / 2, a.y - size / 2); ctx.lineTo(a.x + size / 2, a.y + size / 2);
+      ctx.moveTo(a.x + size / 2, a.y - size / 2); ctx.lineTo(a.x - size / 2, a.y + size / 2);
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case 'escapeArrow': {
+      if (state.theme !== 'escape') break;
+      const pt = project(0, CORRIDOR_FLOOR_Y * 0.99, s.z);
+      const w = Math.max(3, 26 * pt.scale);
+      ctx.save();
+      ctx.strokeStyle = theme.warn;
+      ctx.globalAlpha = Math.min(1, pt.scale * 1.8);
+      ctx.lineWidth = Math.max(1, 2.5 * pt.scale);
+      ctx.beginPath();
+      ctx.moveTo(pt.x - w / 2, pt.y - w * 0.35);
+      ctx.lineTo(pt.x, pt.y + w * 0.35);
+      ctx.lineTo(pt.x + w / 2, pt.y - w * 0.35);
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case 'escapeStrip': {
+      if (state.theme !== 'escape') break;
+      if (Math.sin(state.timeSec * 4 + s.phase) <= -0.2) break;
+      const l = project(-half * 0.85, CORRIDOR_FLOOR_Y * 0.995, s.z);
+      const r = project(-half * 0.7, CORRIDOR_FLOOR_Y * 0.995, s.z);
+      const l2 = project(half * 0.7, CORRIDOR_FLOOR_Y * 0.995, s.z);
+      const r2 = project(half * 0.85, CORRIDOR_FLOOR_Y * 0.995, s.z);
+      ctx.save();
+      ctx.strokeStyle = theme.warn;
+      ctx.globalAlpha = Math.min(1, l.scale * 1.6);
+      ctx.lineWidth = Math.max(1, 3 * l.scale);
+      ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(r.x, r.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(l2.x, l2.y); ctx.lineTo(r2.x, r2.y); ctx.stroke();
+      ctx.restore();
       break;
     }
   }
@@ -2708,21 +3046,35 @@ function renderPlayer(theme) {
   const p = state.player;
   const cx = state.centerX + p.strafeOffset;
   const bottomY = state.cssH * 1.02;
-  let img = ASSETS.player.fire;
+  const nowTs = now_();
+
+  // 7TH ROUND PART 14/15/16: FIRE no longer swaps to a separate fire.png
+  // pose — it reuses the SAME north-facing aim image, briefly enlarged,
+  // synced to each REAL shot (p.lastShotAt, stamped in fireWeapon() on its
+  // own FIRE_COOLDOWN_MS cadence) rather than the raw held-button state.
+  // This is what makes a held FIRE visibly pulse normal->enlarged once per
+  // actual shot instead of freezing on one static image for the whole
+  // hold — see FIRE_POSE_HOLD_MS's own comment.
+  const firing = (nowTs - p.lastShotAt) < FIRE_POSE_HOLD_MS;
+  let img = ASSETS.player.aim;
   if (p.reloading) img = ASSETS.player.aim;
-  else if (state.input.fireHeld) img = ASSETS.player.fire;
+  else if (firing) img = ASSETS.player.aim;
   else if (p.facing === 'walk') img = ASSETS.player.walk[p.walkFrame];
   else img = ASSETS.player.aim;
+  let fireScaleBoost = firing ? FIRE_POSE_SCALE_BOOST : 1;
 
-  const nowTs = now_();
   // PART 1: NORTH DASH and SOUTH BACKSTEP both use the same north-facing
   // lunge pose — the character never turns to face south in this game, so
   // BACKSTEP no longer shows a front-on image. EAST/WEST DASH use real
   // direction-specific art so the dash direction actually reads visually.
+  // DASH always wins over the fire-pose boost — it already has its own
+  // distinct pose, no need to also enlarge it.
   if (nowTs < p.fwdDashUntil) {
     img = ASSETS.player.dashN;
+    fireScaleBoost = 1;
   } else if (nowTs < p.dashUntil) {
     img = p.dashDir > 0 ? ASSETS.player.dashE : ASSETS.player.dashW;
+    fireScaleBoost = 1;
   }
 
   // PART 5 (2nd round): the player reads a bit bigger now, leaning toward
@@ -2731,7 +3083,7 @@ function renderPlayer(theme) {
   // reads this value (there is no player collision-radius constant in this
   // game to begin with, so there is nothing coupled to accidentally
   // over-scale alongside the sprite).
-  const baseScale = (state.cssH / 900) * PLAYER_SCALE_BOOST;
+  const baseScale = (state.cssH / 900) * PLAYER_SCALE_BOOST * fireScaleBoost;
   const strength = getStealthStrength(nowTs);
 
   if (!imgReady(img)) {
@@ -2800,11 +3152,25 @@ function renderEnemy(theme) {
   ctx.save();
   if (flashing) ctx.filter = 'brightness(2.2)';
 
-  // 5TH ROUND PART 8: CLAW's first reaction window ("GABRIELが点滅") — a
-  // fast on/off flicker (alpha + brightness) while attackState==='blink',
-  // purely visual, no new asset. Only ever active while alive (blink is
-  // gated to deathState==='alive' by the state machine itself).
-  if (e.deathState === 'alive' && e.attackState === 'blink') {
+  // 5TH ROUND PART 8, extended 7TH ROUND PART 22: CLAW's first reaction
+  // window ("GABRIELが点滅") already existed for attackState==='blink' —
+  // 7TH ROUND widens this SAME flicker to cover the whole "now actually
+  // attacking" window (spec: "攻撃開始〜攻撃成立付近だけに限定") for
+  // ADAM/GABRIEL (telegraph=windup tell, impact=the swing landing) and
+  // newly adds it for ADAM SPHERE (its own lock/fire/target/impact states —
+  // it had no blink effect at all before this round). ROID1/ROID2 are
+  // untouched (not in scope this round — see ATTACK_FLASH_TYPES). Reuses
+  // the exact same visual (never a second, competing effect) and is
+  // explicitly SKIPPED whenever a real hit-flash is already active, so the
+  // two never fight for priority on the same frame.
+  const attackFlashStates = e.kind === 'claw'
+    ? ['blink', 'telegraph', 'impact']
+    : ['lock_red', 'lock_yellow', 'fire', 'lockon', 'target', 'impact'];
+  const inAttackFlashWindow = ATTACK_FLASH_TYPES.has(e.type)
+    && e.deathState === 'alive' && attackFlashStates.includes(e.attackState);
+  if (flashing) {
+    ctx.filter = 'brightness(2.2)';
+  } else if (inAttackFlashWindow) {
     const lit = Math.sin(now / 65) > 0;
     ctx.globalAlpha = lit ? 1 : 0.3;
     ctx.filter = lit ? 'brightness(2.0)' : 'brightness(0.75)';
@@ -3210,8 +3576,11 @@ function frame(ts) {
   // the other, instead of the old merged single "view" axis.
   state.input.lightX = gpInput.light.x !== 0 ? gpInput.light.x : touchLight.x;
   state.input.lightY = gpInput.light.y !== 0 ? gpInput.light.y : touchLight.y;
-  state.input.aimX = gpInput.aim.x !== 0 ? gpInput.aim.x : touchAim.x;
-  state.input.aimY = gpInput.aim.y !== 0 ? gpInput.aim.y : touchAim.y;
+  // 7TH ROUND PART 11: controllerAimSensitivity multiplies ONLY the
+  // gamepad branch — touchAim.x/y (the else branch) is untouched, so the
+  // PAUSE setting never affects TOUCH AIM.
+  state.input.aimX = gpInput.aim.x !== 0 ? gpInput.aim.x * controllerAimSensitivity : touchAim.x;
+  state.input.aimY = gpInput.aim.y !== 0 ? gpInput.aim.y * controllerAimSensitivity : touchAim.y;
   // PART 6: LT/RT + D-PAD manual AIM trim (height/horizontal).
   state.input.aimHeightAdjust = gpInput.aimAdjust.height;
   state.input.aimHorizAdjust = gpInput.aimAdjust.horiz;
@@ -3238,8 +3607,15 @@ function frame(ts) {
   renderCorridor(theme);
   renderBarrels();
   renderEnemy(theme);
-  renderPlayer(theme);
+  // 7TH ROUND PART 18 ("射撃エフェクトが主人公より前面にオーバーレイされ
+  // ており不自然"): renderParticles() (the muzzle flash + all other
+  // particle types) used to run AFTER renderPlayer(), drawing the flash on
+  // top of the player sprite. Swapped so it draws BEFORE the player —
+  // background -> 射撃エフェクト -> 主人公, per spec — so the player's own
+  // sprite now naturally overlaps/hides part of the flash instead of the
+  // reverse.
   renderParticles();
+  renderPlayer(theme);
   renderFlashlightMask();
   // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
   // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
@@ -3317,4 +3693,13 @@ window.__darkoutTps = {
   get uiLang() { return uiLang; }, applyUiLang,
   CONTROLLER_STORE_URL,
   startLoadingWalkAnimation, stopLoadingWalkAnimation,
+  // added 7th round: AIM sensitivity, player fire-pose rect, ADAM attack
+  // variants, boss-HP/world-height constants — exposed for automated
+  // testing only.
+  get controllerAimSensitivity() { return controllerAimSensitivity; },
+  set controllerAimSensitivity(v) { controllerAimSensitivity = v; },
+  AIM_SENSITIVITY_PRESETS, computePlayerDrawRect,
+  ENEMY_MAX_HP, ADAM_SPHERE_WORLD_HEIGHT, ROID_WORLD_HEIGHT,
+  GABRIEL_Z_MIN, GABRIEL_NORMAL_Z_MIN, ADAM_Z_MIN,
+  applyForwardDelta, ATTACK_FLASH_TYPES, fireWeapon,
 };

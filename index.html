@@ -33,11 +33,17 @@
        visual — it reuses the player's real north-walk sprites but is
        driven by its own tiny interval in game.js, completely separate
        from state.player/state.enemy/the real game loop (see
-       startLoadingWalkAnimation()). -->
+       startLoadingWalkAnimation()). 7TH ROUND PART 1/2/3: the old
+       "#loading-ground" scrolling-floor illusion is removed entirely — the
+       spec explicitly asks for "the character himself slowly walking
+       through darkness", not a fast-scrolling background standing in for
+       walking. "#loading-spotlight" is a purely CSS radial-gradient cone
+       positioned just ahead of the walk sprite (see style.css) — no new
+       image asset. -->
   <div id="loading-screen">
     <div id="loading-title">DARKOUT 2</div>
     <div id="loading-walk-stage">
-      <div id="loading-ground"></div>
+      <div id="loading-spotlight"></div>
       <img id="loading-walk-sprite" src="assets/player/player_north_walk_1.png" alt="">
     </div>
     <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
@@ -104,11 +110,20 @@
        "PAUSEボタン等、ゲーム進行上必要な最低限のUIまで消さないよう"). -->
   <button type="button" id="pause-btn">PAUSE</button>
 
-  <!-- 4th round PART 6/7: PAUSE menu overlay — TOUCH CONTROLS ON/OFF toggle. -->
+  <!-- 4th round PART 6/7: PAUSE menu overlay — TOUCH CONTROLS ON/OFF toggle.
+       7TH ROUND PART 11: CONTROLLER AIM SENSITIVITY (LOW/NORMAL/HIGH) added
+       below it — CONTROLLER-only (see controllerAimSensitivity in game.js),
+       TOUCH AIM is managed independently and never reads this setting. -->
   <div id="pause-menu" hidden>
     <div id="pause-panel">
       <div id="pause-title">PAUSE</div>
       <button type="button" id="touch-controls-toggle" class="pause-menu-btn">TOUCH CONTROLS : OFF</button>
+      <div id="aim-sens-label" class="pause-menu-label">CONTROLLER AIM SENSITIVITY</div>
+      <div id="aim-sens-row">
+        <button type="button" data-sens="low" class="pause-menu-btn aim-sens-btn">LOW</button>
+        <button type="button" data-sens="normal" class="pause-menu-btn aim-sens-btn active">NORMAL</button>
+        <button type="button" data-sens="high" class="pause-menu-btn aim-sens-btn">HIGH</button>
+      </div>
       <button type="button" id="pause-resume-btn" class="pause-menu-btn">RESUME</button>
     </div>
   </div>
