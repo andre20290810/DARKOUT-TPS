@@ -814,6 +814,60 @@ const MISSILE_PROJECTILE_START_HEIGHT = 240;
 const MISSILE_PROJECTILE_HIT_RADIUS_PX = 26;
 const MISSILE_DAMAGE = 24;
 
+// ---------------------------------------------------------------------
+// 16TH ROUND PART S: ROID1/ROID2 "attack like the enemy would really
+// attack" rebuild — replaces the old "lock -> one shot -> long wait ->
+// one shot" monotony with two sustained-pressure patterns, scoped to
+// roid1/roid2 ONLY (drone/adamSphere keep their existing missile/sniper
+// pool untouched — out of this part's scope). Investigated ASSETS.roid1/
+// ASSETS.roid2 first (item 159): both share the exact same generic
+// search[]/fire[] frame naming with no rifle-vs-missile-launcher visual
+// distinction anywhere in the asset filenames, so no real basis exists to
+// invent a stronger ROID1-is-rifle / ROID2-is-missile personality split —
+// both types draw from the SAME sweep/barrage/sniper pool (see item 159's
+// explicit "no fabricated lore" instruction).
+// ---------------------------------------------------------------------
+
+// SWEEP FIRE (RIFLE/MINIGUN horizontal burst) — a single LOCK of the
+// player's WORLD X/Z at attack start, then a fast horizontal line of
+// impact points sweeping across that locked position in WORLD SPACE
+// (never re-tracking the player mid-burst — item 127/135), rendered via
+// project() through the same perspective pipeline as everything else.
+const SWEEP_TELEGRAPH_MS = 260; // brief charge (FIRE-pose swap only, no LOCK ON UI — item 137/138)
+const SWEEP_BULLET_COUNT_MIN = 7;
+const SWEEP_BULLET_COUNT_MAX = 10; // item 132: "PLAYERが横方向へ掃射されていると認識できる弾数"
+const SWEEP_BULLET_COUNT_ENHANCED_BONUS = 3; // 40%-threshold counter gets a longer, wider burst (item 156 "SWEEP FIRE強化")
+const SWEEP_BULLET_INTERVAL_MS = 85; // "ババババババッ" — fast, never one-shot-then-long-wait
+const SWEEP_HALF_WIDTH_WORLD = 95; // world-X half-span of the sweep from the locked center point
+const SWEEP_HIT_RADIUS_PX = 42; // screen-space per-bullet hit test radius, real distance check (item 136)
+const SWEEP_DAMAGE = 9; // lower per-hit than a single SNIPER shot since several can land in one burst
+const SWEEP_TRACER_LIFE_MS = 90; // short tracer only (item 139) — never a long white line
+const SWEEP_COOLDOWN_MS = 1200;
+
+// MULTI MISSILE BARRAGE — one LOCK of the player's WORLD X/Z, then 3-4
+// missiles with impact points scattered AROUND that single locked point
+// (never independently re-locked per missile — item 143), launched with a
+// short stagger so impacts read as BOOM->BOOM->BOOM->BOOM rather than one
+// single blast. Each impact reuses the 16TH ROUND PART A/B/C spawnBlast()
+// pipeline directly (never the old asterisk-style effect — item 153).
+const BARRAGE_LOCKON_MS = 550;
+const BARRAGE_LAUNCH_INTERVAL_MS = 320; // stagger between each missile's own launch/fall start
+const BARRAGE_FALL_MS = 850; // each missile's own fall duration, reuses MISSILE_PROJECTILE_START_HEIGHT
+const BARRAGE_IMPACT_TAIL_MS = 260; // grace after the LAST impact before cooldown begins
+const BARRAGE_COOLDOWN_MS = 1900;
+// item 144: intentional (never fully random — item 145) scatter pattern
+// around the single locked point — CENTER, RIGHT, LEFT, NEAR/FAR, in that
+// priority order (a 3-missile barrage uses the first 3, 4-missile uses all
+// 4); a small jitter is layered on top so repeated barrages don't look
+// identical, without losing the "aimed around the lock point" read.
+const BARRAGE_OFFSET_PATTERN = [
+  { dx: 0, dz: 0 },
+  { dx: 72, dz: -10 },
+  { dx: -72, dz: -10 },
+  { dx: 8, dz: 34 },
+];
+const BARRAGE_OFFSET_JITTER = 14;
+
 // 5TH ROUND PART 8/9/10: GABRIEL/ADAM's CLAW attack rebuilt into a real
 // blink -> fast-approach -> brief-windup -> spatial-hit-test swing
 // sequence, replacing the old shape where entering the attack motion
@@ -4299,6 +4353,14 @@ function spawnEnemy(type) {
   // 'target'->'impact' transition into a no-damage, no-floor-impact
   // 'cooldown' instead.
   e.missileHeight = 0; e.missileDestroyed = false;
+  // 16TH ROUND PART S: SWEEP FIRE + MULTI MISSILE BARRAGE state — fresh on
+  // every spawn, harmless/unused for non-roid1/roid2 types.
+  e.sweepDirPending = 1;
+  e.sweepStartWorldX = 0; e.sweepEndWorldX = 0; e.sweepWorldZ = 0;
+  e.sweepCount = 0; e.sweepIndex = 0; e.sweepNextFireAt = 0; e.sweepEnhanced = false;
+  e.sweepTracers = [];
+  e.barrage = [];
+  e.forcedBarrageCount = 0;
   e.clawApproachStartZ = 0;
   e.deathState = 'alive';
   e.deathStartedAt = 0;
@@ -4490,6 +4552,24 @@ function updateEnemy(dt, now) {
         // を使用" holds for the whole sequence, not just the render frame
         // it happened to be picked on.
         if (e.type === 'adam') e.adamAttackVariantIndex = Math.random() < 0.5 ? 0 : 1;
+      } else if (e.type === 'roid1' || e.type === 'roid2') {
+        // 16TH ROUND PART S: replaces the old plain missile/sniper 45/55
+        // pool for ROID1/ROID2 ONLY (drone/adamSphere keep the untouched
+        // pool below) — SWEEP FIRE and MULTI MISSILE BARRAGE together make
+        // up the majority of rolls (spec: these become the "主力attack
+        // pattern"), SNIPER's quick single precision shot stays in the pool
+        // for unpredictability rather than being removed outright.
+        const roll = Math.random();
+        e.sweepTracers = []; e.barrage = []; // clear any stale visuals from a previous attack instance
+        if (roll < 0.32) {
+          e.kind = 'sniper';
+          e.attackState = 'lock_red';
+          e.attackUntil = now + SNIPER_LOCK_RED_MS * stealthMul;
+        } else if (roll < 0.64) {
+          startSweepAttack(e, now, false, stealthMul);
+        } else {
+          startBarrageAttack(e, now, 0, stealthMul);
+        }
       } else {
         e.kind = Math.random() < 0.45 ? 'missile' : 'sniper';
         if (e.kind === 'sniper') {
@@ -4741,7 +4821,190 @@ function updateEnemy(dt, now) {
     } else if (e.attackState === 'cooldown') {
       if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (900 + Math.random() * 1400) * enemyAttackFreqMult(e.type); }
     }
+    return;
   }
+
+  // --- 16TH ROUND PART S: SWEEP FIRE (RIFLE/MINIGUN horizontal burst) ---
+  // sweepTelegraph (brief charge, FIRE-pose only) -> sweepFiring (a fast
+  // horizontal line of impact points sweeping across the ONE locked WORLD
+  // X/Z, RIGHT<->LEFT) -> cooldown. Never re-locks to the player mid-burst
+  // (item 127/135) — each individual shot's damage check below still reads
+  // the player's LIVE position, so moving/DASHing out of a given shot's own
+  // impact radius still avoids that shot, exactly like the old single-
+  // missile splash check already worked.
+  if (e.kind === 'sweep') {
+    if (e.attackState === 'sweepTelegraph') {
+      if (now >= e.attackUntil) {
+        const pl = state.player;
+        const worldZ = MISSILE_TARGET_BASE_WORLD_Z - pl.depthPos * MISSILE_TARGET_WORLD_Z_RANGE;
+        const scaleAtZ = FOCAL / (FOCAL + Math.max(worldZ, 1));
+        const lockWorldX = pl.strafeOffset / scaleAtZ;
+        const half = SWEEP_HALF_WIDTH_WORLD;
+        // dir=1 -> starts RIGHT (+X), sweeps to LEFT (-X); dir=-1 -> reverse.
+        e.sweepStartWorldX = lockWorldX + (e.sweepDirPending >= 0 ? half : -half);
+        e.sweepEndWorldX = lockWorldX + (e.sweepDirPending >= 0 ? -half : half);
+        e.sweepWorldZ = worldZ;
+        const baseCount = SWEEP_BULLET_COUNT_MIN + Math.floor(Math.random() * (SWEEP_BULLET_COUNT_MAX - SWEEP_BULLET_COUNT_MIN + 1));
+        e.sweepCount = e.sweepEnhanced ? baseCount + SWEEP_BULLET_COUNT_ENHANCED_BONUS : baseCount;
+        e.sweepIndex = 0;
+        e.sweepNextFireAt = now;
+        e.attackState = 'sweepFiring';
+        e.attackUntil = now + e.sweepCount * SWEEP_BULLET_INTERVAL_MS + 120;
+      }
+    } else if (e.attackState === 'sweepFiring') {
+      if (e.sweepIndex < e.sweepCount && now >= e.sweepNextFireAt) {
+        resolveSweepShot(e, now);
+        e.sweepIndex++;
+        e.sweepNextFireAt = now + SWEEP_BULLET_INTERVAL_MS;
+        e.lastShotFiredAt = now; // reuses the existing FIRE-pose hold (isRoidActivelyFiring()) — no new visual
+      }
+      if (now >= e.attackUntil) {
+        e.sweepEnhanced = false;
+        e.attackState = 'cooldown';
+        e.attackUntil = now + SWEEP_COOLDOWN_MS;
+      }
+    } else if (e.attackState === 'cooldown') {
+      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (900 + Math.random() * 1400) * enemyAttackFreqMult(e.type); }
+    }
+    return;
+  }
+
+  // --- 16TH ROUND PART S: MULTI MISSILE BARRAGE ---
+  // barrageLockon (one LOCK of the player's WORLD X/Z) -> barrageFalling
+  // (3-4 missiles, launch staggered, impact points scattered AROUND the
+  // single locked point, never re-locked individually) -> cooldown.
+  if (e.kind === 'barrage') {
+    if (e.attackState === 'barrageLockon') {
+      if (now >= e.attackUntil) {
+        const pl = state.player;
+        const worldZ = MISSILE_TARGET_BASE_WORLD_Z - pl.depthPos * MISSILE_TARGET_WORLD_Z_RANGE;
+        const scaleAtZ = FOCAL / (FOCAL + Math.max(worldZ, 1));
+        const lockWorldX = pl.strafeOffset / scaleAtZ;
+        const count = e.forcedBarrageCount || (3 + (Math.random() < 0.5 ? 0 : 1));
+        e.forcedBarrageCount = 0;
+        e.barrage = [];
+        for (let i = 0; i < count; i++) {
+          const pat = BARRAGE_OFFSET_PATTERN[i] || BARRAGE_OFFSET_PATTERN[BARRAGE_OFFSET_PATTERN.length - 1];
+          const jx = (Math.random() * 2 - 1) * BARRAGE_OFFSET_JITTER;
+          const jz = (Math.random() * 2 - 1) * BARRAGE_OFFSET_JITTER * 0.5;
+          const launchAt = now + i * BARRAGE_LAUNCH_INTERVAL_MS;
+          e.barrage.push({
+            worldX: lockWorldX + pat.dx + jx,
+            worldZ: worldZ + pat.dz + jz,
+            launchAt,
+            impactAt: launchAt + BARRAGE_FALL_MS,
+            height: MISSILE_PROJECTILE_START_HEIGHT,
+            impacted: false,
+          });
+        }
+        e.attackState = 'barrageFalling';
+        const last = e.barrage[e.barrage.length - 1];
+        e.attackUntil = last.impactAt + BARRAGE_IMPACT_TAIL_MS;
+      }
+    } else if (e.attackState === 'barrageFalling') {
+      for (const m of e.barrage) {
+        if (m.impacted || now < m.launchAt) continue;
+        const fallProgress = clamp(1 - (m.impactAt - now) / BARRAGE_FALL_MS, 0, 1);
+        m.height = MISSILE_PROJECTILE_START_HEIGHT * (1 - fallProgress);
+        if (now >= m.impactAt) {
+          m.impacted = true;
+          resolveBarrageImpact(m, now);
+        }
+      }
+      if (now >= e.attackUntil) {
+        e.attackState = 'cooldown';
+        e.attackUntil = now + BARRAGE_COOLDOWN_MS;
+      }
+    } else if (e.attackState === 'cooldown') {
+      if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (900 + Math.random() * 1400) * enemyAttackFreqMult(e.type); }
+    }
+    return;
+  }
+}
+
+// 16TH ROUND PART S: rolls (or, if forcedCount>0, forces) a fresh SWEEP FIRE
+// attack instance. Shared by the normal idle->attack roll and the ROID
+// 80/60/40/20% counter-phase (which forces `enhanced=true` at the 40%
+// threshold — see the bullet-hit resolution code in updateBullets()).
+function startSweepAttack(e, now, enhanced, stealthMul) {
+  e.kind = 'sweep';
+  e.sweepDirPending = Math.random() < 0.5 ? 1 : -1;
+  e.sweepEnhanced = !!enhanced;
+  e.sweepTracers = [];
+  e.attackState = 'sweepTelegraph';
+  e.attackUntil = now + SWEEP_TELEGRAPH_MS * (stealthMul || 1);
+}
+
+// 16TH ROUND PART S: rolls (or, if forcedCount>0, forces) a fresh MULTI
+// MISSILE BARRAGE attack instance. forcedCount=3 or 4 is used by the ROID
+// counter-phase (60%/20% thresholds); forcedCount=0 lets barrageLockon's
+// own transition roll a random 3-or-4 for normal (non-counter) attacks.
+function startBarrageAttack(e, now, forcedCount, stealthMul) {
+  e.kind = 'barrage';
+  e.forcedBarrageCount = forcedCount || 0;
+  e.barrage = [];
+  e.attackState = 'barrageLockon';
+  e.attackUntil = now + BARRAGE_LOCKON_MS * (stealthMul || 1);
+}
+
+// 16TH ROUND PART S: resolves ONE sweep bullet — computes its WORLD X (an
+// interpolated point along the locked start->end line, index/ (count-1)),
+// projects it to screen, spawns a small (non-explosion-scale) impact blast
+// + a short tracer for rendering, then checks REAL distance against the
+// PLAYER'S CURRENT position (never the original lock point — item 136) so
+// a bullet's damage always matches where it visibly lands.
+function resolveSweepShot(e, now) {
+  const t = e.sweepCount <= 1 ? 0 : e.sweepIndex / (e.sweepCount - 1);
+  const worldX = e.sweepStartWorldX + (e.sweepEndWorldX - e.sweepStartWorldX) * t;
+  const proj = project(worldX, CORRIDOR_FLOOR_Y, e.sweepWorldZ);
+  const gun = screenSpaceEnemyAnchor();
+  e.sweepTracers.push({ x1: gun.x, y1: gun.y - 30, x2: proj.x, y2: proj.y, until: now + SWEEP_TRACER_LIFE_MS });
+  // small, non-explosion-scale impact — a spark/flash/debris beat, never
+  // the full MISSILE-scale blast (item 140).
+  spawnBlast(proj.x, proj.y, now, { scale: 0.22 * (proj.scale || 1), big: false, shockwave: false });
+  const p = state.player;
+  const invincible = now < p.invincibleUntil;
+  const playerFloorPos = currentPlayerFloorScreenPos();
+  const dist = Math.hypot(playerFloorPos.x - proj.x, playerFloorPos.y - proj.y);
+  if (!invincible && dist < SWEEP_HIT_RADIUS_PX) {
+    p.hp = Math.max(0, p.hp - SWEEP_DAMAGE);
+    p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
+  }
+}
+
+// 16TH ROUND PART S: resolves ONE barrage missile's impact — reuses the
+// SAME spawnBlast() pipeline (PART A/B/C) directly as a full-quality single
+// blast (never the old asterisk effect — item 153); damage is checked
+// against the PLAYER'S CURRENT position vs THIS missile's own locked
+// world point (never re-derived to the player's live position — item 147
+// requires the player be able to have already moved away by the time this
+// specific missile lands).
+function resolveBarrageImpact(m, now) {
+  const p = state.player;
+  const proj = project(m.worldX, CORRIDOR_FLOOR_Y, m.worldZ);
+  const invincible = now < p.invincibleUntil;
+  const playerFloorPos = currentPlayerFloorScreenPos();
+  const dist = Math.hypot(playerFloorPos.x - proj.x, playerFloorPos.y - proj.y);
+  const inSplash = dist < 62; // same splash radius the single-MISSILE impact already used
+  spawnBlast(proj.x, proj.y, now, { scale: proj.scale || 1, big: true, shockwave: true });
+  if (!invincible && inSplash) {
+    p.hp = Math.max(0, p.hp - MISSILE_DAMAGE);
+    p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
+  }
+}
+
+// 16TH ROUND PART S: per-barrage-missile screen position — same WORLD
+// HEIGHT-above-floor-shadow shape as getMissileProjectileVisual(), just
+// parametrized over an { worldX, worldZ, height } record instead of
+// reading the single-missile fields directly off `e`, so multiple barrage
+// missiles can be in flight (and rendered) at once.
+function getBarrageProjectileVisual(m) {
+  const shadow = project(m.worldX, CORRIDOR_FLOOR_Y, m.worldZ);
+  const body = project(m.worldX, CORRIDOR_FLOOR_Y - m.height, m.worldZ);
+  return {
+    shadowX: shadow.x, shadowY: shadow.y,
+    x: body.x, y: body.y, scale: body.scale,
+  };
 }
 
 function screenSpaceEnemyAnchor() {
@@ -5217,27 +5480,35 @@ function updateBullets(now) {
         // defensive) can never refire it.
         if ((e.type === 'roid1' || e.type === 'roid2') && e.hp > 0) {
           const pct = e.hp / e.maxHp;
-          for (const t of ROID_COUNTER_THRESHOLDS) {
+          for (let ti = 0; ti < ROID_COUNTER_THRESHOLDS.length; ti++) {
+            const t = ROID_COUNTER_THRESHOLDS[ti];
             if (pct <= t && !e.triggeredThresholds.includes(t)) {
               e.triggeredThresholds.push(t);
               e.invulnerable = true;
               e.counterPhaseUntil = now + ROID_COUNTER_PHASE_MS;
               e.hitFlashUntil = now + ROID_COUNTER_BLINK_MS; // reuses the existing hit-flash blink — no new visual system
-              e.nextIdleCheckAt = now; // force the next attack roll immediately, so the counter phase reads as a real reprisal, not a coincidence
               // 16TH ROUND (Part I, root-cause fix): the forced idle-check
-              // above only actually STARTS an attack if e.z < 900 (see
-              // updateEnemy()'s idle branch) — "merely invulnerable, no real
-              // attack" was reproducible whenever the enemy's z happened to
-              // sit at/above that gate the instant a threshold fired, since
-              // the forced recheck would then just re-arm for 400ms later
-              // with no attack, repeatedly, for as long as the slow
-              // (ENEMY_IDLE_APPROACH_SPEED=40/s) idle creep-in took to close
-              // the gap — exactly the "merely invulnerable" FAIL the spec
-              // calls out. Clamping z here guarantees the forced recheck on
-              // the very next frame always lands inside attack range, so the
-              // MANDATORY counter-attack always actually launches.
+              // used to just be `e.nextIdleCheckAt = now`, which only
+              // actually STARTS an attack if e.z < 900 (see updateEnemy()'s
+              // idle branch) — "merely invulnerable, no real attack" was
+              // reproducible whenever the enemy's z happened to sit at/above
+              // that gate the instant a threshold fired. Clamping z here
+              // guarantees whatever forced attack we start below always
+              // launches from inside attack range.
               if (e.z >= 900) e.z = 850;
-              if (DEBUG_MODE) r10DebugLog('COUNTER PHASE START (' + (ENEMY_LABEL[e.type] || e.type) + ' @' + Math.round(t * 100) + '%)');
+              // 16TH ROUND PART S-6: force a genuine, escalating counter-
+              // attack instead of merely re-rolling into the normal random
+              // pool — spec item 156: 80%/40% = SWEEP FIRE (40% gets the
+              // enhanced/longer burst), 60%/20% = MULTI MISSILE BARRAGE
+              // (20% gets the full 4-missile barrage instead of 3). This
+              // directly satisfies item 157 ("PLAYERがROIDを一方的に撃つ
+              // →閾値到達→ROIDが無敵化/反撃準備→明確な攻撃を返してくる
+              // →PLAYERがDASH/移動を要求される").
+              if (ti === 0) startSweepAttack(e, now, false, 1);
+              else if (ti === 1) startBarrageAttack(e, now, 3, 1);
+              else if (ti === 2) startSweepAttack(e, now, true, 1);
+              else startBarrageAttack(e, now, 4, 1);
+              if (DEBUG_MODE) r10DebugLog('COUNTER PHASE START (' + (ENEMY_LABEL[e.type] || e.type) + ' @' + Math.round(t * 100) + '%) kind=' + e.kind);
               break;
             }
           }
@@ -6539,6 +6810,91 @@ function renderEnemyTelegraphs(theme) {
         ctx.restore();
       }
     }
+    return;
+  }
+
+  // --- 16TH ROUND PART S: SWEEP FIRE telegraph/tracers ---
+  // No LOCK ON ring/gauge/white ellipse/HUD (item 137/143) — the only
+  // "telegraph" is a brief muzzle glow while charging (item 138), then each
+  // shot's own short tracer + impact flash (item 139/159— never a long
+  // white line, never a UI marker).
+  if (e.kind === 'sweep') {
+    if (e.attackState === 'sweepTelegraph') {
+      const gun = screenSpaceEnemyAnchor();
+      const grow = clamp(1 - (e.attackUntil - now) / SWEEP_TELEGRAPH_MS, 0, 1);
+      ctx.save();
+      const grad = ctx.createRadialGradient(gun.x, gun.y - 30, 0, gun.x, gun.y - 30, 18 + grow * 10);
+      grad.addColorStop(0, 'rgba(255,225,170,' + (0.5 + 0.4 * grow) + ')');
+      grad.addColorStop(1, 'rgba(255,180,90,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(gun.x, gun.y - 30, 18 + grow * 10, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    if (e.sweepTracers && e.sweepTracers.length) {
+      ctx.save();
+      for (const tr of e.sweepTracers) {
+        const life = clamp((tr.until - now) / SWEEP_TRACER_LIFE_MS, 0, 1);
+        if (life <= 0) continue;
+        ctx.strokeStyle = 'rgba(255,205,120,' + (0.85 * life) + ')';
+        ctx.lineWidth = 2;
+        ctx.shadowColor = 'rgba(255,170,80,0.7)';
+        ctx.shadowBlur = 5;
+        ctx.beginPath(); ctx.moveTo(tr.x1, tr.y1); ctx.lineTo(tr.x2, tr.y2); ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(255,235,190,' + life + ')';
+        ctx.beginPath(); ctx.arc(tr.x2, tr.y2, 3, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+      // pruning (never mutates gameplay state, just this render-list's own
+      // expired entries) — keeps the array from growing across a long burst
+      e.sweepTracers = e.sweepTracers.filter((tr) => tr.until > now);
+    }
+    return;
+  }
+
+  // --- 16TH ROUND PART S: MULTI MISSILE BARRAGE telegraph ---
+  // Each in-flight missile gets the EXACT SAME "understated floor shadow +
+  // TARGET AREA glow + small falling orb" visual the single MISSILE attack
+  // already uses (see the 'missile'/'target' branch above) — no rotating
+  // gauge/LOCK ON ring/white outline (item 148/149), reused per-missile via
+  // getBarrageProjectileVisual() so 3-4 can render at once.
+  if (e.kind === 'barrage' && e.barrage && e.barrage.length) {
+    for (const m of e.barrage) {
+      if (m.impacted || m.height <= 0.5) continue;
+      const pv = getBarrageProjectileVisual(m);
+      const heightFrac = clamp(m.height / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
+      const brighten = 0.4 + 0.3 * (1 - heightFrac);
+      ctx.save();
+      ctx.fillStyle = 'rgba(230,230,236,' + (0.26 * brighten) + ')';
+      ctx.beginPath();
+      ctx.ellipse(pv.shadowX, pv.shadowY, 22 * pv.scale, 8 * pv.scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // SHADOW: the actual "something is falling here" tell (item 149-151)
+      ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
+      ctx.beginPath();
+      ctx.ellipse(pv.shadowX, pv.shadowY, 14 * pv.scale, 5 * pv.scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      if (heightFrac > 0.03) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pv.x, pv.y);
+        ctx.lineTo(pv.shadowX, pv.shadowY);
+        ctx.stroke();
+      }
+      const bodyR = 9 * pv.scale;
+      const bright = 0.6 + 0.4 * (1 - heightFrac);
+      const bodyGrad = ctx.createRadialGradient(pv.x, pv.y, 0, pv.x, pv.y, bodyR * 1.6);
+      bodyGrad.addColorStop(0, 'rgba(255,235,190,' + bright + ')');
+      bodyGrad.addColorStop(0.6, 'rgba(255,150,60,' + (0.7 * bright) + ')');
+      bodyGrad.addColorStop(1, 'rgba(255,90,40,0)');
+      ctx.fillStyle = bodyGrad;
+      ctx.beginPath(); ctx.arc(pv.x, pv.y, bodyR * 1.6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.beginPath(); ctx.arc(pv.x, pv.y, bodyR * 0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    return;
   }
 }
 
@@ -7389,6 +7745,15 @@ window.__darkoutTps = {
   MISSILE_TARGET_BASE_WORLD_Z, MISSILE_TARGET_WORLD_Z_RANGE,
   MISSILE_PROJECTILE_START_HEIGHT, MISSILE_PROJECTILE_HIT_RADIUS_PX,
   AMBIENT_FLOOR_CRAWL_SPEED, ENEMY_LANE_TRACK_MULT,
+  // 16TH ROUND PART S: SWEEP FIRE / MULTI MISSILE BARRAGE — exposed for
+  // automated testing only (real-battle simulation + frame capture).
+  startSweepAttack, startBarrageAttack, resolveSweepShot, resolveBarrageImpact,
+  getBarrageProjectileVisual,
+  SWEEP_BULLET_COUNT_MIN, SWEEP_BULLET_COUNT_MAX, SWEEP_BULLET_COUNT_ENHANCED_BONUS,
+  SWEEP_BULLET_INTERVAL_MS, SWEEP_HALF_WIDTH_WORLD, SWEEP_HIT_RADIUS_PX, SWEEP_DAMAGE,
+  SWEEP_TELEGRAPH_MS, SWEEP_COOLDOWN_MS,
+  BARRAGE_LOCKON_MS, BARRAGE_LAUNCH_INTERVAL_MS, BARRAGE_FALL_MS, BARRAGE_COOLDOWN_MS,
+  BARRAGE_OFFSET_PATTERN,
   // 13TH ROUND: DASH scale pulse, ESCAPE attack-gate fix, blink-count
   // redesign, LIGHT persistent-position — exposed for automated testing
   // only.
