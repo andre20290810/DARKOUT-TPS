@@ -248,14 +248,10 @@ const COMBAT_QUAKE_MIN_INTERVAL_MS = 14000;
 const COMBAT_QUAKE_MAX_INTERVAL_MS = 22000;
 const COLLAPSE_QUAKE_MS = 700;             // STEP1: tremor + dust begins — was 1400, halved
 const COLLAPSE_OBSTACLES_MS = 1800;        // STEP3: avoidable falling debris/obstacles window
-const COLLAPSE_RECEDE_MS = 850;            // STEP5: player eases FAR (continuous, never a snap)
-// STEP8 (new): a short "the pile is assembling" window inserted between
-// STEP5 (fully receded) and STEP6 (approach) — see spec section 8/18-7/8.
-const COLLAPSE_RUBBLE_FORM_MS = 750;
-const COLLAPSE_APPROACH_MS = 2000;         // STEP6/11: player eases back NEAR toward the rubble — the "timing game" window
-const COLLAPSE_JUMP_MS = 480;              // STEP7/8: airborne arc duration
-const COLLAPSE_JUMP_EARLY_CAP = 0.85;      // an early JUMP press is BUFFERED (held until this progress), never wasted
-const COLLAPSE_RUBBLE_RECEDE_MS = 1000;    // STEP9: rubble shrinks away BEHIND the player after a clear/hit
+// 26TH ROUND item 9: JUMP height doubled (was 480ms/46px) with duration
+// scaled up to match so the arc still reads as a natural rise/peak/descend
+// rather than a faster, twitchier hop at the same timing.
+const COLLAPSE_JUMP_MS = 620;              // airborne arc duration
 const COLLAPSE_RECOVER_MS = 500;           // STEP10: brief settle before returning to normal ESCAPE
 const COLLAPSE_MIN_INTERVAL_MS = 9000;     // how soon after one cycle ends the next can begin
 const COLLAPSE_MAX_INTERVAL_MS = 15000;
@@ -298,25 +294,9 @@ const COLLAPSE_DEBRIS_HIT_Z_MAX = 340;        // only checked for a player hit w
 const COLLAPSE_DEBRIS_HALF_W_PX = 30;         // collision half-width in screen px, checked against player screen X
 const COLLAPSE_DEBRIS_CULL_Z = 1500;          // despawned once it has rolled this far into the distance (naturally shrunk to near-nothing by perspective)
 const COLLAPSE_DEBRIS_DAMAGE = 26;
-const COLLAPSE_RUBBLE_DAMAGE = 45;
-// NEXT ROUND (spec section 7): real-play feedback said the receded player
-// read as "too small" — was 0.74 (scale drops to ~0.26x, i.e. ~3.8x
-// smaller); halved to 0.48 (scale drops to ~0.52x, i.e. ~1.9x smaller ==
-// roughly DOUBLE the old minimum size), continuous easing unchanged.
-const COLLAPSE_FAR_SCALE_DROP = 0.48;      // at full recede (progress=1), player shrinks to ~52% of its normal depthPos-scale
-const COLLAPSE_FAR_SCREEN_PX = 100;        // at full recede, player's screen anchor lifts this many extra px (on top of normal depthPos screen range) — scaled down to match the smaller scale drop
-const COLLAPSE_JUMP_ARC_PX = 46;           // peak visual height (screen px) of the JUMP hop
+// 26TH ROUND item 9: JUMP peak height doubled (was 46px).
+const COLLAPSE_JUMP_ARC_PX = 92;           // peak visual height (screen px) of the JUMP hop
 const COLLAPSE_JUMP_COMBO_WINDOW_MS = 140; // LB+RB "natural simultaneous press" tolerance
-const COLLAPSE_RUBBLE_W_PX = 150;          // base rubble-pile draw width at scale 1 (never taller than roughly hip/chest height on the bike — spec section 6/10)
-const COLLAPSE_RUBBLE_H_PX = 64;
-
-// Shared by the PLAYER's own recede/approach AND the rubble's post-jump
-// recede — one interpolation, reused twice (never a separate ad-hoc formula
-// per object). progress: 0 = normal/near, 1 = maximally far.
-function collapseFarVisual(progress, scaleDrop, screenPxRange) {
-  const t = clamp(progress, 0, 1);
-  return { scaleMul: 1 - t * scaleDrop, screenYPush: t * screenPxRange };
-}
 // NEXT ROUND (real-play feedback): 45ms read as flickery/eye-straining —
 // eased back up partway toward the pre-speed-pass 90ms (never all the way
 // back, so the faster auto-scroll and this stay in the same speed range —
@@ -572,6 +552,12 @@ const ADAM_SPHERE_ROTATE_FRAME_MS = 220;
 // is untouched (uses its own, unrelated GABRIEL_Z_MIN/closeBoost crop
 // formula, never this constant).
 const ROID_FULLBODY_SCREEN_FRAC = 0.42;
+// 26TH ROUND item 2: render-time safety margin — computeEnemyDrawRect()
+// pushes ROID1/ROID2/DRONE/AdamSphere straight DOWN (never shrinks them)
+// whenever their head would land above this fraction of the screen, as a
+// defense-in-depth backstop on top of the real z-floor fix above (in case
+// any future/other z path pushes the enemy closer than intended again).
+const ROID_TOP_SAFE_MARGIN_FRAC = 0.08;
 
 // PART 9 (3rd round): ROID1/ROID2 now use only 3 real direction poses —
 // SOUTH-WEST / SOUTH / SOUTH-EAST — never the true EAST/WEST full-profile
@@ -1183,8 +1169,18 @@ const ENEMY_LANE_TRACK_MULT = {
 // completion report). GABRIEL/ADAM/adamSphere are untouched, out of item 3's
 // scope (CLAW pacing is governed by its own separate CLAW_* constants, not
 // this multiplier, and adamSphere pacing was not part of this round's ask).
+// 26TH ROUND item 5: real-play feedback said DRONE/ROID1/ROID2/ADAM SPHERE
+// still went too long without attacking (GABRIEL/ADAM explicitly excluded
+// again, per spec — left at their prior values). Further reduced from the
+// 24th round's own values, and ADAM SPHERE in particular (0.55, notably
+// more passive than the other 3) brought down close to their range rather
+// than a small trim — measured via a real 30s Playwright attack-count
+// before/after this round (see completion report). Telegraph/impact/
+// recovery/cooldown timing and the "no overlapping/unavoidable window"
+// guarantee are completely untouched — only the idle re-check wait window
+// shrinks.
 const ENEMY_ATTACK_FREQ_MULT = {
-  drone: 0.18, roid1: 0.25, roid2: 0.24, gabriel: 0.65, adamSphere: 0.55, adam: 0.70,
+  drone: 0.12, roid1: 0.16, roid2: 0.15, gabriel: 0.65, adamSphere: 0.30, adam: 0.70,
 };
 // 13TH ROUND (item 4): ESCAPE keeps continuous attack pressure (SURVIVE +
 // dodge, not a quiet run) — reuses the SAME ENEMY_ATTACK_FREQ_MULT/
@@ -2543,10 +2539,9 @@ const state = {
     // NEXT ROUND PART N: smoothed lean angle (radians) for normal (non-DASH)
     // EAST/WEST movement — see updateEscapePlayer()/renderEscapePlayer().
     leanAngle: 0,
-    // 25TH ROUND item 5: JUMP is now usable basically any time (not just
-    // during a METROPOLIS COLLAPSE 'approach' rubble event) — a free-
-    // standing hop, independent of state.escape.collapse.jumping, reusing
-    // the exact same visual arc. See updateEscapeCollapse()/renderEscapePlayer().
+    // JUMP is usable at any time (26TH ROUND item 9: the old rubble-only
+    // jump-timing minigame is removed entirely) — the ONLY jump system now.
+    // See updateEscapeCollapse()/renderEscapePlayer().
     freeJumping: false,
     freeJumpStartedAt: 0,
     // edge-triggered ESCAPE-exclusive actions, consumed each frame by
@@ -2558,20 +2553,17 @@ const state = {
     // `actions` above since these track raw button-down MOMENTS across
     // frames, not a one-shot edge-triggered command.
     lbDownAt: 0, rbDownAt: 0,
-    // NEW FEATURE: METROPOLIS COLLAPSE state — see the COLLAPSE_* constants
-    // and updateEscapeCollapse()/renderCollapse*() for the full design
-    // rationale. phase: 'idle'|'quake'|'obstacles'|'recede'|'approach'|
-    // 'jumping'|'rubbleRecede'|'recover'.
+    // METROPOLIS COLLAPSE state — see the COLLAPSE_* constants and
+    // updateEscapeCollapse()/renderCollapseObstacles() for the full design
+    // rationale. phase: 'idle'|'quake'|'obstacles'|'recover'. 26TH ROUND
+    // item 1/3: the old static rubble-pile/forced-player-recede timing-game
+    // sub-phases ('recede'/'rubbleForm'/'approach'/'jumping'/'rubbleRecede')
+    // are removed — only real falling/rolling debris hazards remain.
     collapse: {
       phase: 'idle',
       phaseStartedAt: 0,
       nextEventAt: 6000, // real elapsed ms before the FIRST cycle can fire (real interval is re-rolled every cycle after — see updateEscapeCollapse())
       shakeX: 0, shakeY: 0, tiltAngle: 0,
-      farProgress: 0,       // player's own recede(1)/approach(0) cinematic progress
-      jumpQueued: false,    // JUMP pressed during 'approach' but buffered (see COLLAPSE_JUMP_EARLY_CAP)
-      jumpStartedAt: 0,
-      jumpLaunchProgress: 0,
-      rubble: null,          // { recedeProgress, passed } while a rubble pile exists on screen
       obstacles: [],         // [{ z, worldX, screenXAtHit, resolved, hit }]
     },
     // 9TH ROUND (item 36): counts down from ESCAPE_TIME_LIMIT_SEC in real
@@ -2787,9 +2779,28 @@ const STRUCTURE_KINDS = [
 ];
 
 const structures = [];
+// 26TH ROUND item 11: LAB's bio/cultivation equipment (labTank/labConsole)
+// used to get the SAME single-random-phase-per-slot treatment every other
+// structure kind uses (phase>PI -> right, else left) — with only ~10-15
+// instances total that random draw is rolled ONCE at module load (this
+// array is built here, not per-playthrough) and can easily land lopsided
+// for an entire session by pure chance, exactly matching the reported
+// "right side dense, left side empty" screenshot. Per spec ("完全な鏡写し
+// で構いません"), these two LAB-only kinds now spawn as a GUARANTEED
+// mirrored pair at every z slot (one forced-left, one forced-right)
+// instead of one random-side instance — deterministic left/right parity
+// every time, no reliance on how the random draw happened to fall. Every
+// other structure kind (gantry/pipe/panel/etc.) keeps its original
+// single-random-phase behavior unchanged.
+const MIRRORED_STRUCTURE_KINDS = { labTank: true, labConsole: true };
 for (const def of STRUCTURE_KINDS) {
   for (let z = Z_NEAR + def.spacing * 0.5; z < Z_FAR; z += def.spacing) {
-    structures.push({ kind: def.kind, z, phase: Math.random() * Math.PI * 2 });
+    if (MIRRORED_STRUCTURE_KINDS[def.kind]) {
+      structures.push({ kind: def.kind, z, phase: 0 });                 // forced left (phase <= PI)
+      structures.push({ kind: def.kind, z, phase: Math.PI + 0.01 });    // forced right (phase > PI)
+    } else {
+      structures.push({ kind: def.kind, z, phase: Math.random() * Math.PI * 2 });
+    }
   }
 }
 
@@ -4050,15 +4061,23 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   // renderEscapePlayer() for how these are drawn and faded out.
   if (actions.westDash || actions.eastDash) {
     const dashDirSign = actions.westDash ? -1 : 1;
+    // 26TH ROUND item 4: the afterimage ghosts now render visibly TILTED in
+    // the dash direction (WEST ~15deg, EAST ~25deg — spec's own asymmetric
+    // values, kept exactly as given rather than mirrored/averaged) instead
+    // of duplicating the plain upright running pose — see renderEscapePlayer()
+    // for where afterimageAngleRad is applied as a Canvas rotate() around
+    // each ghost's own center. The live PLAYER body itself is untouched
+    // (still the normal upright run-frame image, no rotation).
+    const afterimageAngleRad = (actions.westDash ? -15 : 25) * Math.PI / 180;
     const oldCx = state.centerX + p.strafeOffset;
     const bottomYNow = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
     const frameNow = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
     if (imgReady(frameNow.img)) {
       const startRect = computeEscapePlayerDrawRect(oldCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
-      es.afterimages.push({ img: frameNow.img, dx: startRect.dx, dy: startRect.dy, drawW: startRect.drawW, drawH: startRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS });
+      es.afterimages.push({ img: frameNow.img, dx: startRect.dx, dy: startRect.dy, drawW: startRect.drawW, drawH: startRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad });
       const midCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
       const midRect = computeEscapePlayerDrawRect(midCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
-      es.afterimages.push({ img: frameNow.img, dx: midRect.dx, dy: midRect.dy, drawW: midRect.drawW, drawH: midRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS * 0.7 });
+      es.afterimages.push({ img: frameNow.img, dx: midRect.dx, dy: midRect.dy, drawW: midRect.drawW, drawH: midRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS * 0.7, angleRad: afterimageAngleRad });
     }
     p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
@@ -4266,15 +4285,12 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
   const es = state.escape;
   const elapsed = now - c.phaseStartedAt;
 
-  // 25TH ROUND item 5: JUMP was only ever readable during the 'approach'
-  // rubble-clearing window (the branch below still owns that real
-  // rubble-avoidance behavior, unchanged) — everywhere else a press simply
-  // did nothing, which read as "JUMP is broken". Outside that window, a
-  // press now always starts a free-standing hop with the identical visual
-  // arc (renderEscapePlayer() below), so the LB+RB input is live basically
-  // any time, exactly as requested — no new dodge/damage-avoidance
-  // behavior is attached to it, only the missing visual response.
-  if (jumpPressed && c.phase !== 'approach' && !c.jumping && !es.freeJumping) {
+  // 26TH ROUND item 3/1: the old 'approach'/'jumping' rubble-clearing
+  // timing-game window is gone (see below — the static rubble pile it
+  // existed for is removed entirely), so JUMP is simply live at any time
+  // now — a free-standing hop with the identical visual arc
+  // (renderEscapePlayer() below).
+  if (jumpPressed && !es.freeJumping) {
     es.freeJumping = true;
     es.freeJumpStartedAt = now;
   }
@@ -4293,8 +4309,6 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
     shakeEnvelope = clamp(elapsed / 260, 0, 1) * clamp(1 - Math.max(0, elapsed - (COLLAPSE_QUAKE_MS - 300)) / 300, 0, 1);
   } else if (c.phase === 'obstacles') {
     shakeEnvelope = 0.55 * clamp(1 - Math.max(0, elapsed - (COLLAPSE_OBSTACLES_MS - 300)) / 300, 0, 1);
-  } else if (c.phase === 'recede') {
-    shakeEnvelope = 0.35 * clamp(1 - elapsed / COLLAPSE_RECEDE_MS, 0, 1);
   }
   if (shakeEnvelope > 0) {
     c.shakeX = (Math.random() * 2 - 1) * COLLAPSE_SHAKE_PEAK_PX * shakeEnvelope;
@@ -4328,9 +4342,6 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
     if (now >= c.nextEventAt && state.enemy.attackState !== 'impact') {
       c.phase = 'quake';
       c.phaseStartedAt = now;
-      c.farProgress = 0;
-      c.jumpQueued = false;
-      c.rubble = null;
       c.obstacles.length = 0;
     }
   } else if (c.phase === 'quake') {
@@ -4347,71 +4358,15 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
       // advanceCollapseWorldZ()/renderCollapseObstacles() (both called
       // unconditionally every ESCAPE frame regardless of c.phase) and culls
       // itself naturally once COLLAPSE_DEBRIS_CULL_Z is reached.
-      c.phase = 'recede'; c.phaseStartedAt = now;
+      // 26TH ROUND item 1/3: the old 'recede'->'rubbleForm'->'approach'->
+      // 'jumping'->'rubbleRecede' chain (a static rubble pile the player's
+      // OWN screen position was forcibly zoomed away from and back toward
+      // for a JUMP-over-it timing game) is removed entirely per spec —
+      // that pile was exactly the "static debris pile"/"forced player
+      // repositioning" the spec bans. Only the real falling/rolling debris
+      // above remains as the collapse hazard; go straight to 'recover'.
+      c.phase = 'recover'; c.phaseStartedAt = now;
     }
-  } else if (c.phase === 'recede') {
-    const t = clamp(elapsed / COLLAPSE_RECEDE_MS, 0, 1);
-    c.farProgress = t; // STEP5: current size -> continuously smaller -> fully far, never a snap
-    if (t >= 1) {
-      // NEXT ROUND (spec section 8): the pile does not simply fade in at
-      // full size the instant recede completes — 'rubbleForm' (below) plays
-      // a short formation beat first (chunks visibly falling and landing),
-      // with formProgress (0=nothing yet, 1=fully assembled) driving both
-      // the falling-chunk spawn below and renderCollapseRubble()'s own
-      // height/reveal. seed is rolled ONCE here so the pile's shape stays
-      // stable for its entire lifetime (never re-randomizes per frame).
-      c.rubble = { recedeProgress: 0, passed: false, formProgress: 0, seed: Math.random() * 1000 };
-      c.phase = 'rubbleForm'; c.phaseStartedAt = now;
-    }
-  } else if (c.phase === 'rubbleForm') {
-    const t = clamp(elapsed / COLLAPSE_RUBBLE_FORM_MS, 0, 1);
-    if (c.rubble) c.rubble.formProgress = t;
-    // A handful of bigger chunks visibly fall and land at the pile's own
-    // screen position while it assembles — never just a silent fade-in.
-    if (Math.random() < dt * 14) {
-      spawnParticle({
-        type: 'quakeDebris',
-        x: state.centerX + (Math.random() * 2 - 1) * 70,
-        y: state.cssH * 0.55,
-        vx: (Math.random() * 2 - 1) * 30, vy: 260 + Math.random() * 120,
-        rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() * 2 - 1) * 9,
-        size: 4 + Math.random() * 6,
-        born: now, until: now + 500 + Math.random() * 200,
-      });
-    }
-    if (t >= 1) { c.phase = 'approach'; c.phaseStartedAt = now; }
-  } else if (c.phase === 'approach') {
-    if (jumpPressed && !c.jumping) c.jumpQueued = true;
-    const t = clamp(elapsed / COLLAPSE_APPROACH_MS, 0, 1);
-    if (!c.jumping) c.farProgress = 1 - t; // STEP6/11: continuously grows back toward normal size as it "runs toward camera"
-    if (c.jumpQueued && !c.jumping && c.farProgress <= COLLAPSE_JUMP_EARLY_CAP) {
-      // STEP7: launch — an early press was buffered above (COLLAPSE_JUMP_EARLY_CAP), never wasted/ignored.
-      c.jumping = true;
-      c.jumpStartedAt = now;
-      c.jumpLaunchProgress = c.farProgress;
-      c.jumpQueued = false;
-      c.phase = 'jumping'; c.phaseStartedAt = now;
-    } else if (t >= 1) {
-      // STEP14: never jumped in time -> collided with the rubble. Non-lethal per spec (just damage).
-      damageEscapePlayer(COLLAPSE_RUBBLE_DAMAGE, now);
-      c.farProgress = 0;
-      if (c.rubble) c.rubble.passed = true;
-      c.phase = 'rubbleRecede'; c.phaseStartedAt = now;
-    }
-  } else if (c.phase === 'jumping') {
-    const jumpT = clamp(elapsed / COLLAPSE_JUMP_MS, 0, 1);
-    c.farProgress = c.jumpLaunchProgress * (1 - jumpT); // continues approaching THROUGH the jump — never freezes mid-air
-    if (jumpT >= 1) {
-      // STEP12/13: landed exactly at the rubble's own position -> cleared it.
-      c.jumping = false;
-      c.farProgress = 0;
-      if (c.rubble) c.rubble.passed = true;
-      c.phase = 'rubbleRecede'; c.phaseStartedAt = now;
-    }
-  } else if (c.phase === 'rubbleRecede') {
-    const t = clamp(elapsed / COLLAPSE_RUBBLE_RECEDE_MS, 0, 1);
-    if (c.rubble) c.rubble.recedeProgress = t; // STEP9: rubble (now behind the player) shrinks/recedes away, never vanishes instantly
-    if (t >= 1) { c.rubble = null; c.phase = 'recover'; c.phaseStartedAt = now; }
   } else if (c.phase === 'recover') {
     if (elapsed >= COLLAPSE_RECOVER_MS) {
       c.phase = 'idle'; c.phaseStartedAt = now;
@@ -4492,9 +4447,17 @@ function renderCollapseObstacles() {
     ctx.save();
     ctx.translate(proj.x, proj.y);
     ctx.rotate(ob.rotationAngle);
-    const baseColor = ob.hit ? '#8a3226' : '#403c34';
-    const darkColor = ob.hit ? '#5c2018' : '#211e19';
-    const topColor = ob.hit ? '#b3543f' : '#5c554a';
+    // 26TH ROUND item 12 (visual QC): real screenshot review found these
+    // concrete-tone colors sat too close in luminance to the near-black
+    // ESCAPE corridor background — the piece WAS drawing correctly (angular
+    // 3-face blocks + rebar, confirmed by direct pixel inspection) but read
+    // as a faint smudge rather than a legible fragment. Brightened across
+    // the board (front/dark/top-highlight all lifted), never changing the
+    // shapes/geometry themselves, just enough separation to read clearly
+    // against the dark background at any distance.
+    const baseColor = ob.hit ? '#a8402f' : '#5a5348';
+    const darkColor = ob.hit ? '#742a1c' : '#332f28';
+    const topColor = ob.hit ? '#c9705a' : '#84796a';
     // 25TH ROUND additional item 4 (pseudo-3D reinforcement): each concrete
     // piece is now drawn as a real 3-face block (front/top/side), never a
     // single flat rotated rect — the extrusion offset is a FIXED screen-
@@ -4616,138 +4579,6 @@ function renderCollapseObstacles() {
     ctx.ellipse(floorProj.x, floorProj.y, w * 0.45, h * 0.14, 0, 0, Math.PI * 2);
     ctx.fill();
   }
-}
-
-// Deterministic [0,1) hash — shared shape-seeding approach already used by
-// renderCollapseObstacles()'s own `rnd` — reused here so the rubble pile's
-// jagged shape is stable across frames (seeded once at spawn) rather than
-// re-randomizing every draw.
-function collapseHash(seed, i) {
-  const v = Math.sin(seed + i * 12.9898) * 43758.5453;
-  return v - Math.floor(v);
-}
-
-// NEXT ROUND (spec sections 9-11): the previous version was a single smooth
-// hill polygon + round speckles, which real-play feedback read as "a potato
-// on the road" rather than collapsed man-made structure. Rebuilt as an
-// assembly of distinct angular pieces — tilted concrete slab chunks (rotated
-// rects), diagonal steel beams (long thin rotated rects, some ends
-// intentionally poking past the silhouette), and a few rebar strokes —
-// never circles/ellipses for the structural pieces. formProgress (spec
-// section 8) reveals pieces progressively (a growing subset, each easing in
-// its own height) instead of an instant full-size pop; recedeProgress (spec
-// sections 11/17, unchanged mechanism) reuses the SAME collapseFarVisual()
-// interpolation the player's own recede/approach cinematic uses, so the
-// pile shrinks/lifts away exactly in sync with the existing perspective
-// system once passed.
-const COLLAPSE_RUBBLE_CHUNK_COUNT = 8;
-const COLLAPSE_RUBBLE_BEAM_COUNT = 3;
-function renderCollapseRubble(now) {
-  const c = state.escape.collapse;
-  if (!c.rubble) return;
-  const far = collapseFarVisual(c.rubble.recedeProgress, COLLAPSE_FAR_SCALE_DROP, COLLAPSE_FAR_SCREEN_PX);
-  if (far.scaleMul <= 0.02) return;
-  const seed = c.rubble.seed || 1;
-  const formT = c.rubble.formProgress == null ? 1 : c.rubble.formProgress; // pre-STEP8 rubble (shouldn't happen, but never crash) reads as fully formed
-  const cx = state.centerX;
-  const bottomY = state.cssH * 1.02 - far.screenYPush;
-  const w = COLLAPSE_RUBBLE_W_PX * far.scaleMul;
-  const h = COLLAPSE_RUBBLE_H_PX * far.scaleMul;
-  ctx.save();
-  ctx.globalAlpha = clamp(1 - c.rubble.recedeProgress * 0.15, 0, 1); // very slight fade only at the tail end of receding, pile stays solid/readable most of the way
-
-  // Ground contact dust/scorch — a soft flat smear, never a bright shape,
-  // so the pile reads as SITTING on the road rather than floating.
-  ctx.fillStyle = 'rgba(20,18,15,0.35)';
-  ctx.beginPath();
-  ctx.ellipse(cx, bottomY - 2 * far.scaleMul, w * 0.56, h * 0.16, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Concrete slab chunks: rotated rects of varying gray tone, clustered
-  // taller toward the center and lower at the edges (spec section 10's low
-  // "flanks rising to a middle peak" silhouette), revealed progressively.
-  const chunkGrays = ['#3a352e', '#332f29', '#403a32', '#2c2823', '#453f36'];
-  const visibleChunks = Math.max(1, Math.round(COLLAPSE_RUBBLE_CHUNK_COUNT * formT));
-  for (let i = 0; i < visibleChunks; i++) {
-    const r1 = collapseHash(seed, i), r2 = collapseHash(seed, i + 50), r3 = collapseHash(seed, i + 100);
-    const fx = -0.46 + (i / (COLLAPSE_RUBBLE_CHUNK_COUNT - 1)) * 0.92; // -0.46..+0.46 across the pile width
-    const centerBias = 1 - Math.abs(fx) * 1.3; // taller near the middle, low at the flanks
-    const chunkH = h * (0.28 + Math.max(0, centerBias) * 0.65 + r1 * 0.18);
-    const chunkW = w * (0.16 + r2 * 0.12);
-    // per-chunk own reveal easing so the LAST-revealed chunk visibly grows
-    // in rather than appearing at full height instantly.
-    const growT = clamp(formT * COLLAPSE_RUBBLE_CHUNK_COUNT - i, 0, 1);
-    if (growT <= 0) continue;
-    const px = cx + fx * w;
-    ctx.save();
-    ctx.translate(px, bottomY - (chunkH * growT) / 2);
-    ctx.rotate((r3 - 0.5) * 0.7); // angular tilt, never axis-aligned rubble
-    ctx.fillStyle = chunkGrays[i % chunkGrays.length];
-    ctx.fillRect(-chunkW / 2, -(chunkH * growT) / 2, chunkW, chunkH * growT);
-    // a lighter broken edge on one side reads as a fractured concrete face
-    ctx.fillStyle = 'rgba(255,255,255,0.05)';
-    ctx.fillRect(-chunkW / 2, -(chunkH * growT) / 2, chunkW * 0.22, chunkH * growT);
-    ctx.restore();
-  }
-
-  // Steel beams: long thin dark rotated rects crossing diagonally over the
-  // pile, deliberately allowed to extend past the chunk silhouette at one
-  // end (spec section 9's "一部飛び出した鉄筋/鉄骨"). Only settle in once
-  // the pile is mostly formed (heavy pieces land last).
-  const beamT = clamp((formT - 0.5) * 2, 0, 1);
-  if (beamT > 0) {
-    for (let i = 0; i < COLLAPSE_RUBBLE_BEAM_COUNT; i++) {
-      const r1 = collapseHash(seed, i + 200), r2 = collapseHash(seed, i + 260);
-      const bx = cx + (-0.3 + i * 0.3 + (r1 - 0.5) * 0.15) * w;
-      const by = bottomY - h * (0.35 + r2 * 0.35);
-      const len = w * (0.42 + r1 * 0.2) * beamT;
-      const ang = -0.5 + i * 0.35 + (r2 - 0.5) * 0.3;
-      ctx.save();
-      ctx.translate(bx, by);
-      ctx.rotate(ang);
-      ctx.fillStyle = '#1a1a1c';
-      ctx.fillRect(-len / 2, -h * 0.028, len, h * 0.056);
-      ctx.strokeStyle = 'rgba(140,145,150,0.35)';
-      ctx.lineWidth = Math.max(0.5, h * 0.012);
-      ctx.beginPath(); ctx.moveTo(-len / 2, -h * 0.028); ctx.lineTo(len / 2, -h * 0.028); ctx.stroke();
-      ctx.restore();
-    }
-  }
-
-  // Thin rebar strokes sticking out of the top chunks, and small angular
-  // debris chips (quads, never circles) scattered for texture/dust.
-  if (formT > 0.4) {
-    ctx.strokeStyle = 'rgba(90,80,70,0.6)';
-    ctx.lineWidth = Math.max(0.5, h * 0.018);
-    for (let i = 0; i < 4; i++) {
-      const r1 = collapseHash(seed, i + 300), r2 = collapseHash(seed, i + 340);
-      const rx = cx + (-0.35 + i * 0.24 + (r1 - 0.5) * 0.1) * w;
-      const ry = bottomY - h * (0.55 + r2 * 0.35);
-      const len = h * (0.18 + r1 * 0.14);
-      const ang = -0.9 + r2 * 1.8;
-      ctx.beginPath();
-      ctx.moveTo(rx, ry);
-      ctx.lineTo(rx + Math.sin(ang) * len, ry - Math.cos(ang) * len);
-      ctx.stroke();
-    }
-    ctx.fillStyle = '#1c1815';
-    for (let i = 0; i < 6; i++) {
-      const r1 = collapseHash(seed, i + 400), r2 = collapseHash(seed, i + 440), r3 = collapseHash(seed, i + 480);
-      const qx = cx + (-0.48 + r1 * 0.96) * w;
-      const qy = bottomY - h * (0.06 + r2 * 0.5);
-      const s = w * (0.02 + r3 * 0.025);
-      ctx.save();
-      ctx.translate(qx, qy);
-      ctx.rotate(r1 * Math.PI);
-      ctx.beginPath();
-      ctx.moveTo(-s, -s * 0.6); ctx.lineTo(s * 0.7, -s); ctx.lineTo(s, s * 0.5); ctx.lineTo(-s * 0.6, s);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  ctx.restore();
 }
 
 // PART 4 (2nd round): the closest world-z ROID1/ROID2 can ever be pushed to
@@ -5118,6 +4949,10 @@ const MISSILE_LAUNCH_FLASH_MS = 160;
 // continuous spin so the dart-shaped body (see getMissile/BarrageProjectileVisual()'s
 // render sites) reads as "回転しながら接近してくる", never a static orb.
 const MISSILE_SPIN_RATE = 0.012;
+// 26TH ROUND item 7: max amplitude (radians) of the dart's own gentle
+// back-and-forth roll oscillation — see drawMissileDartBody()'s rotate()
+// call. Bounded, never a full continuous spin.
+const MISSILE_ROLL_MAX_RAD = 0.32; // ~18 degrees either way
 function getMissileProjectileVisual(e) {
   const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1); // 1=just launched (far), 0=impact (at target)
   const bodyWorldZ = e.missileTargetWorldZ + MISSILE_APPROACH_Z_BONUS * heightFrac;
@@ -6445,7 +6280,19 @@ function computeEnemyDrawRect() {
   const w = nativeW * scale;
   const h = nativeH * scale;
   const dx = proj.x - w / 2;
-  const dy = proj.y - frame.bodyBottomFrac * h;
+  let dy = proj.y - frame.bodyBottomFrac * h;
+  // 26TH ROUND item 2: at close range the foot-anchored sprite can reach
+  // tall enough that its head goes above the top of the screen (root
+  // cause: ESCAPE's own pursuit oscillation — updateEscapeEnemyPursuit() —
+  // can swing e.z down to ESCAPE_ENEMY_PURSUIT_MIN_Z=500, which is CLOSER
+  // than approachZMinForRoid()'s own dynamic "whole body just fits"
+  // floor at typical viewport heights, so ROID1/ROID2/DRONE could render
+  // taller than the screen there specifically). Per spec: never shrink the
+  // sprite to fix this — instead push the WHOLE sprite straight down
+  // (position only, draw size untouched) just enough to keep the head
+  // clear of a safe top margin, preserving the "迫力"/close-up size.
+  const roidTopSafeMarginPx = state.cssH * ROID_TOP_SAFE_MARGIN_FRAC;
+  if (dy < roidTopSafeMarginPx) dy += roidTopSafeMarginPx - dy;
 
   // 11TH ROUND (items 17-19): ROID1/ROID2 HEAD WEAK POINT — only present
   // when the current frame carries real measured head metadata
@@ -7517,6 +7364,31 @@ function drawRedTintedSprite(img, dx, dy, w, h) {
 // ESCAPE MODE has no mask at all (see that branch's own comment), so
 // renderEnemy()'s existing pre-mask tint is already fully correct there —
 // this function is only ever called from the COMBAT render branch.
+// 26TH ROUND item 16/17: GABRIEL/ADAM's own melee-attack pose used to draw
+// via the normal pre-mask renderEnemy() call only, so the SAME darkness-
+// mask bug class as barrels/telegraphs/blasts (see their own comments)
+// applied here too — whichever part of the boss's silhouette fell outside
+// the currently-lit circle got darkened/partially hidden mid-CLAW, exactly
+// what spec bans ("接近攻撃中はSPOTLIGHT範囲外だからといって...一部を暗く
+// したりしないでください"). This redraws the SAME boss sprite (already
+// drawn once by renderEnemy() above, unclipped/full-brightness) a second
+// time here, AFTER the mask, ONLY while a real melee attack is actually in
+// progress (blink/telegraph/impact/counterApproach/counterAttack/defense —
+// never the ordinary 'idle'/'recovery'/'cooldown' stalking states, which
+// keep the normal spotlight-visibility rules). Runs BEFORE renderBlasts()/
+// renderPlayer() below, matching spec's own BOSS SPRITE -> ATTACK EFFECT ->
+// PLAYER ordering; renderEnemyHitFlash() right after still layers its own
+// red damage tint on top when both happen to be active on the same frame.
+const BOSS_ATTACK_ACTIVE_STATES = { blink: true, telegraph: true, impact: true, counterApproach: true, counterAttack: true, defense: true };
+function renderBossAttackFullBody() {
+  const e = state.enemy;
+  if (e.kind !== 'claw' || e.deathState !== 'alive') return;
+  if (!BOSS_ATTACK_ACTIVE_STATES[e.attackState]) return;
+  const rect = computeEnemyDrawRect();
+  if (!imgReady(rect.img)) return;
+  ctx.drawImage(rect.img, rect.x, rect.y, rect.w, rect.h);
+}
+
 function renderEnemyHitFlash() {
   const e = state.enemy;
   const now = performance.now();
@@ -7828,31 +7700,13 @@ function renderEscapePlayer() {
   // project() already use elsewhere (farther = higher on screen).
   let bottomY = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
 
-  // NEW FEATURE: METROPOLIS COLLAPSE — the player's own recede(far)/
-  // approach(near) cinematic (spec section 8/9) and the mid-air JUMP hop
-  // (section 12), both layered on TOP of the normal depthPos-driven
-  // position/scale exactly like dashScalePulse already does — never a
-  // replacement, never an instant snap (see updateEscapeCollapse()'s own
-  // per-phase easing for how farProgress/jumpStartedAt change over time).
-  const collapse = es.collapse;
-  const collapseFar = collapseFarVisual(collapse.farProgress, COLLAPSE_FAR_SCALE_DROP, COLLAPSE_FAR_SCREEN_PX);
-  // 25TH ROUND item 4: "it's a collapse cutscene" is not license to shrink
-  // the player smaller than ORDINARY gameplay ever allows — clamp the
-  // recede multiplier so the FINAL combined scale (depth * dash-pulse *
-  // recede) never drops under ordinary play's own worst-case minimum
-  // (perspectiveScaleFromDepth at the farthest normal depthPos==1). The
-  // easing curve above the floor is untouched, so the perspective "receding
-  // into the distance" feel is preserved right up to that hard floor.
-  const ordinaryMinScale = 1 - ESCAPE_DEPTH_SCALE_RANGE;
-  const depthScaleNow = perspectiveScaleFromDepth(es.depthPos, ESCAPE_DEPTH_SCALE_RANGE);
-  const floorMul = ordinaryMinScale / Math.max(0.0001, depthScaleNow * es.dashScalePulse);
-  collapseFar.scaleMul = Math.max(collapseFar.scaleMul, Math.min(1, floorMul));
-  bottomY -= collapseFar.screenYPush;
-  if (collapse.phase === 'jumping') {
-    const jumpT = clamp((now - collapse.jumpStartedAt) / COLLAPSE_JUMP_MS, 0, 1);
-    bottomY -= Math.sin(jumpT * Math.PI) * COLLAPSE_JUMP_ARC_PX;
-  } else if (es.freeJumping) {
-    // 25TH ROUND item 5: identical hop arc, used outside rubble events.
+  // 26TH ROUND item 3: the old METROPOLIS COLLAPSE recede(far)/approach
+  // (near) cinematic — which forcibly zoomed the player's own screen
+  // position away and back for the (now-removed) rubble timing game — is
+  // gone. The JUMP hop below is the only collapse-related adjustment left,
+  // and it is entirely player-input-driven (JUMP press), never forced by
+  // the quake/collapse event itself.
+  if (es.freeJumping) {
     const jumpT = clamp((now - es.freeJumpStartedAt) / COLLAPSE_JUMP_MS, 0, 1);
     bottomY -= Math.sin(jumpT * Math.PI) * COLLAPSE_JUMP_ARC_PX;
   }
@@ -7896,7 +7750,7 @@ function renderEscapePlayer() {
   // point (cx, bottomY) every frame, regardless of each source image's own
   // padding — so the bike neither grows/shrinks, bounces vertically, nor
   // drifts horizontally when the sprite switches (spec section 3).
-  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse * collapseFar.scaleMul);
+  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
 
   // NEXT ROUND PART M: draw any live lateral-DASH afterimages BEHIND the
   // real sprite first — real captured PLAYER-sprite ghosts (see
@@ -7908,7 +7762,16 @@ function renderEscapePlayer() {
       const spawnMs = a.until - now <= ESCAPE_AFTERIMAGE_MS ? ESCAPE_AFTERIMAGE_MS : ESCAPE_AFTERIMAGE_MS * 0.7;
       const lifeFrac = Math.max(0, Math.min(1, (a.until - now) / spawnMs));
       ctx.globalAlpha = lifeFrac * 0.45;
-      ctx.drawImage(a.img, a.dx, a.dy, a.drawW, a.drawH);
+      if (a.angleRad) {
+        const acx = a.dx + a.drawW / 2, acy = a.dy + a.drawH / 2;
+        ctx.save();
+        ctx.translate(acx, acy);
+        ctx.rotate(a.angleRad);
+        ctx.drawImage(a.img, -a.drawW / 2, -a.drawH / 2, a.drawW, a.drawH);
+        ctx.restore();
+      } else {
+        ctx.drawImage(a.img, a.dx, a.dy, a.drawW, a.drawH);
+      }
     }
     ctx.globalAlpha = 1;
   }
@@ -8102,6 +7965,202 @@ function renderEnemy(theme) {
   ctx.restore();
 }
 
+// NEXT ROUND (spec sections 1-3): the projectile's real BODY — a small
+// dart/rocket silhouette (angular polygon, never a round orb or a white
+// rod/line), continuously spinning so it reads as tumbling through the
+// air as it approaches. Shared by the single-missile system and each
+// BARRAGE missile so both read identically.
+// 26TH ROUND item 9: hoisted out of renderEnemyTelegraphs() to top-level
+// scope (was a nested function declaration) so renderMissileProjectiles()
+// below can also call it — see that function's own comment for why the
+// missile/barrage projectile draw now happens as a separate, earlier pass
+// instead of living inside renderEnemyTelegraphs().
+function drawMissileDartBody(x, y, scale, hot) {
+  // 24TH ROUND item 17: 11 -> 16.5 (x1.5) — the existing far=small/near=
+  // large perspective relationship (the `scale` argument, untouched) is
+  // preserved exactly; only the base radius grows, so at close range this
+  // now reads clearly as "a shootable object."
+  // 25TH ROUND VISUAL QC: real screenshot review found that for most of
+  // the flight (mid-range Z-approach, scale ~0.15-0.3) the dart body was
+  // only 2-5px — small enough to visually disappear against ROID1/ROID2's
+  // own similarly-gray claws/limbs in the same screen area (confirmed via
+  // pixel sampling: the shape WAS drawing, but was indistinguishable by
+  // eye from the enemy's own metalwork). A floor keeps it readably-sized
+  // at any distance while the multiplicative scale still dominates once
+  // it grows past the floor (near impact) — "grows bigger as it nears"
+  // is preserved, but it no longer reads as invisible early/mid-flight.
+  const bodyR = Math.max(6, 16.5 * scale);
+  if (bodyR < 0.6) return;
+  ctx.save();
+  ctx.translate(x, y);
+  // soft ambient glow for visibility against dark backgrounds — a halo
+  // behind the dart, never the dominant shape itself (that was the old
+  // "glowing orb" bug this replaces).
+  // 25TH ROUND VISUAL QC (2nd pass): first bump (radius 2.1->2.8, alpha
+  // 0.4->0.6) measurably helped but real screenshot re-review still found
+  // it losing a figure-ground fight against ROID2's own bright claws in
+  // the same screen region — pushed further (radius ->3.4, alpha ->0.85)
+  // plus a small solid white-hot core (below) that a soft gradient alone
+  // can't provide, since a radial gradient's OWN center is necessarily
+  // its brightest point but still fades continuously, never giving a
+  // crisp bright dot to anchor on.
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, bodyR * 3.4);
+  glow.addColorStop(0, 'rgba(255,180,90,' + (0.85 * hot) + ')');
+  glow.addColorStop(1, 'rgba(255,90,40,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(0, 0, bodyR * 3.4, 0, Math.PI * 2); ctx.fill();
+  // crisp white-hot core dot — the actual "figure" a player's eye can
+  // latch onto, independent of how busy/similarly-toned the background
+  // behind it is.
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.9 * hot) + ')';
+  ctx.beginPath(); ctx.arc(0, 0, bodyR * 0.55, 0, Math.PI * 2); ctx.fill();
+
+  // 26TH ROUND item 7: the previous full continuous ctx.rotate() here
+  // spun the WHOLE dart shape around the screen's own Z axis without
+  // limit — at a glance that reads exactly like a pinwheel/propeller/
+  // screw, not a missile (explicit spec ban: "画面上で風車/スクリューに
+  // 見える回転は禁止"). Replaced with a small BOUNDED back-and-forth
+  // oscillation (never exceeds MISSILE_ROLL_MAX_RAD, ~18deg either way)
+  // — reads as the dart/fins gently rolling along its own flight axis
+  // while still pointing generally nose-first toward the camera, never a
+  // full spin.
+  ctx.rotate(Math.sin(performance.now() * MISSILE_SPIN_RATE) * MISSILE_ROLL_MAX_RAD);
+  ctx.fillStyle = '#cfd6dc';
+  ctx.beginPath();
+  ctx.moveTo(0, bodyR * 1.35);
+  ctx.lineTo(bodyR * 0.32, bodyR * 0.15);
+  ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
+  ctx.lineTo(-bodyR * 0.2, -bodyR * 0.95);
+  ctx.lineTo(-bodyR * 0.32, bodyR * 0.15);
+  ctx.closePath();
+  ctx.fill();
+  // dark shading down one side for a 3D (not flat-disc) read
+  ctx.fillStyle = 'rgba(20,20,25,0.4)';
+  ctx.beginPath();
+  ctx.moveTo(0, bodyR * 1.35);
+  ctx.lineTo(bodyR * 0.32, bodyR * 0.15);
+  ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
+  ctx.lineTo(0, -bodyR * 0.95);
+  ctx.closePath();
+  ctx.fill();
+  // small tail fins
+  ctx.fillStyle = '#8a9096';
+  ctx.beginPath();
+  ctx.moveTo(-bodyR * 0.2, -bodyR * 0.6); ctx.lineTo(-bodyR * 0.55, -bodyR); ctx.lineTo(-bodyR * 0.2, -bodyR * 0.95);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(bodyR * 0.2, -bodyR * 0.6); ctx.lineTo(bodyR * 0.55, -bodyR); ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
+  ctx.closePath(); ctx.fill();
+  // small hot exhaust glow at the tail
+  ctx.fillStyle = 'rgba(255,200,120,' + (0.85 * hot) + ')';
+  ctx.beginPath(); ctx.arc(0, -bodyR * 0.95, bodyR * 0.22, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+// NEXT ROUND (spec section 1): brief white flash at the ENEMY's own body
+// center at the instant of launch — separate from the projectile's own
+// body above.
+function renderMissileLaunchFlash(flashUntil) {
+  const now = performance.now();
+  if (!flashUntil || now >= flashUntil) return;
+  const t = clamp((flashUntil - now) / MISSILE_LAUNCH_FLASH_MS, 0, 1);
+  // NEXT ROUND (spec section 5): screenSpaceEnemyAnchor() is floor-level
+  // (the enemy's feet), which read as "発射位置が低すぎる" — chest-height
+  // anchor instead, for both ROID1 and ROID2.
+  const anchor = screenSpaceEnemyChestAnchor();
+  ctx.save();
+  const g = ctx.createRadialGradient(anchor.x, anchor.y, 0, anchor.x, anchor.y, 46);
+  g.addColorStop(0, 'rgba(255,255,255,' + (0.85 * t) + ')');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 46, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+// 26TH ROUND item 9: the missile/barrage PROJECTILE itself (the flying dart
+// + its target-area glow + shadow + launch flash) used to draw as part of
+// renderEnemyTelegraphs(), which runs AFTER renderPlayer() in frame() — so
+// a missile mid-flight, right up through the instant of impact, visibly
+// drew ON TOP of the player sprite (spec explicitly bans this: "ミサイルが
+// 主人公画像の上へオーバーレイされており不自然"). This is now its own pass,
+// called separately in frame() BEFORE renderPlayer()/renderEscapePlayer()
+// (BACKGROUND -> ENEMY -> MISSILE -> ...-> PLAYER, per spec's own ordering),
+// while the real damage hit-test (updateBullets()'s own missile-interception
+// logic) is completely untouched — only the VISUAL draw order moved, never
+// the collision timing.
+function renderMissileProjectiles() {
+  const e = state.enemy;
+  const now = performance.now();
+  if (e.kind === 'missile') {
+    if (e.attackState === 'lockon') {
+      const m = playerMarkerPos();
+      const blink = Math.sin(now * 0.02) > 0;
+      if (blink) {
+        ctx.save();
+        ctx.fillStyle = '#ff3b3b';
+        ctx.beginPath();
+        ctx.moveTo(m.x, m.y - 34);
+        ctx.lineTo(m.x - 12, m.y - 14);
+        ctx.lineTo(m.x + 12, m.y - 14);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    } else if (e.attackState === 'target') {
+      const progress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
+      const sc = e.missileTargetScale || 1;
+      const rx = (24 + progress * 10) * sc, ry = (9 + progress * 4) * sc;
+      const brighten = 0.4 + 0.3 * progress; // brief, understated -- never flickers
+      ctx.save();
+      ctx.fillStyle = 'rgba(230,230,236,' + (0.28 * brighten) + ')';
+      ctx.beginPath();
+      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(240,240,245,' + (0.3 + 0.25 * brighten) + ')';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      if (!e.missileDestroyed && e.missileHeight > 0.5) {
+        const pv = getMissileProjectileVisual(e);
+        const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
+        ctx.save();
+        const shadowRx = 16 * pv.scale, shadowRy = 6 * pv.scale;
+        ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
+        ctx.beginPath();
+        ctx.ellipse(pv.shadowX, pv.shadowY, shadowRx, shadowRy, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
+      }
+      renderMissileLaunchFlash(e.missileLaunchFlashUntil);
+    }
+    return;
+  }
+
+  if (e.kind === 'barrage' && e.barrage && e.barrage.length) {
+    for (const m of e.barrage) {
+      if (m.impacted || m.height <= 0.5) continue;
+      const pv = getBarrageProjectileVisual(m);
+      const heightFrac = clamp(m.height / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
+      const brighten = 0.4 + 0.3 * (1 - heightFrac);
+      ctx.save();
+      ctx.fillStyle = 'rgba(230,230,236,' + (0.26 * brighten) + ')';
+      ctx.beginPath();
+      ctx.ellipse(pv.shadowX, pv.shadowY, 22 * pv.scale, 8 * pv.scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
+      ctx.beginPath();
+      ctx.ellipse(pv.shadowX, pv.shadowY, 14 * pv.scale, 5 * pv.scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
+      renderMissileLaunchFlash(m.launchFlashUntil);
+    }
+  }
+}
+
 // FOLLOWUP FIX: attack telegraphs (LOCK boxes, ▲, target ellipse, bolts)
 // used to be drawn as part of renderEnemy(), BEFORE the DARK/FLASHLIGHT
 // mask — so the mask's own darkness overlay silently dimmed them to
@@ -8109,7 +8168,9 @@ function renderEnemy(theme) {
 // pixel sample: a "should be red" ▲ pixel came back near-black). A
 // telegraph exists specifically to warn the player regardless of where
 // their torch happens to be pointed, so this is drawn as its own pass
-// AFTER renderFlashlightMask() in the main loop instead.
+// AFTER renderFlashlightMask() in the main loop instead. 26TH ROUND item 9:
+// the missile/barrage projectile itself no longer draws here — see
+// renderMissileProjectiles() above, called separately/earlier in frame().
 function renderEnemyTelegraphs(theme) {
   const e = state.enemy;
   const now = performance.now();
@@ -8133,42 +8194,14 @@ function renderEnemyTelegraphs(theme) {
   }
 
   if (e.kind === 'claw' && (e.attackState === 'telegraph' || e.attackState === 'impact' || e.attackState === 'counterAttack')) {
-    // GABRIEL's melee telegraph is unchanged from before this batch: a
-    // simple growing warning ring at the player's position.
-    // 14TH ROUND (items 31-39): COUNTER's own windup reuses this exact same
-    // warning ring (grown over CLAW_WINDUP_MS, same as a normal telegraph)
-    // rather than inventing a second warning visual — a real DASH-avoidable
-    // tell, per item 37/spec ("プレイヤーはDASHで回避可能").
-    // 16TH ROUND (Part D): the old white/warn-colored STROKE-ONLY ellipse
-    // outline (a bare ring, no fill) read as a UI target marker, not an
-    // in-world warning — exactly the pattern PART D bans. Replaced with a
-    // filled, soft radial-gradient FLOOR GLOW at the same position/size/
-    // timing (grow/pulse logic untouched, so the DASH-avoidable warning
-    // window is identical) — reads as the floor itself locally brightening
-    // ahead of the strike, flashing warm-white right at 'impact', rather
-    // than a drawn ring shape.
-    const m = playerMarkerPos();
-    const tRemain = Math.max(0, e.attackUntil - now);
-    const grow = (e.attackState === 'telegraph' || e.attackState === 'counterAttack') ? (1 - tRemain / 700) : 1;
-    const isImpact = e.attackState === 'impact';
-    const rx = 50 + grow * 20, ry = 16 + grow * 6;
-    const pulse = isImpact ? 1 : 0.55 + 0.35 * Math.sin(now * 0.02);
-    ctx.save();
-    ctx.translate(m.x, m.y);
-    ctx.scale(1, ry / rx);
-    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(1, rx));
-    if (isImpact) {
-      grad.addColorStop(0, `rgba(255,250,235,${0.6 * pulse})`);
-      grad.addColorStop(0.55, `rgba(255,205,110,${0.4 * pulse})`);
-      grad.addColorStop(1, 'rgba(255,205,110,0)');
-    } else {
-      grad.addColorStop(0, `rgba(255,150,60,${0.34 * pulse})`);
-      grad.addColorStop(0.6, `rgba(255,110,40,${0.2 * pulse})`);
-      grad.addColorStop(1, 'rgba(255,110,40,0)');
-    }
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.arc(0, 0, rx, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
+    // 26TH ROUND item 6: the floor glow this block used to draw under the
+    // CLAW attack (a pale yellow/amber radial gradient at the player's own
+    // position, shared by BOTH GABRIEL and ADAM since neither is type-gated
+    // here — e.kind==='claw' covers both) is removed entirely per spec:
+    // "黄色い床/位置表示は完全削除". The attack is now conveyed purely by
+    // the boss's own sprite swap (windup/release pose, see
+    // computeEnemyDrawRect()) and its approach/lunge motion — no separate
+    // ground marker of any color.
     return;
   }
 
@@ -8205,198 +8238,6 @@ function renderEnemyTelegraphs(theme) {
       ctx.shadowBlur = 6;
       ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
       ctx.restore();
-    }
-    return;
-  }
-
-  // NEXT ROUND (spec sections 1-3): the projectile's real BODY — a small
-  // dart/rocket silhouette (angular polygon, never a round orb or a white
-  // rod/line), continuously spinning so it reads as tumbling through the
-  // air as it approaches. Shared by the single-missile system and each
-  // BARRAGE missile so both read identically.
-  function drawMissileDartBody(x, y, scale, hot) {
-    // 24TH ROUND item 17: 11 -> 16.5 (x1.5) — the existing far=small/near=
-    // large perspective relationship (the `scale` argument, untouched) is
-    // preserved exactly; only the base radius grows, so at close range this
-    // now reads clearly as "a shootable object."
-    // 25TH ROUND VISUAL QC: real screenshot review found that for most of
-    // the flight (mid-range Z-approach, scale ~0.15-0.3) the dart body was
-    // only 2-5px — small enough to visually disappear against ROID1/ROID2's
-    // own similarly-gray claws/limbs in the same screen area (confirmed via
-    // pixel sampling: the shape WAS drawing, but was indistinguishable by
-    // eye from the enemy's own metalwork). A floor keeps it readably-sized
-    // at any distance while the multiplicative scale still dominates once
-    // it grows past the floor (near impact) — "grows bigger as it nears"
-    // is preserved, but it no longer reads as invisible early/mid-flight.
-    const bodyR = Math.max(6, 16.5 * scale);
-    if (bodyR < 0.6) return;
-    ctx.save();
-    ctx.translate(x, y);
-    // soft ambient glow for visibility against dark backgrounds — a halo
-    // behind the dart, never the dominant shape itself (that was the old
-    // "glowing orb" bug this replaces).
-    // 25TH ROUND VISUAL QC (2nd pass): first bump (radius 2.1->2.8, alpha
-    // 0.4->0.6) measurably helped but real screenshot re-review still found
-    // it losing a figure-ground fight against ROID2's own bright claws in
-    // the same screen region — pushed further (radius ->3.4, alpha ->0.85)
-    // plus a small solid white-hot core (below) that a soft gradient alone
-    // can't provide, since a radial gradient's OWN center is necessarily
-    // its brightest point but still fades continuously, never giving a
-    // crisp bright dot to anchor on.
-    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, bodyR * 3.4);
-    glow.addColorStop(0, 'rgba(255,180,90,' + (0.85 * hot) + ')');
-    glow.addColorStop(1, 'rgba(255,90,40,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(0, 0, bodyR * 3.4, 0, Math.PI * 2); ctx.fill();
-    // crisp white-hot core dot — the actual "figure" a player's eye can
-    // latch onto, independent of how busy/similarly-toned the background
-    // behind it is.
-    ctx.fillStyle = 'rgba(255,255,255,' + (0.9 * hot) + ')';
-    ctx.beginPath(); ctx.arc(0, 0, bodyR * 0.55, 0, Math.PI * 2); ctx.fill();
-
-    // 25TH ROUND item 1: re-added — the missile is now explicitly THE
-    // "approaching head-on, visibly spinning as it nears camera" object a
-    // much earlier round's feedback described (see MISSILE_SPIN_RATE,
-    // defined once back then but left unused after a later round removed
-    // this same rotate() call for the OLD pure-vertical-fall design). Now
-    // that item 1 rebalances the flight itself to be Z-approach-dominant
-    // (MISSILE_APPROACH_Z_BONUS/MISSILE_PROJECTILE_START_HEIGHT above), a
-    // continuous tumble reinforces "flying toward you," not "falling."
-    ctx.rotate(performance.now() * MISSILE_SPIN_RATE);
-    ctx.fillStyle = '#cfd6dc';
-    ctx.beginPath();
-    ctx.moveTo(0, bodyR * 1.35);
-    ctx.lineTo(bodyR * 0.32, bodyR * 0.15);
-    ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
-    ctx.lineTo(-bodyR * 0.2, -bodyR * 0.95);
-    ctx.lineTo(-bodyR * 0.32, bodyR * 0.15);
-    ctx.closePath();
-    ctx.fill();
-    // dark shading down one side for a 3D (not flat-disc) read
-    ctx.fillStyle = 'rgba(20,20,25,0.4)';
-    ctx.beginPath();
-    ctx.moveTo(0, bodyR * 1.35);
-    ctx.lineTo(bodyR * 0.32, bodyR * 0.15);
-    ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
-    ctx.lineTo(0, -bodyR * 0.95);
-    ctx.closePath();
-    ctx.fill();
-    // small tail fins
-    ctx.fillStyle = '#8a9096';
-    ctx.beginPath();
-    ctx.moveTo(-bodyR * 0.2, -bodyR * 0.6); ctx.lineTo(-bodyR * 0.55, -bodyR); ctx.lineTo(-bodyR * 0.2, -bodyR * 0.95);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(bodyR * 0.2, -bodyR * 0.6); ctx.lineTo(bodyR * 0.55, -bodyR); ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
-    ctx.closePath(); ctx.fill();
-    // small hot exhaust glow at the tail
-    ctx.fillStyle = 'rgba(255,200,120,' + (0.85 * hot) + ')';
-    ctx.beginPath(); ctx.arc(0, -bodyR * 0.95, bodyR * 0.22, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-  }
-  // NEXT ROUND (spec section 1): brief white flash at the ENEMY's own body
-  // center at the instant of launch — separate from the projectile's own
-  // body above.
-  function renderMissileLaunchFlash(flashUntil) {
-    if (!flashUntil || now >= flashUntil) return;
-    const t = clamp((flashUntil - now) / MISSILE_LAUNCH_FLASH_MS, 0, 1);
-    // NEXT ROUND (spec section 5): screenSpaceEnemyAnchor() is floor-level
-    // (the enemy's feet), which read as "発射位置が低すぎる" — chest-height
-    // anchor instead, for both ROID1 and ROID2.
-    const anchor = screenSpaceEnemyChestAnchor();
-    ctx.save();
-    const g = ctx.createRadialGradient(anchor.x, anchor.y, 0, anchor.x, anchor.y, 46);
-    g.addColorStop(0, 'rgba(255,255,255,' + (0.85 * t) + ')');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 46, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-  }
-
-  // PART 7: MISSILE — blinking red LOCK ▲ during PHASE1, then a filled
-  // white ellipse at the frozen target ramping transparent->opaque as the
-  // countdown during PHASE2 (never just a stroked outline).
-  if (e.kind === 'missile') {
-    if (e.attackState === 'lockon') {
-      const m = playerMarkerPos();
-      const blink = Math.sin(now * 0.02) > 0;
-      if (blink) {
-        ctx.save();
-        ctx.fillStyle = '#ff3b3b';
-        ctx.beginPath();
-        ctx.moveTo(m.x, m.y - 34);
-        ctx.lineTo(m.x - 12, m.y - 14);
-        ctx.lineTo(m.x + 12, m.y - 14);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      }
-    } else if (e.attackState === 'target') {
-      // 14TH ROUND (items 1-4): the 12TH ROUND's orange/warm glow ellipse +
-      // rim + 6 converging light rays (real-device report: "茶色/橙色の楕円
-      // +放射状の線", read as a cheap symbolic marker) is gone. Replaced with
-      // a plain, brief, pale white/gray semi-transparent floor shadow —
-      // still driven by the SAME world-space pipeline (e.missileTargetWorldX/
-      // Z -> project() -> e.missileTargetX/Y/Scale, refreshed every tick by
-      // refreshMissileTargetScreenPos() from updateEnemy()), so it still sits
-      // ON THE FLOOR at the real locked world depth and never tracks the
-      // player once locked — only its OWN visual style changed. No rays, no
-      // saturated color, no rotation: a single soft ellipse that brightens
-      // slightly toward impact, kept deliberately understated because the
-      // NEW chain-explosion effect (below, at impact) is where the emphasis
-      // now belongs. Scoped to 'missile' kind only (ROID1/ROID2/ADAM SPHERE)
-      // — GABRIEL/ADAM's 'claw' telegraph and SNIPER's lock-box/bolt
-      // telegraph are both untouched. The PROJECTILE + PROJECTILE SHADOW
-      // block right below this is a SEPARATE, pre-existing system (12TH
-      // ROUND) and must not be confused with this floor-shadow warning.
-      const progress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
-      const sc = e.missileTargetScale || 1;
-      const rx = (24 + progress * 10) * sc, ry = (9 + progress * 4) * sc;
-      const brighten = 0.4 + 0.3 * progress; // brief, understated -- never flickers
-      ctx.save();
-      ctx.fillStyle = 'rgba(230,230,236,' + (0.28 * brighten) + ')';
-      ctx.beginPath();
-      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(240,240,245,' + (0.3 + 0.25 * brighten) + ')';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-
-      // 12TH ROUND (items 60-75): the interceptable PROJECTILE + its own
-      // PROJECTILE SHADOW — visually DISTINCT from the TARGET AREA above
-      // (that's the weapon's broad danger-zone warning; this is the
-      // physical falling object and the sharp, dark ground shadow it casts
-      // directly beneath itself). Both use the SAME locked world X/Z, so
-      // they sit concentric with the TARGET AREA by construction. Skipped
-      // once the projectile has been shot down (missileDestroyed).
-      if (!e.missileDestroyed && e.missileHeight > 0.5) {
-        const pv = getMissileProjectileVisual(e);
-        const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
-        ctx.save();
-        // SHADOW: a tight, dark, perspective-correct ellipse (never the
-        // TARGET AREA's warm glow) — this is what tells the player exactly
-        // where the object will land if they don't shoot it down.
-        const shadowRx = 16 * pv.scale, shadowRy = 6 * pv.scale;
-        ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
-        ctx.beginPath();
-        ctx.ellipse(pv.shadowX, pv.shadowY, shadowRx, shadowRy, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // NEXT ROUND (spec section 2): the old thin white connecting line
-        // between object and shadow is REMOVED — at high heightFrac (just
-        // launched) this line spanned a large fraction of the screen and
-        // was the actual root cause of the repeatedly-flagged "white
-        // rod/pole" complaint (never intentional as a "speed" effect). The
-        // shadow ellipse above already tells the player where it will
-        // land; the dart body below is its own now-legible falling object,
-        // so no connecting line is needed at all.
-        ctx.restore();
-        drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
-      }
-      renderMissileLaunchFlash(e.missileLaunchFlashUntil);
     }
     return;
   }
@@ -8440,38 +8281,9 @@ function renderEnemyTelegraphs(theme) {
     return;
   }
 
-  // --- 16TH ROUND PART S: MULTI MISSILE BARRAGE telegraph ---
-  // Each in-flight missile gets the EXACT SAME "understated floor shadow +
-  // TARGET AREA glow + small falling orb" visual the single MISSILE attack
-  // already uses (see the 'missile'/'target' branch above) — no rotating
-  // gauge/LOCK ON ring/white outline (item 148/149), reused per-missile via
-  // getBarrageProjectileVisual() so 3-4 can render at once.
-  if (e.kind === 'barrage' && e.barrage && e.barrage.length) {
-    for (const m of e.barrage) {
-      if (m.impacted || m.height <= 0.5) continue;
-      const pv = getBarrageProjectileVisual(m);
-      const heightFrac = clamp(m.height / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
-      const brighten = 0.4 + 0.3 * (1 - heightFrac);
-      ctx.save();
-      ctx.fillStyle = 'rgba(230,230,236,' + (0.26 * brighten) + ')';
-      ctx.beginPath();
-      ctx.ellipse(pv.shadowX, pv.shadowY, 22 * pv.scale, 8 * pv.scale, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // SHADOW: the actual "something is falling here" tell (item 149-151)
-      ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
-      ctx.beginPath();
-      ctx.ellipse(pv.shadowX, pv.shadowY, 14 * pv.scale, 5 * pv.scale, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // NEXT ROUND (spec section 2): same root-cause fix as the
-      // single-missile system above — the old thin white connecting line
-      // is removed (it was the actual "white rod" source), replaced with
-      // the same dart body.
-      ctx.restore();
-      drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
-      renderMissileLaunchFlash(m.launchFlashUntil);
-    }
-    return;
-  }
+  // 26TH ROUND item 9: the MULTI MISSILE BARRAGE projectile draw (was here)
+  // moved to renderMissileProjectiles() above, alongside the single-MISSILE
+  // system, for the same before-player draw-order fix.
 }
 
 function renderParticles() {
@@ -8873,7 +8685,15 @@ function updateEscapeEnemyPursuit(now) {
   // point so the cycle actually swings into real CLAW attack range (see
   // ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z's own comment) — every other type keeps
   // the original 500-1100 range exactly as tuned.
-  const minZ = (e.type === 'gabriel' || e.type === 'adam') ? ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z : ESCAPE_ENEMY_PURSUIT_MIN_Z;
+  // 26TH ROUND item 2 root cause: ESCAPE_ENEMY_PURSUIT_MIN_Z (500) is a
+  // fixed constant tuned for pursuit "feel", independent of viewport size —
+  // it can be CLOSER than approachZMinForRoid()'s own dynamic "whole body
+  // just fits on screen" floor, which is what let ROID1/ROID2/DRONE render
+  // taller than the screen (head cropped) at the near end of the ESCAPE
+  // pursuit swing. Never let the swing go closer than that floor.
+  const minZ = (e.type === 'gabriel' || e.type === 'adam')
+    ? ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z
+    : Math.max(ESCAPE_ENEMY_PURSUIT_MIN_Z, approachZMinForRoid());
   const phase = (now % ESCAPE_ENEMY_PURSUIT_PERIOD_MS) / ESCAPE_ENEMY_PURSUIT_PERIOD_MS;
   const mid = (minZ + ESCAPE_ENEMY_PURSUIT_MAX_Z) / 2;
   const amp = (ESCAPE_ENEMY_PURSUIT_MAX_Z - minZ) / 2;
@@ -9182,12 +9002,6 @@ function frame(ts) {
 
   const theme = THEMES[state.theme];
   renderCorridor(theme);
-  // 11TH ROUND (item 9): ESCAPE never shows BARRELs — COMBAT's own BARREL/
-  // COVER system (renderBarrels()/renderBarrelForeground()/isPlayerInCover()
-  // etc.) is completely untouched and still runs exactly as before for
-  // state.gameMode==='combat'; this is the ONLY change, a render-time skip
-  // gated on GAME MODE (never STAGE TYPE, per the existing decoupling).
-  if (state.gameMode !== 'escape') renderBarrels();
   if (state.gameMode === 'escape') {
     // 8TH ROUND (item 14): the enemy is no longer inert here — render it
     // and its attack telegraphs same as COMBAT (item 23: same warning/
@@ -9196,21 +9010,23 @@ function frame(ts) {
     // updateBullets()/fireWeapon()/renderBullets()/renderAimReticle() stay
     // excluded.
     renderEnemy(theme);
-    // NEW FEATURE: METROPOLIS COLLAPSE — left/right-avoid hazards render at
-    // the same environmental layer as the enemy (both are real world-Z
-    // objects via project()). The rubble pile is bracketed around
-    // renderEscapePlayer() below instead: it has NO world-Z of its own (see
-    // this feature's design comment), and needs to render IN FRONT of the
-    // player while approaching (matching spec section 9's "手前に瓦礫があ
-    // る" diagram) but BEHIND the player once passed/cleared (section 13 —
-    // "瓦礫が背後へ遠ざかる").
+    // METROPOLIS COLLAPSE — left/right-avoid hazards render at the same
+    // environmental layer as the enemy (both are real world-Z objects via
+    // project()). 26TH ROUND item 1: the old static "rubble pile" (a
+    // screen-anchored, non-world-Z blocking hazard the player had to
+    // JUMP over on a timing window) is removed entirely per spec — the
+    // only collapse hazard now is this real falling/bouncing/rolling
+    // debris, which already has its own world-Z and needs no special
+    // draw-order bracketing around the player.
     renderCollapseObstacles();
     renderParticles();
     renderBlasts(); // 16TH ROUND (Part A/B)
-    const rubble = state.escape.collapse.rubble;
-    if (rubble && rubble.passed) renderCollapseRubble(ts); // already behind the player -> draw first (ends up behind)
+    // 26TH ROUND item 9: missile/barrage projectile draws BEFORE the player
+    // now (was previously drawn via renderEnemyTelegraphs() AFTER the
+    // player further below, which let it visibly overlay the player sprite
+    // mid-flight/at impact — spec explicitly bans that).
+    renderMissileProjectiles();
     renderEscapePlayer();
-    if (rubble && !rubble.passed) renderCollapseRubble(ts); // still ahead of the player -> draw after (ends up in front)
     // 9TH ROUND (item 20): ESCAPE MODE has no LIGHT at all — it is a
     // survive-until-TIME-LIMIT mode, not explore-in-darkness, so the
     // darkness mask/flashlight is never drawn here (was previously called
@@ -9240,6 +9056,24 @@ function frame(ts) {
     // "behind the drum can" redraw moves with it (was previously paired
     // with this now-removed early draw).
     renderFlashlightMask();
+    // 26TH ROUND item 12/15 root-cause fix: renderBarrels() used to be called
+    // once at the very top of this function, BEFORE renderFlashlightMask() —
+    // the exact same bug class already fixed for the player/blasts/bullets/
+    // telegraphs/enemy-hit-flash (all moved to draw AFTER the mask, see their
+    // own comments), just never applied to barrels. Any barrel sitting
+    // outside the currently-lit circle was getting darkened by the mask's
+    // own ~0.90-alpha overlay, which is what actually read as "見た目が透け
+    // ている" (still asset-opaque per direct pixel measurement — this was a
+    // draw-order/lighting bug, not a real alpha problem). Moved here, after
+    // the mask, so barrels stay fully visible regardless of where the
+    // flashlight currently points, same as every other world object already
+    // gets. Still draws before renderPlayer() below, so the FLOOR -> BARREL
+    // -> PLAYER ordering is unchanged.
+    renderBarrels();
+    // 26TH ROUND item 16/17: BOSS full-body redraw during an active CLAW
+    // attack — see renderBossAttackFullBody()'s own comment. Must run before
+    // renderPlayer() (spec: BOSS ATTACK SPRITE -> ATTACK EFFECT -> PLAYER).
+    renderBossAttackFullBody();
     // 24TH ROUND item 16: see renderEnemyHitFlash()'s own comment — must run
     // after the mask, same bug class as everything else below it.
     renderEnemyHitFlash();
@@ -9254,6 +9088,12 @@ function frame(ts) {
     // points — confirmed via screenshot: the blast was nearly invisible
     // (dim grey, no fire color) until this move.
     renderBlasts();
+    // 26TH ROUND item 9: missile/barrage projectile draws here — AFTER the
+    // mask (so it stays fully visible/never darkened, same reasoning as
+    // renderBlasts() just above) but BEFORE renderPlayer() below, so the
+    // player sprite always renders in front of an approaching/impacting
+    // missile instead of the missile overlaying it.
+    renderMissileProjectiles();
     // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
     // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
     // below — otherwise any tracer segment landing outside the lit circle
