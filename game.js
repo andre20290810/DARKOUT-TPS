@@ -3236,13 +3236,30 @@ function pollGamepad(now) {
         if (dpadDown) gpMove.y += 1; // D-PAD down = south/back
       }
     }
+    // 26TH ROUND (COMBAT operation redesign): LEFT STICK now drives PLAYER
+    // MOVE too — analog (applyEscapeMoveCurve(), the same deadzone/curve
+    // shape ESCAPE's own analog dodge already uses, deliberately NOT
+    // applyLightCurve()'s flashlight-tuned compression), added on TOP of
+    // D-PAD's digital contribution above, into the SAME gpMove target. The
+    // magnitude-cap right below (unchanged) is what stops the two from
+    // ever adding up to more than 1 (i.e. never 2x speed) when both are
+    // held at once — D-PAD alone already saturates it at exactly 1, so
+    // LEFT STICK on top of a held D-PAD direction can only get clamped
+    // back down to that same 1, never past it.
+    gpMove.x += applyEscapeMoveCurve(gp.axes[0] || 0);
+    gpMove.y += applyEscapeMoveCurve(gp.axes[1] || 0);
     const moveMag = Math.hypot(gpMove.x, gpMove.y);
     if (moveMag > 1) { gpMove.x /= moveMag; gpMove.y /= moveMag; }
 
-    // PART 3/4 (3rd round): LEFT STICK -> FLASHLIGHT only (never MOVE).
-    // RIGHT STICK -> AIM only. Both curved+deadzoned independently now.
-    gpLight.x = applyLightCurve(gp.axes[0] || 0);
-    gpLight.y = applyLightCurve(gp.axes[1] || 0);
+    // 26TH ROUND: LEFT STICK no longer drives FLASHLIGHT at all — RIGHT
+    // STICK now drives ONE unified AIM+SPOTLIGHT target (gpAim only; gpLight
+    // stays permanently {0,0} in COMBAT so the existing gamepad-or-touch
+    // fallback at state.input.lightX/Y — `gpInput.light.x !== 0 ? ... :
+    // touchLight.x` — naturally falls through to TOUCH's own light stick
+    // untouched). See updatePlayer()'s AIM section below for how this
+    // single gpAim value now drives BOTH p.aimLiveX/Y and p.lightPersistX/Y
+    // together, and getFlashlightCenter()/getAimPoint() for how they now
+    // resolve to the exact same on-screen point.
     gpAim.x = applyAimCurve(gp.axes[2] || 0);
     gpAim.y = applyAimCurve(gp.axes[3] || 0);
 
@@ -3737,6 +3754,13 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   const strafeDeltaThisFrame = p.strafeOffset - strafeOffsetAtFrameStart;
   if (strafeDeltaThisFrame !== 0) {
     p.aimLiveX = clamp(p.aimLiveX - strafeDeltaThisFrame, -AIM_RANGE, AIM_RANGE);
+    // 26TH ROUND item 5: getFlashlightCenter()'s base now ALSO includes
+    // strafeOffset (to match getAimPoint()'s base exactly, for "AIM CENTER
+    // = SPOTLIGHT CENTER") — so it needs the exact same anti-drift
+    // compensation AIM just got above, or SPOTLIGHT would visibly slide
+    // out of sync with AIM the instant the player strafes (same root cause
+    // as the ROID1 aim-drift bug this pattern originally fixed).
+    p.lightPersistX = clamp(p.lightPersistX - strafeDeltaThisFrame, -AIM_RANGE, AIM_RANGE);
   }
 
   // NORTH/SOUTH world scroll (unchanged — the world still scrolls past a
@@ -3864,27 +3888,17 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
     p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
     p.aimLiveY += (targetLiveY - p.aimLiveY) * approachT;
-    // 13TH ROUND (items 9-19, real-device fix): LIGHT's own center follows
-    // the SAME hit point while FOCUS is active, by moving p.lightPersistX/Y
-    // DIRECTLY — the SAME single persistent-position field manual LEFT
-    // STICK input drives below (see the else-branch and getFlashlightCenter()).
-    // Round 12 used a SEPARATE additive p.lightFocusOffsetX/Y layered on top
-    // of a raw (non-persistent) stick read — that was the root cause of two
-    // real-device bugs: (1) LIGHT snapping back to the base center the
-    // instant the stick returned to neutral (state.input.lightX/Y is an
-    // absolute per-frame stick deflection, not a delta — reading it directly
-    // as "the base position" meant releasing the stick always recomputed
-    // base=center), and (2) AIM then reading as permanently stuck to the
-    // LIGHT circle's outer edge, because getAimPoint()'s own clamp (which is
-    // otherwise correct) was clamping AIM's stable absolute position against
-    // a LIGHT that snapped back to center every single frame. Using ONE
-    // persistent LIGHT position field — exactly the architecture aimLiveX/Y
-    // already used successfully — removes both the recenter bug and the
-    // "two variables competing" risk in one fix.
-    const targetLightPersistX = clamp(hitPt.x - state.centerX, -LIGHT_RANGE, LIGHT_RANGE);
-    const targetLightPersistY = clamp(hitPt.y - (state.horizonY + state.cssH * 0.06), -LIGHT_RANGE, LIGHT_RANGE);
-    p.lightPersistX += (targetLightPersistX - p.lightPersistX) * approachT;
-    p.lightPersistY += (targetLightPersistY - p.lightPersistY) * approachT;
+    // 26TH ROUND item 8: SPOTLIGHT now converges on the EXACT SAME target
+    // (targetLiveX/Y, the identical clamp/formula AIM above uses — not a
+    // separately-derived "hitPt.x - centerX" that used to ignore
+    // strafeOffset/aimManualOffsetX and could land a few px off AIM's own
+    // target) at the SAME approach rate, so R3 FOCUS pulls AIM+SPOTLIGHT to
+    // the current weakpoint together, never one ahead of the other.
+    // getFlashlightCenter()'s base was updated to match getAimPoint()'s
+    // base (both centerX + strafeOffset) specifically so this identity
+    // holds on screen, not just in this offset math.
+    p.lightPersistX += (targetLiveX - p.lightPersistX) * approachT;
+    p.lightPersistY += (targetLiveY - p.lightPersistY) * approachT;
   } else {
     // Manual AIM: stick input (already deadzoned/curved upstream by
     // applyAimCurve()) drives VELOCITY, not absolute position. Deadzone
@@ -3893,15 +3907,21 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     // branch for "stick released".
     p.aimLiveX = clamp(p.aimLiveX + state.input.aimX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
     p.aimLiveY = clamp(p.aimLiveY + state.input.aimY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
-    // 13TH ROUND (items 9-19): manual LEFT STICK LIGHT control — the SAME
-    // persistent-position pattern as AIM directly above (velocity input,
-    // deadzone already zeroes state.input.lightX/Y at neutral so this is a
-    // natural no-op when the stick is released — LIGHT simply stays exactly
-    // where it was, never recentering). Only runs outside FOCUS — FOCUS
-    // owns p.lightPersistX/Y exclusively above, the identical mutual-
-    // exclusion rule aimLiveX/Y already uses.
-    p.lightPersistX = clamp(p.lightPersistX + state.input.lightX * LIGHT_MOVE_SPEED_PX_S * dt, -LIGHT_RANGE, LIGHT_RANGE);
-    p.lightPersistY = clamp(p.lightPersistY + state.input.lightY * LIGHT_MOVE_SPEED_PX_S * dt, -LIGHT_RANGE, LIGHT_RANGE);
+    // 26TH ROUND item 10: SPOTLIGHT now moves at the SAME speed/range as
+    // AIM (AIM_MOVE_SPEED_PX_S/AIM_RANGE, not the old separate
+    // LIGHT_MOVE_SPEED_PX_S/LIGHT_RANGE — spec explicitly bans "SPOTLIGHTだけ
+    // 遅い/AIMだけ速い"). state.input.lightX/Y is now GAMEPAD-right-stick-
+    // mirrored from the exact same value as state.input.aimX/Y whenever the
+    // gamepad is the active input (see frame()'s input-collection block),
+    // so this naturally moves in lockstep with AIM above without a shared
+    // variable; TOUCH's own independent light-drag pad still lands here
+    // too whenever the gamepad stick is neutral, unchanged behavior-wise
+    // from before this round (still a persistent, never-recentering
+    // position). Only runs outside FOCUS — FOCUS owns p.lightPersistX/Y
+    // exclusively above, the identical mutual-exclusion rule aimLiveX/Y
+    // already uses.
+    p.lightPersistX = clamp(p.lightPersistX + state.input.lightX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
+    p.lightPersistY = clamp(p.lightPersistY + state.input.lightY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
   }
   // PART 6 (3rd round): persistent manual AIM trim — LT+D-PAD up/down
   // moves height only (X untouched), RT+D-PAD left/right moves horizontal
@@ -6927,9 +6947,25 @@ function updateParticles(dt) {
 // position.
 function getFlashlightCenter() {
   const p = state.player;
+  // 26TH ROUND item 5: base now matches getAimPoint()'s own base+offset
+  // stack exactly (centerX + strafeOffset, plus the SAME aimManualOffsetX/Y
+  // LT/RT+D-PAD trim AIM itself reads) — was just centerX with no manual-
+  // trim term at all, so trimming AIM used to visibly separate it from
+  // SPOTLIGHT. With GAMEPAD driving p.aimLiveX/Y and p.lightPersistX/Y from
+  // the identical input every frame (see updatePlayer()'s AIM section),
+  // matching this whole base stack is what makes AIM CENTER and SPOTLIGHT
+  // CENTER land on the literal same screen point in every input state, not
+  // just while the trim sits at its default 0.
+  // Same final screen-safe-margin clamp getAimPoint() applies to its own
+  // resolved point — without this, an extreme RIGHT STICK deflection near
+  // a screen edge could clamp AIM but leave SPOTLIGHT unclamped, visibly
+  // splitting the two apart exactly at the one place (the edge) where a
+  // mismatch would be most obvious.
+  const rawX = state.centerX + p.strafeOffset + p.aimManualOffsetX + p.lightPersistX;
+  const rawY = state.horizonY + state.cssH * 0.06 + p.aimManualOffsetY + p.lightPersistY;
   return {
-    x: state.centerX + p.lightPersistX,
-    y: state.horizonY + state.cssH * 0.06 + p.lightPersistY,
+    x: clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX),
+    y: clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX),
   };
 }
 
@@ -9009,16 +9045,27 @@ function frame(ts) {
   if (!state.gameStarted) return;
   state.input.moveX = gpInput.move.x !== 0 ? gpInput.move.x : touchMove.x;
   state.input.moveY = gpInput.move.y !== 0 ? gpInput.move.y : touchMove.y;
-  // PART 3/4 (3rd round): LEFT STICK drives FLASHLIGHT only, RIGHT STICK
-  // drives AIM only — each has its own touch-pad fallback, independent of
-  // the other, instead of the old merged single "view" axis.
-  state.input.lightX = gpInput.light.x !== 0 ? gpInput.light.x : touchLight.x;
-  state.input.lightY = gpInput.light.y !== 0 ? gpInput.light.y : touchLight.y;
+  // 26TH ROUND (COMBAT operation redesign): GAMEPAD RIGHT STICK now drives
+  // ONE unified AIM+SPOTLIGHT input — gpInput.light is always {0,0} in
+  // COMBAT now (see pollGamepad()'s own comment), so whenever the gamepad's
+  // right stick is actually deflected, the EXACT SAME sensitivity-scaled
+  // value is fed into BOTH state.input.aimX/Y and state.input.lightX/Y this
+  // frame — not "similar", the identical number — which is what lets
+  // updatePlayer() move p.aimLiveX/Y and p.lightPersistX/Y in perfect
+  // lockstep (same speed/range constants there too) without needing a
+  // single shared variable. TOUCH's own independent AIM pad / LIGHT pad
+  // are completely untouched — each keeps falling back to its own
+  // touchAim.x/y / touchLight.x/y whenever the gamepad stick is neutral on
+  // that axis, exactly as before this round.
   // 7TH ROUND PART 11: controllerAimSensitivity multiplies ONLY the
   // gamepad branch — touchAim.x/y (the else branch) is untouched, so the
   // PAUSE setting never affects TOUCH AIM.
-  state.input.aimX = gpInput.aim.x !== 0 ? gpInput.aim.x * controllerAimSensitivity : touchAim.x;
-  state.input.aimY = gpInput.aim.y !== 0 ? gpInput.aim.y * controllerAimSensitivity : touchAim.y;
+  const gpAimScaledX = gpInput.aim.x * controllerAimSensitivity;
+  const gpAimScaledY = gpInput.aim.y * controllerAimSensitivity;
+  state.input.aimX = gpInput.aim.x !== 0 ? gpAimScaledX : touchAim.x;
+  state.input.aimY = gpInput.aim.y !== 0 ? gpAimScaledY : touchAim.y;
+  state.input.lightX = gpInput.aim.x !== 0 ? gpAimScaledX : touchLight.x;
+  state.input.lightY = gpInput.aim.y !== 0 ? gpAimScaledY : touchLight.y;
   // PART 6: LT/RT + D-PAD manual AIM trim (height/horizontal).
   state.input.aimHeightAdjust = gpInput.aimAdjust.height;
   state.input.aimHorizAdjust = gpInput.aimAdjust.horiz;
