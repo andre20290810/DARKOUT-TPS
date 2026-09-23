@@ -105,12 +105,19 @@ html, body {
 #loading-title {
   font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
   font-stretch: condensed;
-  font-size: 34px;
+  /* 24TH ROUND item 2: real device testing showed the old fixed 34px still
+     read too small. Fluid clamp() targets ~1.5x (51px) at typical
+     viewport widths while never exceeding what a narrow screen can fit —
+     the skewX/scaleX(0.82) squeeze below already narrows the rendered
+     width further, so clamp()'s vw term is tuned generously (11vw) and
+     the ceiling (54px) is a hard cap, not a target. */
+  font-size: clamp(34px, 11vw, 54px);
   font-weight: 900;
   letter-spacing: -0.01em;
   color: #f2f0ea;
   transform: skewX(-9deg) scaleY(1.18) scaleX(0.82);
   display: inline-block;
+  max-width: 92vw;
   text-shadow: 0 0 2px rgba(0,0,0,0.9), 2px 3px 0 rgba(140,8,8,0.55), 0 4px 14px rgba(0,0,0,0.9);
 }
 
@@ -212,12 +219,17 @@ html, body {
 #mode-select-title {
   font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
   font-stretch: condensed;
-  font-size: 30px;
+  /* 24TH ROUND item 2: same ~1.4-1.6x enlargement as #loading-title (30px
+     base -> ~1.5x = 45px target), independently clamped since this screen
+     also hosts the CONTROLLER/TOUCH PANEL buttons below it and must not
+     starve their vertical space on short viewports. */
+  font-size: clamp(30px, 9.5vw, 46px);
   font-weight: 900;
   letter-spacing: -0.01em;
   color: #f2f0ea;
   transform: skewX(-9deg) scaleY(1.18) scaleX(0.82);
   display: inline-block;
+  max-width: 92vw;
   text-shadow: 0 0 2px rgba(0,0,0,0.9), 2px 3px 0 rgba(140,8,8,0.55), 0 4px 14px rgba(0,0,0,0.85);
 }
 #mode-select-subtitle {
@@ -238,6 +250,14 @@ html, body {
   border-radius: 6px;
 }
 .mode-btn:active { background: rgba(255,255,255,0.22); }
+/* 24TH ROUND item 4: gamepad D-PAD/LEFT STICK focus indicator — CSS-only
+   (matches the existing "no emoji arrows" convention already used for other
+   gamepad-focus states in this project), never applied by touch/click. */
+.mode-btn.gamepad-focused {
+  background: rgba(127,255,212,0.18);
+  border-color: #7fffd4;
+  box-shadow: 0 0 0 2px rgba(127,255,212,0.4), 0 0 14px rgba(127,255,212,0.35);
+}
 #controller-store-row {
   margin-top: 10px;
   display: flex;

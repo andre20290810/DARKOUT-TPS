@@ -261,12 +261,43 @@ const COLLAPSE_MIN_INTERVAL_MS = 9000;     // how soon after one cycle ends the 
 const COLLAPSE_MAX_INTERVAL_MS = 15000;
 const COLLAPSE_SHAKE_PEAK_PX = 4;          // camera shake jitter amplitude at its strongest (quake start) — was 7
 const COLLAPSE_TILT_MAX_RAD = 1.1 * Math.PI / 180; // whole-scene rotation during quake — was 2.4deg — "消失点が左右へ動く" via one cheap canvas transform, never touches project()/world math
-const COLLAPSE_OBSTACLE_COUNT = 2;         // how many left/right-avoid hazards spawn per obstacles phase
-const COLLAPSE_OBSTACLE_SPAWN_Z = 1000;    // world z each obstacle starts at (far), pulled in by the normal auto-scroll
-const COLLAPSE_OBSTACLE_HIT_Z = 90;        // world z at which an un-dodged obstacle resolves (hit or dodged)
-const COLLAPSE_OBSTACLE_CULL_Z = 4;        // despawned once it scrolls this close (visibly passed by)
-const COLLAPSE_OBSTACLE_HALF_W_PX = 34;    // collision half-width in screen px at hit-Z, checked against player screen X
-const COLLAPSE_OBSTACLE_DAMAGE = 30;
+// 24TH ROUND (items 10-14): rolling-rebar/steel/concrete debris — replaces
+// the old fixed-lane "obstacles" (which only ever scrolled straight toward
+// the camera on a locked screen-X lane, never fell/bounced/rolled) with a
+// genuine drop -> bounce -> roll -> exit-north physics model per instance.
+// Never player-homing: worldX/roll direction/rotation are rolled ONCE at
+// spawn from pure randomness, never read/adjusted from the player's
+// position at any point in the object's lifetime (see spawnCollapseDebris()
+// /updateCollapseDebris() — neither ever touches state.player).
+const COLLAPSE_DEBRIS_COUNT = 3;              // ~3 rolling-debris events per quake (item 13)
+const COLLAPSE_DEBRIS_STAGGER_MS = 550;       // real gap between each of the 3 events starting (never simultaneous)
+const COLLAPSE_DEBRIS_DROP_Z_MIN = 160;       // world z the piece falls at (near/visible range) — varies per instance
+const COLLAPSE_DEBRIS_DROP_Z_SPREAD = 260;
+const COLLAPSE_DEBRIS_DROP_X_SPREAD = 170;    // world-x spread for left-leaning/center/right-leaning starts
+const COLLAPSE_DEBRIS_DROP_HEIGHT = 130;      // world units above the floor it starts falling from
+// 24TH ROUND tuning: ESCAPE's own ESCAPE_AUTO_SCROLL_SPEED (680 world-units/
+// sec, always-on regardless of player input) already recedes every world-Z
+// object — including this debris — quite fast, so gravity is tuned high
+// enough that the fall+MIN_BOUNCES sequence resolves in well under a
+// second, giving the piece a real chance to visibly reach 'rolling' before
+// it scrolls out past COLLAPSE_DEBRIS_CULL_Z on the ambient recede alone
+// (confirmed via real Playwright timeline capture, not just this comment's
+// math — see the round's completion report).
+const COLLAPSE_DEBRIS_GRAVITY_WU = 1450;      // world-units/sec^2, real fall acceleration
+const COLLAPSE_DEBRIS_BOUNCE_DAMPING_MIN = 0.32; // each bounce keeps 32-52% of its vertical speed (varies per instance — item 13)
+const COLLAPSE_DEBRIS_BOUNCE_DAMPING_MAX = 0.52;
+const COLLAPSE_DEBRIS_MIN_BOUNCES = 2;        // real bounces before it settles into rolling
+const COLLAPSE_DEBRIS_ROLL_Z_SPEED_MIN = 130; // world-units/sec it rolls AWAY (north/far, increasing z) once settled
+const COLLAPSE_DEBRIS_ROLL_Z_SPEED_MAX = 210;
+const COLLAPSE_DEBRIS_ROLL_X_SPEED_MIN = -70;  // lateral roll drift while rolling — sign is the per-instance roll direction
+const COLLAPSE_DEBRIS_ROLL_X_SPEED_MAX = 70;
+const COLLAPSE_DEBRIS_ROLL_BOUNCE_AMP = 14;   // small residual up/down bounce amplitude (world units) while rolling, decaying
+const COLLAPSE_DEBRIS_ROTATION_SPEED_MIN = 2.4; // rad/sec, magnitude only — sign comes from the roll direction
+const COLLAPSE_DEBRIS_ROTATION_SPEED_MAX = 5.2;
+const COLLAPSE_DEBRIS_HIT_Z_MAX = 340;        // only checked for a player hit while still this close/near (real physical intersection window)
+const COLLAPSE_DEBRIS_HALF_W_PX = 30;         // collision half-width in screen px, checked against player screen X
+const COLLAPSE_DEBRIS_CULL_Z = 1500;          // despawned once it has rolled this far into the distance (naturally shrunk to near-nothing by perspective)
+const COLLAPSE_DEBRIS_DAMAGE = 26;
 const COLLAPSE_RUBBLE_DAMAGE = 45;
 // NEXT ROUND (spec section 7): real-play feedback said the receded player
 // read as "too small" — was 0.74 (scale drops to ~0.26x, i.e. ~3.8x
@@ -370,6 +401,22 @@ const ENEMY_Z_MAX = 1500;
 // — ROID's own ~247 floor (a live, viewport-height-solved value; see
 // approachZMinForRoid()), satisfying "GABRIELの方がROIDより近づける".)
 const GABRIEL_Z_MIN = 145;
+// 24TH ROUND items 21-23: root-cause investigation found CLAW attacks were
+// triggerable from the SAME shared z<900 idle-roll gate every ranged enemy
+// uses (see updateEnemy()'s idle-check block) — i.e. GABRIEL/ADAM could
+// begin a CLAW attack from up to z=900 away, nowhere near real melee range,
+// then use the existing 480ms 'approach' eased-tween to close that entire
+// gap, which is what read as "attacks from too far / rushes in unnaturally
+// fast". This is the real, world-Z trigger distance (smaller z = nearer,
+// larger z = farther — confirmed via project()/approachZMinForRoid()'s own
+// FOCAL/(FOCAL+z) scale formula elsewhere in this file), so reducing it is
+// the correct lever — never a naive scale-space guess. Set to 900/3=300,
+// i.e. roughly a third of the CURRENT REAL trigger distance, per spec.
+// GABRIEL/ADAM now only ever BEGIN a CLAW attack once already this close;
+// beyond it they keep closing the gap via the existing continuous idle
+// stalk-approach (CLAW_STALK_SPEED, unchanged) rather than snapping in from
+// far away the instant an attack roll succeeds.
+const CLAW_TRIGGER_Z_MAX = 300;
 // 7TH ROUND PART 9 ("GABRIELが通常時に近づきすぎる"): GABRIEL_Z_MIN (145)
 // used to be the SAME floor for both normal player-driven approach
 // (applyForwardDelta()) AND the CLAW attack's own fast-approach target
@@ -888,7 +935,11 @@ const SNIPER_LOCK_RED_MS = 900;
 const SNIPER_LOCK_YELLOW_MS = 500;
 const SNIPER_FIRE_TRAVEL_MS = 130;
 const SNIPER_IMPACT_MS = 140;
-const SNIPER_COOLDOWN_MS = 1400;
+// 24TH ROUND item 3: halved from 1400 — this is POST-attack recovery only
+// (after LOCK_RED/LOCK_YELLOW/FIRE/IMPACT have already fully played out and
+// resolved), never part of the player's reaction/telegraph window, so
+// cutting it raises attack frequency without reducing dodgeability.
+const SNIPER_COOLDOWN_MS = 700;
 const SNIPER_DAMAGE = 16;
 // NEXT ROUND (spec section 4): real hit-radius check at resolve time —
 // mirrors SWEEP_HIT_RADIUS_PX's existing role for SWEEP FIRE.
@@ -897,7 +948,9 @@ const SNIPER_HIT_RADIUS_PX = 46;
 const MISSILE_LOCKON_MS = 650;
 const MISSILE_TARGET_MS = 1500;
 const MISSILE_IMPACT_MS = 220;
-const MISSILE_COOLDOWN_MS = 1700;
+// 24TH ROUND item 3: halved from 1700 — same rationale as SNIPER_COOLDOWN_MS
+// above (post-resolve recovery only, not a telegraph window).
+const MISSILE_COOLDOWN_MS = 850;
 // 12TH ROUND (items 20-24): world-space TARGET AREA base depth for the
 // MISSILE impact point (WORLD X / WORLD DEPTH(Z) -> project() -> screen),
 // shared with the shadow work items 60-75 build on top of. Offset by the
@@ -942,7 +995,10 @@ const SWEEP_HALF_WIDTH_WORLD = 95; // world-X half-span of the sweep from the lo
 const SWEEP_HIT_RADIUS_PX = 42; // screen-space per-bullet hit test radius, real distance check (item 136)
 const SWEEP_DAMAGE = 9; // lower per-hit than a single SNIPER shot since several can land in one burst
 const SWEEP_TRACER_LIFE_MS = 90; // short tracer only (item 139) — never a long white line
-const SWEEP_COOLDOWN_MS = 1200;
+// 24TH ROUND item 3: halved from 1200 — same rationale (post-burst recovery
+// only; SWEEP_TELEGRAPH_MS/bullet cadence, the actual dodge windows, are
+// untouched).
+const SWEEP_COOLDOWN_MS = 600;
 
 // MULTI MISSILE BARRAGE — one LOCK of the player's WORLD X/Z, then 3-4
 // missiles with impact points scattered AROUND that single locked point
@@ -954,7 +1010,9 @@ const BARRAGE_LOCKON_MS = 550;
 const BARRAGE_LAUNCH_INTERVAL_MS = 200; // NEXT ROUND PART G: was 320 — tightened so impacts read as "piling on" while still leaving each blast individually visible (not simultaneous)
 const BARRAGE_FALL_MS = 850; // each missile's own fall duration, reuses MISSILE_PROJECTILE_START_HEIGHT
 const BARRAGE_IMPACT_TAIL_MS = 260; // grace after the LAST impact before cooldown begins
-const BARRAGE_COOLDOWN_MS = 1900;
+// 24TH ROUND item 3: halved from 1900 — same rationale (post-impact
+// recovery only; BARRAGE_LOCKON_MS, the real dodge window, is untouched).
+const BARRAGE_COOLDOWN_MS = 950;
 // item 144: intentional (never fully random — item 145) scatter pattern
 // around the single locked point — CENTER, RIGHT, LEFT, NEAR/FAR, in that
 // priority order (a 3-missile barrage uses the first 3, 4-missile uses all
@@ -1084,8 +1142,14 @@ const ENEMY_LANE_TRACK_MULT = {
 // ROID1/ROID2/DRONE/ADAM SPHERE) and are left at their 14TH ROUND values.
 // Relative ordering preserved: DRONE stays most aggressive, ADAM SPHERE
 // stays the most patient of the 4.
+// 24TH ROUND item 3: DRONE/ROID1/ROID2 roughly halved again (0.35->0.18,
+// 0.50->0.25, 0.48->0.24) — measured via a real 30s Playwright attack-count
+// before/after this round (baseline 7/7/8 attacks per 30s respectively; see
+// completion report). GABRIEL/ADAM/adamSphere are untouched, out of item 3's
+// scope (CLAW pacing is governed by its own separate CLAW_* constants, not
+// this multiplier, and adamSphere pacing was not part of this round's ask).
 const ENEMY_ATTACK_FREQ_MULT = {
-  drone: 0.35, roid1: 0.50, roid2: 0.48, gabriel: 0.65, adamSphere: 0.55, adam: 0.70,
+  drone: 0.18, roid1: 0.25, roid2: 0.24, gabriel: 0.65, adamSphere: 0.55, adam: 0.70,
 };
 // 13TH ROUND (item 4): ESCAPE keeps continuous attack pressure (SURVIVE +
 // dodge, not a quiet run) — reuses the SAME ENEMY_ATTACK_FREQ_MULT/
@@ -1374,6 +1438,8 @@ function r10CollectSnapshot(ts) {
       settleActive: ts < state.gamepadSettleUntil,
       lastButton: state.lastGamepadButtonIndex, lastInputAt: Math.round(state.lastGamepadInputAt),
       touchGestureAt: Math.round(state.touchGestureReceivedAt), audioUnlockedAt: Math.round(state.audioUnlockedAt),
+      bgmPlayAttempts: state.bgmPlayAttempts, lastBgmPlayErrorName: state.lastBgmPlayErrorName,
+      lastBgmPlayErrorAt: Math.round(state.lastBgmPlayErrorAt),
     },
     // ADDENDUM item 9: the FULL ring buffer (up to 60 entries), oldest
     // first — COPY DEBUG must never truncate this, unlike the on-screen
@@ -1522,6 +1588,9 @@ function r10FormatDebugText(s) {
   lines.push('lastInputAt: ' + s.gamepad.lastInputAt);
   lines.push('touchGestureAt: ' + s.gamepad.touchGestureAt);
   lines.push('audioUnlockedAt: ' + s.gamepad.audioUnlockedAt);
+  lines.push('bgmPlayAttempts: ' + s.gamepad.bgmPlayAttempts);
+  lines.push('lastBgmPlayErrorName: ' + s.gamepad.lastBgmPlayErrorName);
+  lines.push('lastBgmPlayErrorAt: ' + s.gamepad.lastBgmPlayErrorAt);
   lines.push('');
   lines.push('=== EVENT LOG (' + s.log.length + ' entries) ===');
   if (s.log.length === 0) {
@@ -2513,6 +2582,15 @@ const state = {
   lastGamepadInputAt: 0,
   touchGestureReceivedAt: 0,
   audioUnlockedAt: 0,
+  // 24TH ROUND item 8: real diagnostic evidence for BGM-silent-until-tap —
+  // tryStartBgm()'s .catch() used to swallow the actual rejection reason
+  // entirely (`.catch(() => {})`), so a real device's DEBUG panel could
+  // never show WHY a given attempt failed (autoplay policy vs. something
+  // else). Every attempt now increments bgmPlayAttempts and, on failure,
+  // records the real DOMException name/message here.
+  bgmPlayAttempts: 0,
+  lastBgmPlayErrorName: '-',
+  lastBgmPlayErrorAt: 0,
 
   // 4th round: touch UI is OFF by default (spec item 6 — Gamepad play
   // shouldn't have the screen full of sticks/buttons); PAUSE toggles it.
@@ -2531,6 +2609,13 @@ const state = {
   // trigger for BGM playback (see handleFirstGesture()).
   assetsReady: false,
   gameStarted: false,
+  // 24TH ROUND item 4: which mode-select button (0=CONTROLLER, 1=TOUCH) a
+  // connected gamepad's D-PAD UP/DOWN or LEFT STICK Y is currently pointed
+  // at — defaults to CONTROLLER since a gamepad being connected at all is
+  // itself strong evidence that's the intended choice, and reflected live
+  // via .gamepad-focused in updateModeSelectFocusUI() below.
+  modeSelectFocus: 0,
+  modeSelectPrevStickY: 0,
   // ENEMY SELECT / AUTO MODE (4th round). 'auto' cycles AUTO_SEQUENCE;
   // any other value is one specific implemented enemy type. autoMode.index
   // is AUTO_SEQUENCE's own index (only ever points at an implemented type).
@@ -2947,16 +3032,32 @@ function pollGamepad(now) {
     // against the next frame too, then this frame returns neutral input,
     // never reaching the gpFire/DASH lines below.
     if (!state.gameStarted && state.assetsReady) {
+      // 24TH ROUND item 4: D-PAD UP/DOWN (12/13) or LEFT STICK Y move the
+      // highlighted mode-select option (0=CONTROLLER, 1=TOUCH) without
+      // confirming anything — updateModeSelectFocusUI() reflects this
+      // visually. Edge-triggered off the raw button state (and a stick
+      // threshold crossing) so holding the stick doesn't spam-flip focus.
+      const stickY = gp.axes[1] || 0;
+      const navUpEdge = (pressed(12) && !prev[12]) || (stickY < -0.5 && !(state.modeSelectPrevStickY < -0.5));
+      const navDownEdge = (pressed(13) && !prev[13]) || (stickY > 0.5 && !(state.modeSelectPrevStickY > 0.5));
+      state.modeSelectPrevStickY = stickY;
+      if (navUpEdge) state.modeSelectFocus = 0;
+      else if (navDownEdge) state.modeSelectFocus = 1;
+      updateModeSelectFocusUI();
+
       let modeSelectTriggered = false;
       for (let i = 0; i < b.length; i++) {
+        // UP/DOWN (12/13) are navigation-only here, never a confirm.
+        if (i === 12 || i === 13) continue;
         if (pressed(i) && !prev[i]) { modeSelectTriggered = true; break; }
       }
       if (modeSelectTriggered) {
         const triggerSnapshot = new Array(b.length);
         for (let i = 0; i < b.length; i++) triggerSnapshot[i] = pressed(i);
         state.prevButtons = triggerSnapshot;
-        if (DEBUG_MODE) r10DebugLog('GAMEPAD UI INPUT -> CONTROL MODE SELECTED (controller)');
-        handleModeSelect('controller');
+        const chosenMode = state.modeSelectFocus === 1 ? 'touch' : 'controller';
+        if (DEBUG_MODE) r10DebugLog('GAMEPAD UI INPUT -> CONTROL MODE SELECTED (' + chosenMode + ')');
+        handleModeSelect(chosenMode);
         state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
         if (DEBUG_MODE) r10DebugLog('GAMEPLAY INPUT ENABLED');
         return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
@@ -2993,6 +3094,13 @@ function pollGamepad(now) {
       else depthAxis = applyEscapeMoveCurve(gp.axes[1] || 0);
       gpMove.y = depthAxis;
 
+      // 24TH ROUND item 7: while PAUSE is open, X closes it instantly — checked
+      // FIRST and gated strictly on state.paused, so it can never also land as
+      // WEST DASH (the westDash edge(2) line right below still runs every
+      // frame regardless, but consumeActions()/the ESCAPE update path never
+      // apply it while state.paused is true — see togglePauseMenu()'s own
+      // comment — so this exact press is fully safe either way).
+      if (state.paused && edge(2)) state.actions.pauseToggle = true;      // X = CLOSE PAUSE (paused only)
       if (edge(2)) state.escape.actions.westDash = true;                  // X = WEST DASH
       if (edge(1)) state.escape.actions.eastDash = true;                  // B = EAST DASH
       if (edge(3)) state.escape.actions.northBackstep = true;             // Y = NORTH BACKSTEP
@@ -3111,6 +3219,11 @@ function pollGamepad(now) {
     if (r3Pressed && state.r3HoldStartAt == null) state.r3HoldStartAt = now || 0;
     else if (!r3Pressed) state.r3HoldStartAt = null;
     const gpFocusHeldLocal = r3Pressed && state.r3HoldStartAt != null && (now || 0) - state.r3HoldStartAt >= FOCUS_R3_HOLD_MS;
+    // 24TH ROUND item 7: same PAUSE-only X=CLOSE as the ESCAPE branch above —
+    // gated strictly on state.paused, never fires alongside the normal
+    // WEST DASH meaning of X below (that press is dropped harmlessly while
+    // state.paused is true either way — see togglePauseMenu()'s comment).
+    if (state.paused && edge(2)) state.actions.pauseToggle = true; // X = CLOSE PAUSE (paused only)
     if (edge(3)) state.actions.northDash = true;      // Y = NORTH DASH
     if (edge(2)) state.actions.westDash = true;       // X = WEST DASH
     if (edge(1)) state.actions.eastDash = true;       // B = EAST DASH
@@ -3341,8 +3454,23 @@ pauseDebugToggleBtnEl.addEventListener('pointerdown', (e) => { e.preventDefault(
 let bgmStarted = false;
 function tryStartBgm() {
   if (bgmStarted || !bgmAudioEl) return;
+  state.bgmPlayAttempts++;
   const p = bgmAudioEl.play();
-  if (p && p.catch) p.catch(() => {}); // autoplay rejected (no gesture yet) — silently retry on the next one
+  if (p && p.catch) {
+    // 24TH ROUND item 8: capture the REAL rejection reason (DOMException
+    // .name, e.g. "NotAllowedError" = genuine autoplay-policy block vs. any
+    // other name = a real, different bug) instead of the old silent
+    // `.catch(() => {})` — still a no-op functionally (bgmRetryOnGesture()/
+    // the gamepad edge hook/handleModeSelect() all keep retrying on the
+    // next real gesture regardless), but now the DEBUG panel can show
+    // real-device evidence of WHY, satisfying item 8's explicit "never
+    // assume, always measure" requirement.
+    p.catch((err) => {
+      state.lastBgmPlayErrorName = (err && err.name) ? err.name : String(err);
+      state.lastBgmPlayErrorAt = performance.now();
+      if (DEBUG_MODE) r10DebugLog('BGM PLAY REJECTED: ' + state.lastBgmPlayErrorName);
+    });
+  }
   if (!bgmAudioEl.paused) {
     bgmStarted = true;
     // 9TH ROUND (item 39-43): stamped only on a REAL successful play() —
@@ -3385,6 +3513,18 @@ function bgmRetryOnGesture() {
 window.addEventListener('pointerdown', bgmRetryOnGesture, { passive: true });
 window.addEventListener('keydown', bgmRetryOnGesture);
 
+// 24TH ROUND item 4: reflects state.modeSelectFocus onto the two mode-select
+// buttons as a CSS class — cheap to call every gamepad-poll frame (a class
+// toggle that's already correct is a no-op in the DOM), never touched by
+// touch/click input (those select instantly on their own tap, no notion of
+// "focus" needed).
+function updateModeSelectFocusUI() {
+  const controllerBtn = document.getElementById('mode-btn-controller');
+  const touchBtn = document.getElementById('mode-btn-touch');
+  if (controllerBtn) controllerBtn.classList.toggle('gamepad-focused', state.modeSelectFocus === 0);
+  if (touchBtn) touchBtn.classList.toggle('gamepad-focused', state.modeSelectFocus === 1);
+}
+
 // 6TH ROUND PART 7/8/9/10: replaces the 5th round's "any input starts the
 // game" handleFirstGesture() with an explicit MODE SELECT screen (spec:
 // no more bare "TAP TO START" — the player must choose WIRELESS
@@ -3422,9 +3562,38 @@ function togglePauseMenu() {
   pauseMenuEl.hidden = !state.paused;
   if (state.paused) {
     bgmAudioEl.pause();
-  } else if (bgmStarted) {
-    const p = bgmAudioEl.play();
-    if (p && p.catch) p.catch(() => {});
+  } else {
+    // 24TH ROUND item 6: root-cause investigation found pollGamepad() ALREADY
+    // runs unconditionally every frame regardless of state.paused (it's
+    // called before the `if (!state.gameStarted) return` gate near the top
+    // of frame(), and state.paused is only consulted much further down when
+    // deciding whether to APPLY the resulting actions to gameplay) — so no
+    // code path stops polling or requires a touch to resume it. As
+    // defense-in-depth for the one real edge case the spec calls out (a
+    // button held continuously THROUGH the pause window), re-baseline
+    // prevButtons to the CURRENT raw state and apply a short settle window
+    // here too — the same pattern GAMEPAD_SETTLE_MS already uses on first
+    // adoption/game-start, just much shorter since this isn't a fresh
+    // device, purely to guarantee a held button can never read as a fresh
+    // edge the instant RESUME happens.
+    if (state.gamepadIndex !== null) {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const gp = pads[state.gamepadIndex];
+      if (gp) {
+        state.prevButtons = gp.buttons.map((b) => !!(b && b.pressed));
+        state.gamepadSettleUntil = performance.now() + 120;
+      }
+    }
+    if (bgmStarted) {
+      const p = bgmAudioEl.play();
+      if (p && p.catch) {
+        p.catch((err) => {
+          state.lastBgmPlayErrorName = (err && err.name) ? err.name : String(err);
+          state.lastBgmPlayErrorAt = performance.now();
+          if (DEBUG_MODE) r10DebugLog('BGM RESUME PLAY REJECTED: ' + state.lastBgmPlayErrorName);
+        });
+      }
+    }
   }
 }
 document.getElementById('pause-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
@@ -3720,6 +3889,12 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
     // never by BACKSTEP (which keeps using dashN unconditionally, see its
     // own comment) or any other special action.
     p.moveDirSouth = moveY > 0.05;
+    // 24TH ROUND item 19: same tracker for NORTH input, consulted only by
+    // renderPlayer()'s COVER-pose gate below so that pressing north while
+    // touching a barrel breaks out of the COVER crouch pose immediately
+    // (into the existing normal WALK sprite) instead of sliding north while
+    // still drawn crouched.
+    p.moveDirNorth = moveY < -0.05;
   } else {
     p.facing = 'idle';
   }
@@ -3910,59 +4085,110 @@ function damageEscapePlayer(amount, now) {
   return true;
 }
 
-// Obstacles are given a real world Z and pulled toward the camera by the
-// SAME forwardDelta driving structures[]/barrels[] (see this feature's own
-// top-of-file design comment) — called once per ESCAPE frame, right after
-// applyForwardDelta(), from frame(). Resolves each obstacle's hit/dodge
-// outcome the instant it crosses COLLAPSE_OBSTACLE_HIT_Z, then culls it
-// once it has visibly scrolled past.
-function advanceCollapseWorldZ(forwardDelta, now) {
+// 24TH ROUND (items 10-14): each debris instance runs its own
+// fall -> bounce(xN) -> roll(-away, north/far) -> cull sub-state-machine,
+// on top of the SAME forwardDelta baseline shift every other world-Z object
+// (structures[]/barrels[]) already gets — called once per ESCAPE frame,
+// right after applyForwardDelta(), from frame(). Never reads/writes
+// anything toward the player's position except the one-shot hit-test at the
+// end (real physical intersection, never a steering input — item 11).
+function advanceCollapseWorldZ(forwardDelta, dt, now) {
   const p = state.player;
-  const obstacles = state.escape.collapse.obstacles;
-  for (let i = obstacles.length - 1; i >= 0; i--) {
-    const ob = obstacles[i];
-    ob.z -= forwardDelta;
-    if (!ob.resolved && ob.z <= COLLAPSE_OBSTACLE_HIT_Z) {
-      ob.resolved = true;
+  const debris = state.escape.collapse.obstacles;
+  for (let i = debris.length - 1; i >= 0; i--) {
+    const ob = debris[i];
+    ob.z -= forwardDelta; // same camera-follow baseline every world-Z object uses
+
+    if (ob.state === 'pending') {
+      if (now >= ob.spawnAt) ob.state = 'falling';
+    } else if (ob.state === 'falling') {
+      ob.fallVel += COLLAPSE_DEBRIS_GRAVITY_WU * dt;
+      ob.fallHeight -= ob.fallVel * dt;
+      ob.rotationAngle += ob.rotationSpeed * dt;
+      if (ob.fallHeight <= 0) {
+        ob.fallHeight = 0;
+        ob.bounceCount++;
+        if (ob.bounceCount >= COLLAPSE_DEBRIS_MIN_BOUNCES) {
+          ob.state = 'rolling';
+          ob.fallVel = 0;
+          ob.rollZSpeed = COLLAPSE_DEBRIS_ROLL_Z_SPEED_MIN + Math.random() * (COLLAPSE_DEBRIS_ROLL_Z_SPEED_MAX - COLLAPSE_DEBRIS_ROLL_Z_SPEED_MIN);
+          ob.rollXSpeed = ob.rollDirSign * (Math.abs(COLLAPSE_DEBRIS_ROLL_X_SPEED_MIN) + Math.random() * (COLLAPSE_DEBRIS_ROLL_X_SPEED_MAX - COLLAPSE_DEBRIS_ROLL_X_SPEED_MIN)) * 0.5;
+          ob.rollStartZ = ob.z;
+        } else {
+          // real energy loss per bounce — each bounce a bit smaller than the last
+          ob.fallVel = -ob.fallVel * ob.bounceDamping;
+          ob.worldX += ob.rollDirSign * (18 + Math.random() * 26); // small lateral kick per bounce
+        }
+      }
+    } else if (ob.state === 'rolling') {
+      // exits SOUTH(near)->NORTH(far): z only ever increases here, on top
+      // of the forwardDelta baseline above — combined with rotationAngle
+      // and the small decaying bounce term below, this is genuine
+      // rotate+bounce+roll motion, never a straight instant slide.
+      ob.z += ob.rollZSpeed * dt;
+      ob.worldX += ob.rollXSpeed * dt;
+      ob.rollXSpeed *= Math.pow(0.25, dt); // gradually straightens out as it settles into the roll
+      ob.rotationAngle += ob.rotationSpeed * dt;
+      ob.rollBounceT += dt * 6;
+      const rolledDist = Math.max(0, ob.z - ob.rollStartZ);
+      ob.fallHeight = Math.abs(Math.sin(ob.rollBounceT)) * COLLAPSE_DEBRIS_ROLL_BOUNCE_AMP * Math.exp(-rolledDist * 0.0035);
+    }
+
+    // Real physical intersection only — resolved at most once, only while
+    // genuinely close, purely from the CURRENT random trajectory vs. the
+    // player's CURRENT real position (never adjusts the trajectory itself
+    // toward the player — see this function's own comment above).
+    if (!ob.resolved && ob.state !== 'pending' && ob.z > 0 && ob.z <= COLLAPSE_DEBRIS_HIT_Z_MAX) {
+      const scale = FOCAL / (FOCAL + ob.z);
+      const screenX = state.centerX + ob.worldX * scale;
       const playerScreenX = state.centerX + p.strafeOffset;
-      if (Math.abs(playerScreenX - ob.screenXAtHit) < COLLAPSE_OBSTACLE_HALF_W_PX) {
+      if (Math.abs(playerScreenX - screenX) < COLLAPSE_DEBRIS_HALF_W_PX) {
+        ob.resolved = true;
         ob.hit = true;
-        damageEscapePlayer(COLLAPSE_OBSTACLE_DAMAGE, now);
+        damageEscapePlayer(COLLAPSE_DEBRIS_DAMAGE, now);
       }
     }
-    if (ob.z <= COLLAPSE_OBSTACLE_CULL_Z) obstacles.splice(i, 1);
+
+    if (ob.z >= COLLAPSE_DEBRIS_CULL_Z) debris.splice(i, 1);
   }
 }
 
-// STEP4/6/7 spawn: three fixed lanes (left/center/right), computed from the
-// player's OWN real dodge range (state.cssW*STRAFE_MAX_OFFSET) at the exact
-// world Z the hit-test resolves at, so "can I actually dodge this" is
-// always true regardless of device width — never a fixed pixel guess.
+// Stages COLLAPSE_DEBRIS_COUNT independent rolling-debris events with a real
+// stagger between each one's start (item 13: DEBRIS1 -> interval -> DEBRIS2
+// -> interval -> DEBRIS3, never simultaneous), each with its own randomized
+// start lean (left/center/right), roll direction, rotation direction, and
+// bounce damping (item 13's "never three identical repeated trajectories").
+// Called once, right as the 'quake' phase ends (see updateEscapeCollapse()),
+// so debris is ALWAYS preceded by a quake, never spawned standalone.
+// Deliberately never reads state.player — see advanceCollapseWorldZ()'s own
+// comment on why that guarantees non-homing (item 11).
 function spawnCollapseObstacles(now) {
-  const scaleAtHit = FOCAL / (FOCAL + COLLAPSE_OBSTACLE_HIT_Z);
-  const maxOff = state.cssW * STRAFE_MAX_OFFSET;
-  const laneFracs = [-0.85, 0, 0.85];
-  // pick COLLAPSE_OBSTACLE_COUNT distinct lanes so at least one lane always
-  // stays clear — never all 3 lanes blocked at once.
-  const lanes = laneFracs.slice();
-  for (let i = lanes.length - 1; i > 0; i--) {
+  const debris = state.escape.collapse.obstacles;
+  const leanBuckets = [-1, 0, 1]; // left-leaning / center / right-leaning
+  for (let i = leanBuckets.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [lanes[i], lanes[j]] = [lanes[j], lanes[i]];
+    [leanBuckets[i], leanBuckets[j]] = [leanBuckets[j], leanBuckets[i]];
   }
-  const chosen = lanes.slice(0, Math.min(COLLAPSE_OBSTACLE_COUNT, lanes.length - 1));
-  const obstacles = state.escape.collapse.obstacles;
-  chosen.forEach((frac, idx) => {
-    const screenXAtHit = state.centerX + frac * maxOff;
-    const worldX = (screenXAtHit - state.centerX) / scaleAtHit;
-    // staggered arrival: each successive obstacle starts farther away so
-    // they reach the player at different moments (never a simultaneous
-    // pop-in wall) using the SAME shared scroll speed, no extra timers.
-    obstacles.push({
-      z: COLLAPSE_OBSTACLE_SPAWN_Z * (1 + idx * 0.6),
-      worldX, screenXAtHit, resolved: false, hit: false,
+  for (let idx = 0; idx < COLLAPSE_DEBRIS_COUNT; idx++) {
+    const lean = leanBuckets[idx % leanBuckets.length];
+    const rollDirSign = Math.random() < 0.5 ? -1 : 1; // independent of lean — a left-leaning drop can still roll either way
+    debris.push({
       seed: Math.random() * 1000,
+      state: 'pending',
+      spawnAt: now + idx * COLLAPSE_DEBRIS_STAGGER_MS,
+      z: COLLAPSE_DEBRIS_DROP_Z_MIN + Math.random() * COLLAPSE_DEBRIS_DROP_Z_SPREAD,
+      worldX: lean * COLLAPSE_DEBRIS_DROP_X_SPREAD * (0.4 + Math.random() * 0.6) + (Math.random() * 2 - 1) * 30,
+      fallHeight: COLLAPSE_DEBRIS_DROP_HEIGHT * (0.85 + Math.random() * 0.3),
+      fallVel: 0,
+      bounceCount: 0,
+      bounceDamping: COLLAPSE_DEBRIS_BOUNCE_DAMPING_MIN + Math.random() * (COLLAPSE_DEBRIS_BOUNCE_DAMPING_MAX - COLLAPSE_DEBRIS_BOUNCE_DAMPING_MIN),
+      rollDirSign,
+      rollZSpeed: 0, rollXSpeed: 0, rollBounceT: 0, rollStartZ: 0,
+      rotationAngle: Math.random() * Math.PI * 2,
+      rotationSpeed: rollDirSign * (COLLAPSE_DEBRIS_ROTATION_SPEED_MIN + Math.random() * (COLLAPSE_DEBRIS_ROTATION_SPEED_MAX - COLLAPSE_DEBRIS_ROTATION_SPEED_MIN)),
+      resolved: false, hit: false,
     });
-  });
+  }
 }
 
 // The main METROPOLIS COLLAPSE phase state machine — advances exactly one
@@ -4006,7 +4232,7 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
       y: state.horizonY - 20 - Math.random() * 40,
       vx: (Math.random() * 2 - 1) * 18, vy: 40 + Math.random() * 40,
       rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() * 2 - 1) * 6,
-      size: 2 + Math.random() * 4,
+      size: 7 + Math.random() * 7,
       born: now, until: now + 1800 + Math.random() * 600,
     });
   }
@@ -4030,7 +4256,13 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
     }
   } else if (c.phase === 'obstacles') {
     if (elapsed >= COLLAPSE_OBSTACLES_MS) {
-      c.obstacles.length = 0; // any not-yet-resolved obstacle simply never reached hit-Z — counts as dodged, never a stuck hazard
+      // 24TH ROUND item 12/13: no forced clear here anymore — a rolling
+      // debris piece's real fall/bounce/roll-away lifetime can legitimately
+      // outlive this phase window (the last of the 3 staggered events may
+      // still be mid-roll); it keeps updating/rendering via
+      // advanceCollapseWorldZ()/renderCollapseObstacles() (both called
+      // unconditionally every ESCAPE frame regardless of c.phase) and culls
+      // itself naturally once COLLAPSE_DEBRIS_CULL_Z is reached.
       c.phase = 'recede'; c.phaseStartedAt = now;
     }
   } else if (c.phase === 'recede') {
@@ -4135,7 +4367,7 @@ function updateCombatQuake(dt, now) {
       y: state.horizonY - 20 - Math.random() * 40,
       vx: (Math.random() * 2 - 1) * 18, vy: 40 + Math.random() * 40,
       rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() * 2 - 1) * 6,
-      size: 2 + Math.random() * 4,
+      size: 7 + Math.random() * 7,
       born: now, until: now + 1800 + Math.random() * 600,
     });
   }
@@ -4154,52 +4386,71 @@ function updateCombatQuake(dt, now) {
   }
 }
 
-// Rough jagged rock-chunk silhouette — pure Canvas fill, no new image
-// assets (spec section 17), seeded once at spawn (ob.seed) so each chunk's
-// shape stays stable frame-to-frame instead of re-randomizing every draw.
-// NEXT ROUND (spec section 8/9): the previous version was a single smooth,
-// randomly-perturbed semicircle silhouette — real-play feedback read it as
-// "じゃがいも" (a potato) or a flat brown triangle, not collapsed man-made
-// debris. Rebuilt from the same angular-chunk language renderCollapseRubble()
-// already uses: a small cluster of distinct rotated-rect concrete-slab
-// pieces (dark gray, never brown) plus a thin protruding rebar sliver —
-// never a rounded/smooth outline, never a circle/ellipse.
+// 24TH ROUND (items 10-14): rotating rebar/steel-rod + concrete-slab piece,
+// pure Canvas fill, no new image assets — seeded once at spawn (ob.seed) so
+// each piece's own internal shape stays stable frame-to-frame, while the
+// WHOLE cluster now genuinely spins (ob.rotationAngle, updated every frame
+// in advanceCollapseWorldZ()) and rides up/down with ob.fallHeight (the
+// fall/bounce/small-roll-bounce arc) — never a static silhouette. Reuses
+// the same angular concrete-slab language renderCollapseObstacles() already
+// established (explicitly never potato/pale-brown-triangle — item 14's
+// repeated prohibition), with two THICK rebar rods added (not just a thin
+// sliver) so the rotating-rebar read is unmistakable at combat/escape scale.
 function renderCollapseObstacles() {
-  const obstacles = state.escape.collapse.obstacles;
-  for (const ob of obstacles) {
-    const proj = project(ob.worldX, CORRIDOR_FLOOR_Y, ob.z);
-    const h = 60 * proj.scale;
+  const debris = state.escape.collapse.obstacles;
+  for (const ob of debris) {
+    if (ob.state === 'pending') continue; // not fallen yet — nothing to draw
+    const proj = project(ob.worldX, CORRIDOR_FLOOR_Y - ob.fallHeight, ob.z);
+    const h = 62 * proj.scale;
     if (h < 2) continue;
     const w = h * 1.3;
     const rnd = (n) => { const v = Math.sin(ob.seed + n * 12.9898) * 43758.5453; return v - Math.floor(v); };
     ctx.save();
     ctx.translate(proj.x, proj.y);
-    const baseColor = ob.hit ? '#8a3226' : '#38383b';
-    const darkColor = ob.hit ? '#5c2018' : '#212124';
+    ctx.rotate(ob.rotationAngle);
+    const baseColor = ob.hit ? '#8a3226' : '#3a3a3d';
+    const darkColor = ob.hit ? '#5c2018' : '#222225';
     const pieceCount = 3;
     for (let i = 0; i < pieceCount; i++) {
-      const fx = (rnd(i * 3 + 1) - 0.5) * w * 0.75;
-      const pieceW = w * (0.36 + rnd(i * 3 + 2) * 0.32);
-      const pieceH = h * (0.5 + rnd(i * 3 + 3) * 0.55);
-      const rot = (rnd(i * 3 + 4) - 0.5) * 0.6;
+      const fx = (rnd(i * 3 + 1) - 0.5) * w * 0.7;
+      const fy = (rnd(i * 3 + 5) - 0.5) * h * 0.3;
+      const pieceW = w * (0.34 + rnd(i * 3 + 2) * 0.3);
+      const pieceH = h * (0.46 + rnd(i * 3 + 3) * 0.5);
+      const rot = (rnd(i * 3 + 4) - 0.5) * 0.9;
       ctx.save();
-      ctx.translate(fx, -pieceH * 0.5);
+      ctx.translate(fx, fy);
       ctx.rotate(rot);
       ctx.fillStyle = i === 0 ? baseColor : darkColor;
       ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
-      // fractured-edge highlight, same trick renderCollapseRubble() uses
-      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillStyle = 'rgba(255,255,255,0.09)';
       ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH * 0.25);
       ctx.restore();
     }
-    // a thin protruding rebar sliver — never a circle/round speckle
-    ctx.strokeStyle = 'rgba(120,110,100,0.7)';
-    ctx.lineWidth = Math.max(1, h * 0.05);
+    // two thick rebar rods, crossed, protruding from the cluster — the
+    // primary "this is rebar, not a rock" visual cue, spinning WITH the
+    // whole cluster via the ctx.rotate() above.
+    ctx.strokeStyle = 'rgba(150,138,120,0.88)';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2, h * 0.09);
     ctx.beginPath();
-    ctx.moveTo((rnd(20) - 0.5) * w * 0.4, -h * 0.7);
-    ctx.lineTo((rnd(21) - 0.5) * w * 0.5, -h * 1.05);
+    ctx.moveTo(-w * 0.55, -h * 0.15);
+    ctx.lineTo(w * 0.6, -h * 0.85);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-w * 0.4, h * 0.05);
+    ctx.lineTo(w * 0.35, h * 0.75);
     ctx.stroke();
     ctx.restore();
+
+    // soft contact shadow pinned to the FLOOR (never rotates/rises with the
+    // piece) — the one cue that keeps a spinning, bouncing object read as
+    // physically resting on/near the ground rather than floating.
+    const floorProj = project(ob.worldX, CORRIDOR_FLOOR_Y, ob.z);
+    const shadowAlpha = 0.32 * clamp(1 - ob.fallHeight / COLLAPSE_DEBRIS_DROP_HEIGHT, 0.08, 1);
+    ctx.fillStyle = 'rgba(0,0,0,' + shadowAlpha + ')';
+    ctx.beginPath();
+    ctx.ellipse(floorProj.x, floorProj.y, w * 0.45, h * 0.14, 0, 0, Math.PI * 2);
+    ctx.fill();
   }
 }
 
@@ -5230,6 +5481,23 @@ function updateEnemy(dt, now) {
   updateEnemyFacing(dt, now);
   updateRoidAnimation(dt, now);
 
+  // 24TH ROUND item 20: COVER cancels any in-progress ranged lock-on
+  // immediately — checked first, before any state-specific logic below, so
+  // it can never race with or be skipped by any branch. Never touches
+  // GABRIEL/ADAM's CLAW state machine (a melee approach, not a lock-on/
+  // target-acquisition system — items 21-23 handle CLAW separately) and
+  // never touches an attack that has already left the lock-on phase (a
+  // fired shot/falling missile keeps resolving normally — COVER only blocks
+  // NEW targeting and cancels an in-progress LOCK, it never erases damage
+  // from something already in flight, per the explicit "COVER must not
+  // become full invincibility" constraint).
+  const rangedLockStates = ['lock_red', 'lock_yellow', 'lockon', 'sweepTelegraph', 'barrageLockon'];
+  if (e.kind !== 'claw' && isPlayerInCover() && rangedLockStates.includes(e.attackState)) {
+    if (DEBUG_MODE) r10DebugLog('LOCK-ON CANCELLED: player entered COVER (' + e.attackState + ')');
+    e.attackState = 'idle';
+    e.nextIdleCheckAt = now + 400;
+  }
+
   // 10TH ROUND (items 45/47): ends the counter-phase invulnerability window
   // on its own fixed timer (ROID_COUNTER_PHASE_MS) — independent of
   // whatever attackState the existing sniper/missile machinery happens to
@@ -5283,7 +5551,21 @@ function updateEnemy(dt, now) {
       }
     }
     if (!e.nextIdleCheckAt) e.nextIdleCheckAt = now + 1500 * enemyAttackFreqMult(e.type);
-    if (now >= e.nextIdleCheckAt && e.z < 900) {
+    if (now >= e.nextIdleCheckAt && e.z < 900 && isPlayerInCover() && state.enemy.type !== 'gabriel' && state.enemy.type !== 'adam') {
+      // 24TH ROUND item 20: while covered, never START a new ranged lock-on
+      // (SNIPER/MISSILE/SWEEP/BARRAGE target-acquisition) — GABRIEL/ADAM's
+      // CLAW is a melee approach, not a lock-on system, so it's explicitly
+      // excluded here and keeps rolling normally. Just requeues the
+      // idle-check shortly (same cadence the "too far" miss-branch below
+      // already uses) so targeting resumes immediately once COVER ends.
+      e.nextIdleCheckAt = now + 400;
+    } else if (now >= e.nextIdleCheckAt && e.z < 900 && (e.type === 'gabriel' || e.type === 'adam') && e.z >= CLAW_TRIGGER_Z_MAX) {
+      // 24TH ROUND items 21-23: still too far for a REAL CLAW range — never
+      // start the attack yet. The continuous idle stalk-approach above
+      // (CLAW_STALK_SPEED) keeps closing the gap every frame regardless, so
+      // this just re-checks soon rather than rolling an attack from range.
+      e.nextIdleCheckAt = now + 400;
+    } else if (now >= e.nextIdleCheckAt && e.z < 900) {
       const stealthMul = p.stealth ? 1.8 : 1.0;
       if (e.type === 'gabriel' || e.type === 'adam') {
         e.kind = 'claw';
@@ -5349,6 +5631,10 @@ function updateEnemy(dt, now) {
       // to drive the blink visual. No movement yet.
       if (now >= e.attackUntil) {
         e.clawApproachStartZ = e.z;
+        // 24TH ROUND item 22: captured once, at approach start — the
+        // absolute base the weave below oscillates around, so it never
+        // accumulates/random-walks frame to frame.
+        e.clawApproachStartLane = e.lane;
         e.attackState = 'approach';
         e.attackUntil = now + CLAW_APPROACH_MS;
       }
@@ -5361,6 +5647,17 @@ function updateEnemy(dt, now) {
       const tNorm = clamp(1 - (e.attackUntil - now) / CLAW_APPROACH_MS, 0, 1);
       const eased = 1 - Math.pow(1 - tNorm, 2);
       e.z = e.clawApproachStartZ + (zMin - e.clawApproachStartZ) * eased;
+      // 24TH ROUND item 22: small left-right evasive drift layered on top of
+      // the straight z-close approach — a genuine ABSOLUTE offset from the
+      // captured start lane (never an accumulating `+=`), decaying to 0 as
+      // it nears impact (tNorm->1) so it lands exactly on target, never
+      // overshooting. updateEnemyFacing() (which runs earlier this same
+      // frame) already overwrote e.lane with its own player-tracking value
+      // this frame — this intentionally overrides that for the 'approach'
+      // window only, so the rush-in never reads as a perfectly straight
+      // lunge/teleport.
+      const approachElapsed = CLAW_APPROACH_MS - (e.attackUntil - now);
+      e.lane = e.clawApproachStartLane + Math.sin(approachElapsed * 0.014) * 24 * (1 - tNorm);
       if (now >= e.attackUntil) {
         e.z = zMin; // land exactly on the max-approach position, no overshoot/undershoot
         e.attackState = 'telegraph'; // reuses the existing windup-art render state
@@ -6194,15 +6491,33 @@ function spawnDashStreak(x, y, dirX, dirY, now) {
 function updateGabrielAdamReaim(now) {
   const e = state.enemy;
   if ((e.type !== 'gabriel' && e.type !== 'adam') || e.lastDamageAimX == null) return;
+  const p = state.player;
   const aim = getAimPoint();
   if (!e.aimMovedAwaySinceHit && Math.abs(aim.x - e.lastDamageAimX) >= GABRIEL_ADAM_REAIM_THRESHOLD_PX) {
     e.aimMovedAwaySinceHit = true;
   }
   const elapsedOk = now - e.lastDamageHitAt >= GABRIEL_ADAM_DAMAGE_INTERVAL_MS;
-  // item 30: 0.3s elapsing ALONE never re-arms — ALL THREE conditions must
-  // hold together: elapsed time, having moved away at some point since the
-  // hit, AND being back on the effective-hit point right now.
-  e.damageAimArmed = elapsedOk && e.aimMovedAwaySinceHit && isAimOnEffectiveHit();
+  // 24TH ROUND item 24 — root cause of the heavy "DAMAGE BLOCKED: NOT
+  // RE-ARMED" spam investigated: AUTO AIM (FOCUS) smoothly homes
+  // aimLiveX/Y onto this exact enemy's own effective hit point every frame
+  // (see updatePlayer()'s autoAimActive branch, which targets
+  // getEffectiveHitPoint() — the SAME point e.lastDamageAimX was captured
+  // from). By design it converges and then barely drifts, so
+  // aimMovedAwaySinceHit could realistically never flip true while FOCUS
+  // stays held on a mostly-stationary boss, permanently blocking every
+  // follow-up hit — legible as "GABRIEL/ADAM unfairly tanky" specifically
+  // for FOCUS/auto-aim play, not a MANUAL-aim camping exploit (which is
+  // what this system was actually built to prevent — see the item-30
+  // comment this replaces). FOCUS already has its own real cost
+  // (FOCUS_DRAIN_PER_SEC depletes it while held, and it only recovers while
+  // released) which independently rate-limits sustained auto-aim damage, so
+  // while auto-aim is active the "must have moved away since the last hit"
+  // clause is bypassed — only the elapsed-time gate and the current-hit
+  // check still apply. MANUAL aim is completely unaffected: it still must
+  // move away and back, exactly as before. The re-arm system itself is
+  // intentionally kept, not removed, per spec.
+  const reaimSatisfied = p.autoAimActive || e.aimMovedAwaySinceHit;
+  e.damageAimArmed = elapsedOk && reaimSatisfied && isAimOnEffectiveHit();
 }
 
 function updateBullets(now) {
@@ -6977,6 +7292,34 @@ function drawRedTintedSprite(img, dx, dy, w, h) {
   ctx.drawImage(redTintCanvas, dx, dy, w, h);
 }
 
+// 24TH ROUND item 16: COMBAT-only — renderEnemy() (called BEFORE
+// renderFlashlightMask(), same as every other world sprite) already draws
+// its own hit-flash red tint, but the mask's darkness overlay then paints
+// over whatever part of a large enemy (ROID1/ROID2 etc.) extends beyond the
+// lit circle, same bug class already fixed for telegraphs/blasts/bullets/
+// the player (see their own comments). This redraws the SAME tinted sprite
+// a second time, unclipped, AFTER the mask, fully overriding it — never
+// tints the background, only the enemy's own opaque silhouette (exactly
+// what drawRedTintedSprite()'s source-atop compositing already guarantees).
+// ESCAPE MODE has no mask at all (see that branch's own comment), so
+// renderEnemy()'s existing pre-mask tint is already fully correct there —
+// this function is only ever called from the COMBAT render branch.
+function renderEnemyHitFlash() {
+  const e = state.enemy;
+  const now = performance.now();
+  if (e.deathState !== 'alive' || now >= e.hitFlashUntil) return;
+  const rect = computeEnemyDrawRect();
+  if (!imgReady(rect.img)) return;
+  let bobY = 0, bobScale = 1;
+  if (e.type === 'adam' && e.attackState === 'idle') {
+    const phase = (now % 700) / 700;
+    bobY = Math.sin(phase * Math.PI * 2) * (rect.h * 0.012);
+    bobScale = 1 + Math.sin(phase * Math.PI * 2) * 0.012;
+  }
+  const w = rect.w * bobScale;
+  drawRedTintedSprite(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, rect.h);
+}
+
 function getStealthStrength(now) {
   const p = state.player;
   const sinceToggle = now - p.stealthToggledAt;
@@ -7075,7 +7418,11 @@ function renderPlayer(theme) {
   // the separate tint-fade effect below, applied ON TOP of whichever
   // sprite — cover or normal — ends up chosen here).
   const dashActive = nowTs < p.fwdDashUntil || nowTs < p.dashUntil;
-  const usingCoverPose = !dashActive && isPlayerInCover();
+  // 24TH ROUND item 19: NORTH input (p.moveDirNorth, set in updatePlayer())
+  // suppresses COVER pose so the player visibly stands/switches to the
+  // normal WALK sprite before moving north, instead of sliding north while
+  // still drawn crouched in cover.
+  const usingCoverPose = !dashActive && isPlayerInCover() && !p.moveDirNorth;
   const coverFlip = usingCoverPose && p.coverFacing === 'west';
   const coverFrame = usingCoverPose ? (coverFlip ? ASSETS.player.cover.east : ASSETS.player.cover[p.coverFacing]) : null;
 
@@ -7110,12 +7457,18 @@ function renderPlayer(theme) {
   // its own distinct pose, no need to also enlarge it. (usingCoverPose is
   // already guaranteed false here whenever dashActive is true, so this
   // never fights the COVER branch above.)
+  // 24TH ROUND item 1: EAST/WEST DASH only reads ~10% smaller than every
+  // other pose (normal walk/aim, NORTH/SOUTH dash, COVER, ESCAPE MODE all
+  // stay untouched) — gated strictly on `nowTs < p.dashUntil` (the
+  // east/west-only timer), never `p.fwdDashUntil` (north/south).
+  let dashSideScale = 1;
   if (nowTs < p.fwdDashUntil) {
     img = p.fwdDashSign > 0 ? ASSETS.player.dashN : ASSETS.player.dashS;
     fireScaleBoost = 1;
   } else if (nowTs < p.dashUntil) {
     img = p.dashDir > 0 ? ASSETS.player.dashE : ASSETS.player.dashW;
     fireScaleBoost = 1;
+    dashSideScale = 0.90;
   }
 
   // PART 5 (2nd round): the player reads a bit bigger now, leaning toward
@@ -7177,8 +7530,8 @@ function renderPlayer(theme) {
     dx = cx - southWalkFrame.bodyCenterXFrac * drawW;
     dy = bottomY - southWalkFrame.bodyBottomFrac * drawH;
   } else {
-    drawH = img.naturalHeight * baseScale * p.scale;
-    drawW = img.naturalWidth * baseScale * p.scale;
+    drawH = img.naturalHeight * baseScale * p.scale * dashSideScale;
+    drawW = img.naturalWidth * baseScale * p.scale * dashSideScale;
     dx = cx - drawW / 2;
     dy = bottomY - drawH;
   }
@@ -7332,29 +7685,16 @@ function renderEscapePlayer() {
     ctx.globalAlpha = 1;
   }
 
-  // 11TH ROUND (item 7) / 13TH ROUND (items 7-8): DASH blink — reuses
-  // p.invincibleUntil, the SAME i-frame window updateEscapePlayer() sets on
-  // any instant DASH (no second blink/invulnerability system). Redesigned
-  // this round to be DASH-START-ANCHORED (phase from elapsed-since-dash,
-  // never raw wall-clock modulo) with an explicit ESCAPE_DASH_BLINK_CYCLES
-  // count, so the number of visible->invisible flashes is deterministic —
-  // with CYCLES=1: visible for the first half of ESCAPE_DASH_BLINK_MS, one
-  // deliberate fade for the second half, then normal display resumes the
-  // instant invincibility ends. Still never long enough to lose track of
-  // the player's position, per item 7's original "操作位置が分からなくな
-  // るほど長時間消さないでください".
-  // NEXT ROUND PART M: this strobe no longer runs for a lateral (WEST/EAST)
-  // DASH — es.lateralDashBlinkSuppressUntil covers exactly that window,
-  // during which the afterimages above are the DASH's visual tell instead.
-  // SOUTH DASH/NORTH BACKSTEP (out of PART M's scope) keep the blink.
-  const blinking = now < p.invincibleUntil && now >= es.lateralDashBlinkSuppressUntil;
-  if (blinking) {
-    const dashStartAt = p.invincibleUntil - ESCAPE_DASH_BLINK_MS;
-    const elapsed = now - dashStartAt;
-    const cycleMs = ESCAPE_DASH_BLINK_MS / (ESCAPE_DASH_BLINK_CYCLES * 2);
-    const phase = Math.floor(elapsed / cycleMs) % 2;
-    if (phase === 1) return; // skip this frame's draw — the single "off" half of the blink
-  }
+  // 24TH ROUND item 9: the old DASH/invincible-window strobe (blink tied to
+  // p.invincibleUntil, skipping the draw entirely on alternating frames) is
+  // REMOVED here — explicitly banned by spec as a non-damage blink trigger.
+  // SOUTH DASH/NORTH BACKSTEP now convey motion the same way lateral (WEST/
+  // EAST) DASH already did before this round: LEAN (es.leanAngle, applied
+  // just below, unchanged) + afterimages (drawn above, unchanged) + the
+  // existing dashScalePulse scale-pop — never a blink of the main sprite.
+  // es.lateralDashBlinkSuppressUntil is now dead/unused (no code reads it
+  // anymore) but left in state as harmless, since nothing else depends on
+  // removing it.
   // NEXT ROUND PART N: whole sprite leans around the tire/ground-contact
   // point (cx, bottomY) — pure Canvas transform, no new art — smoothly
   // toward/away from 0 (see es.leanAngle's own update in updateEscapePlayer()).
@@ -7647,7 +7987,11 @@ function renderEnemyTelegraphs(theme) {
   // air as it approaches. Shared by the single-missile system and each
   // BARRAGE missile so both read identically.
   function drawMissileDartBody(x, y, scale, hot) {
-    const bodyR = 11 * scale;
+    // 24TH ROUND item 17: 11 -> 16.5 (x1.5) — the existing far=small/near=
+    // large perspective relationship (the `scale` argument, untouched) is
+    // preserved exactly; only the base radius grows, so at close range this
+    // now reads clearly as "a shootable object."
+    const bodyR = 16.5 * scale;
     if (bodyR < 0.6) return;
     ctx.save();
     ctx.translate(x, y);
@@ -7938,16 +8282,27 @@ function renderParticles() {
       ctx.fillStyle = 'rgba(90,90,90,' + fadeAlpha * 0.35 + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, (pt.r || 18) * (1 + growProgress * 0.8), 0, Math.PI * 2); ctx.fill();
     } else if (pt.type === 'quakeDebris') {
-      // NEW FEATURE: METROPOLIS COLLAPSE — small falling concrete/debris
-      // chips (spec section 3/4). A tiny rotating dark chip, never a full
-      // game-UI shape; real gravity/rotation are handled in
-      // updateParticles() (COLLAPSE_DEBRIS_GRAVITY_PX_S2), not here.
+      // 24TH ROUND item 15: enlarged and given a two-tone concrete-chunk +
+      // rebar-sliver read (same visual language renderCollapseObstacles()
+      // uses for ESCAPE's larger hazards, scaled down) — the OLD 2-5px
+      // single fillRect chip was real-device-reported as "just pixels",
+      // never legible as fallen concrete/rebar by eye. Real gravity/
+      // rotation are still handled in updateParticles()
+      // (COLLAPSE_DEBRIS_GRAVITY_PX_S2), unchanged.
       ctx.save();
       ctx.translate(pt.x, pt.y);
       ctx.rotate(pt.rot || 0);
-      ctx.fillStyle = 'rgba(60,56,50,' + fadeAlpha + ')';
-      const s = pt.size || 3;
-      ctx.fillRect(-s / 2, -s / 2, s, s * 0.7);
+      const s = pt.size || 9;
+      ctx.fillStyle = 'rgba(56,56,59,' + fadeAlpha + ')';
+      ctx.fillRect(-s / 2, -s / 2, s, s * 0.72);
+      ctx.fillStyle = 'rgba(255,255,255,' + (fadeAlpha * 0.1) + ')';
+      ctx.fillRect(-s / 2, -s / 2, s, s * 0.2);
+      ctx.strokeStyle = 'rgba(120,110,100,' + (fadeAlpha * 0.8) + ')';
+      ctx.lineWidth = Math.max(1, s * 0.09);
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.3, s * 0.4);
+      ctx.lineTo(s * 0.35, -s * 0.55);
+      ctx.stroke();
       ctx.restore();
     } else if (pt.type === 'dashstreak') {
       // 12TH ROUND (item 47): DASH motion trail — short fading light
@@ -8500,7 +8855,7 @@ function frame(ts) {
       // feature's own top-of-file design comment), and the phase state
       // machine advances once per frame; escActions.jump is this frame's
       // already-edge-consumed JUMP action (LB+RB combo or the touch button).
-      advanceCollapseWorldZ(forwardDelta, ts);
+      advanceCollapseWorldZ(forwardDelta, dt, ts);
       updateEscapeCollapse(dt, ts, escActions.jump);
       updateEnemy(dt, ts);
       updateEscapeEnemyPursuit(ts);
@@ -8618,6 +8973,9 @@ function frame(ts) {
     // "behind the drum can" redraw moves with it (was previously paired
     // with this now-removed early draw).
     renderFlashlightMask();
+    // 24TH ROUND item 16: see renderEnemyHitFlash()'s own comment — must run
+    // after the mask, same bug class as everything else below it.
+    renderEnemyHitFlash();
     // 16TH ROUND (Part A/B, root-cause fix): a BLAST must read as its own
     // bright, self-illuminating event, not get dimmed into a faint grey
     // smudge by the darkness mask above — same bug class as
