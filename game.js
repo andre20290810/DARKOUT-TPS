@@ -201,8 +201,12 @@ const ESCAPE_AFTERIMAGE_MS = 220;
 // bike sprite up to this many degrees toward the travel direction, and
 // ESCAPE_LEAN_SMOOTH_RATE controls how quickly it eases toward/away from
 // that target (never instant, per spec) — an exponential per-second rate.
-const ESCAPE_LEAN_MAX_RAD = 30 * Math.PI / 180;
-const ESCAPE_LEAN_SMOOTH_RATE = 9;
+// NEXT ROUND: real-play feedback said 30deg read as violent/eye-straining;
+// halved to 15deg (spec section 6), and the smoothing rate itself lowered
+// so the transition toward/away from that smaller target is gentler too
+// (spec section 5's "全体的に振幅・速度を整理").
+const ESCAPE_LEAN_MAX_RAD = 15 * Math.PI / 180;
+const ESCAPE_LEAN_SMOOTH_RATE = 6;
 
 // ============================================================
 // METROPOLIS COLLAPSE EVENTS (ESCAPE MODE ONLY) — new feature.
@@ -225,18 +229,26 @@ const ESCAPE_LEAN_SMOOTH_RATE = 9;
 // raw teleport/instant resize, and the rubble stays visually fixed in the
 // near foreground the whole approach (matching the spec's own "手前に瓦礫
 // の山" diagram) rather than needing its own moving world-Z.
-const COLLAPSE_QUAKE_MS = 1400;            // STEP1: tremor + dust begins
-const COLLAPSE_OBSTACLES_MS = 2200;        // STEP3: avoidable falling debris/obstacles window
-const COLLAPSE_RECEDE_MS = 1100;           // STEP5: player eases FAR (continuous, never a snap)
-const COLLAPSE_APPROACH_MS = 2600;         // STEP6/11: player eases back NEAR toward the rubble — the "timing game" window
+// NEXT ROUND (real-play feedback): the quake itself read as too long and too
+// violent, and the overall cycle dragged — QUAKE_MS/SHAKE_PEAK_PX/
+// TILT_MAX_RAD all reduced (spec sections 12-13), and RECEDE/APPROACH/
+// OBSTACLES_MS all trimmed for tempo (section 15) without changing the
+// underlying progress-based (not fixed-time) JUMP judgment logic.
+const COLLAPSE_QUAKE_MS = 700;             // STEP1: tremor + dust begins — was 1400, halved
+const COLLAPSE_OBSTACLES_MS = 1800;        // STEP3: avoidable falling debris/obstacles window
+const COLLAPSE_RECEDE_MS = 850;            // STEP5: player eases FAR (continuous, never a snap)
+// STEP8 (new): a short "the pile is assembling" window inserted between
+// STEP5 (fully receded) and STEP6 (approach) — see spec section 8/18-7/8.
+const COLLAPSE_RUBBLE_FORM_MS = 750;
+const COLLAPSE_APPROACH_MS = 2000;         // STEP6/11: player eases back NEAR toward the rubble — the "timing game" window
 const COLLAPSE_JUMP_MS = 480;              // STEP7/8: airborne arc duration
 const COLLAPSE_JUMP_EARLY_CAP = 0.85;      // an early JUMP press is BUFFERED (held until this progress), never wasted
 const COLLAPSE_RUBBLE_RECEDE_MS = 1000;    // STEP9: rubble shrinks away BEHIND the player after a clear/hit
 const COLLAPSE_RECOVER_MS = 500;           // STEP10: brief settle before returning to normal ESCAPE
 const COLLAPSE_MIN_INTERVAL_MS = 9000;     // how soon after one cycle ends the next can begin
 const COLLAPSE_MAX_INTERVAL_MS = 15000;
-const COLLAPSE_SHAKE_PEAK_PX = 7;          // camera shake jitter amplitude at its strongest (quake start)
-const COLLAPSE_TILT_MAX_RAD = 2.4 * Math.PI / 180; // whole-scene rotation during quake — "消失点が左右へ動く" via one cheap canvas transform, never touches project()/world math
+const COLLAPSE_SHAKE_PEAK_PX = 4;          // camera shake jitter amplitude at its strongest (quake start) — was 7
+const COLLAPSE_TILT_MAX_RAD = 1.1 * Math.PI / 180; // whole-scene rotation during quake — was 2.4deg — "消失点が左右へ動く" via one cheap canvas transform, never touches project()/world math
 const COLLAPSE_OBSTACLE_COUNT = 2;         // how many left/right-avoid hazards spawn per obstacles phase
 const COLLAPSE_OBSTACLE_SPAWN_Z = 1000;    // world z each obstacle starts at (far), pulled in by the normal auto-scroll
 const COLLAPSE_OBSTACLE_HIT_Z = 90;        // world z at which an un-dodged obstacle resolves (hit or dodged)
@@ -244,12 +256,16 @@ const COLLAPSE_OBSTACLE_CULL_Z = 4;        // despawned once it scrolls this clo
 const COLLAPSE_OBSTACLE_HALF_W_PX = 34;    // collision half-width in screen px at hit-Z, checked against player screen X
 const COLLAPSE_OBSTACLE_DAMAGE = 30;
 const COLLAPSE_RUBBLE_DAMAGE = 45;
-const COLLAPSE_FAR_SCALE_DROP = 0.74;      // at full recede (progress=1), player shrinks to ~26% of its normal depthPos-scale
-const COLLAPSE_FAR_SCREEN_PX = 150;        // at full recede, player's screen anchor lifts this many extra px (on top of normal depthPos screen range)
+// NEXT ROUND (spec section 7): real-play feedback said the receded player
+// read as "too small" — was 0.74 (scale drops to ~0.26x, i.e. ~3.8x
+// smaller); halved to 0.48 (scale drops to ~0.52x, i.e. ~1.9x smaller ==
+// roughly DOUBLE the old minimum size), continuous easing unchanged.
+const COLLAPSE_FAR_SCALE_DROP = 0.48;      // at full recede (progress=1), player shrinks to ~52% of its normal depthPos-scale
+const COLLAPSE_FAR_SCREEN_PX = 100;        // at full recede, player's screen anchor lifts this many extra px (on top of normal depthPos screen range) — scaled down to match the smaller scale drop
 const COLLAPSE_JUMP_ARC_PX = 46;           // peak visual height (screen px) of the JUMP hop
 const COLLAPSE_JUMP_COMBO_WINDOW_MS = 140; // LB+RB "natural simultaneous press" tolerance
-const COLLAPSE_RUBBLE_W_PX = 132;          // base rubble-pile draw width at scale 1 (never taller than roughly hip/chest height on the bike — spec section 6)
-const COLLAPSE_RUBBLE_H_PX = 62;
+const COLLAPSE_RUBBLE_W_PX = 150;          // base rubble-pile draw width at scale 1 (never taller than roughly hip/chest height on the bike — spec section 6/10)
+const COLLAPSE_RUBBLE_H_PX = 64;
 
 // Shared by the PLAYER's own recede/approach AND the rubble's post-jump
 // recede — one interpolation, reused twice (never a separate ad-hoc formula
@@ -258,7 +274,11 @@ function collapseFarVisual(progress, scaleDrop, screenPxRange) {
   const t = clamp(progress, 0, 1);
   return { scaleMul: 1 - t * scaleDrop, screenYPush: t * screenPxRange };
 }
-const ESCAPE_ANIM_FRAME_MS = 45; // NEXT ROUND PART A: was 90 — halved to match ESCAPE_AUTO_SCROLL_SPEED's doubling so PLAYER anim and stage scroll read as the same speed (time-elapsed interval, drives the always-on 5-frame RUN LOOP)
+// NEXT ROUND (real-play feedback): 45ms read as flickery/eye-straining —
+// eased back up partway toward the pre-speed-pass 90ms (never all the way
+// back, so the faster auto-scroll and this stay in the same speed range —
+// spec section 5's "高速走行の躍動感は残す").
+const ESCAPE_ANIM_FRAME_MS = 65; // was 45 (12TH ROUND's original value was 90)
 // 11TH ROUND (item 5): investigated first — ESCAPE's continuous lateral
 // move had NO separate smoothing/acceleration/interpolation layer at all;
 // it applies raw input directly to strafeOffset every frame
@@ -1896,9 +1916,15 @@ const ASSETS = {
     // for no separate west file — WEST reuses 'east', mirrored at render
     // time only (see renderPlayer()/getFlippedCoverEastImage()), never a
     // duplicated/pre-flipped image file.
+    // NEXT ROUND (spec section 4): the NORTH cover pose is retired — real
+    // feedback said it read wrong for a player facing away while ducking
+    // behind cover. COVER now only ever shows SOUTH/EAST/WEST(=flipped
+    // EAST) — see updatePlayer()'s coverFacing assignment, which now maps
+    // NORTH input to the SOUTH pose directly, so no code path can select
+    // this key anymore. The image file itself is simply no longer
+    // referenced (no other loader/preload list names it either).
     cover: {
       south: coverSpriteFrame('assets/player/player_cover_south.png', 0.0851, 0.8594, 0.4944),
-      north: coverSpriteFrame('assets/player/player_cover_north.png', 0.1441, 0.8414, 0.5191),
       east: coverSpriteFrame('assets/player/player_cover_east.png', 0.0103, 0.9934, 0.3661),
     },
   },
@@ -2263,7 +2289,7 @@ const state = {
     // isPlayerInCover() is true. Defaults to 'north', matching this game's
     // existing baseline orientation (every other PLAYER pose — walk/aim/
     // fire/north-dash — already faces north/away-from-camera).
-    coverFacing: 'north',
+    coverFacing: 'south', // NEXT ROUND (spec section 4): default changed from 'north' now that the NORTH cover pose is retired
     // 4th round: FOCUS / AUTO AIM (LB, replaces the retired FLASH).
     focus: FOCUS_MAX,
     autoAimActive: false,
@@ -3679,7 +3705,11 @@ function updatePlayer(dt, now, moveX, moveY, actions) {
   // rather than resetting to a default, so ducking behind a barrel with
   // no further input keeps showing whichever direction was last faced.
   if (Math.abs(moveY) >= Math.abs(moveX)) {
-    if (moveY < -0.15) p.coverFacing = 'north';
+    // NEXT ROUND (spec section 4): NORTH input while in COVER now resolves
+    // to the SOUTH cover pose directly — the NORTH image is retired (see
+    // ASSETS.player.cover's own comment), so this is the one and only place
+    // that used to be able to select it.
+    if (moveY < -0.15) p.coverFacing = 'south';
     else if (moveY > 0.15) p.coverFacing = 'south';
   } else {
     if (moveX < -0.15) p.coverFacing = 'west';
@@ -3719,7 +3749,14 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   // smoothed toward the target AND back to 0 on neutral input (never an
   // instant snap either way). Driven by raw moveX (not strafeOffset), so it
   // reads as "leaning because I'm steering", independent of clamp state.
-  const targetLean = Math.max(-1, Math.min(1, moveX)) * ESCAPE_LEAN_MAX_RAD;
+  // NEXT ROUND (spec section 14): while the CAMERA itself is shaking/
+  // tilting (quake/obstacles phases), the player's own lean is dampened —
+  // "role division" instead of camera+player+scale all fighting for
+  // attention at once. Only ever reduces the target, never the smoothing
+  // itself, so the return-to-neutral stays just as gentle.
+  const quakePhase = es.collapse.phase === 'quake' || es.collapse.phase === 'obstacles';
+  const leanDamp = quakePhase ? 0.35 : 1;
+  const targetLean = Math.max(-1, Math.min(1, moveX)) * ESCAPE_LEAN_MAX_RAD * leanDamp;
   es.leanAngle += (targetLean - es.leanAngle) * Math.min(1, dt * ESCAPE_LEAN_SMOOTH_RATE);
 
   // 12TH ROUND (items 15-17): continuous NORTH/SOUTH — the SECOND free axis
@@ -3969,9 +4006,33 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
     const t = clamp(elapsed / COLLAPSE_RECEDE_MS, 0, 1);
     c.farProgress = t; // STEP5: current size -> continuously smaller -> fully far, never a snap
     if (t >= 1) {
-      c.rubble = { recedeProgress: 0, passed: false };
-      c.phase = 'approach'; c.phaseStartedAt = now;
+      // NEXT ROUND (spec section 8): the pile does not simply fade in at
+      // full size the instant recede completes — 'rubbleForm' (below) plays
+      // a short formation beat first (chunks visibly falling and landing),
+      // with formProgress (0=nothing yet, 1=fully assembled) driving both
+      // the falling-chunk spawn below and renderCollapseRubble()'s own
+      // height/reveal. seed is rolled ONCE here so the pile's shape stays
+      // stable for its entire lifetime (never re-randomizes per frame).
+      c.rubble = { recedeProgress: 0, passed: false, formProgress: 0, seed: Math.random() * 1000 };
+      c.phase = 'rubbleForm'; c.phaseStartedAt = now;
     }
+  } else if (c.phase === 'rubbleForm') {
+    const t = clamp(elapsed / COLLAPSE_RUBBLE_FORM_MS, 0, 1);
+    if (c.rubble) c.rubble.formProgress = t;
+    // A handful of bigger chunks visibly fall and land at the pile's own
+    // screen position while it assembles — never just a silent fade-in.
+    if (Math.random() < dt * 14) {
+      spawnParticle({
+        type: 'quakeDebris',
+        x: state.centerX + (Math.random() * 2 - 1) * 70,
+        y: state.cssH * 0.55,
+        vx: (Math.random() * 2 - 1) * 30, vy: 260 + Math.random() * 120,
+        rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() * 2 - 1) * 9,
+        size: 4 + Math.random() * 6,
+        born: now, until: now + 500 + Math.random() * 200,
+      });
+    }
+    if (t >= 1) { c.phase = 'approach'; c.phaseStartedAt = now; }
   } else if (c.phase === 'approach') {
     if (jumpPressed && !c.jumping) c.jumpQueued = true;
     const t = clamp(elapsed / COLLAPSE_APPROACH_MS, 0, 1);
@@ -4041,41 +4102,135 @@ function renderCollapseObstacles() {
   }
 }
 
-// The rubble pile itself — drawn in pure screen space (no world-Z of its
-// own, see this feature's top-of-file design comment for why) as a
-// procedural mound: low debris rising to a moderate peak, per spec section
-// 6 ("バイクの上半身まで隠さない、飛び越えられそうな高さ"). recedeProgress
-// reuses collapseFarVisual() — the SAME interpolation the player's own
-// recede/approach cinematic uses.
+// Deterministic [0,1) hash — shared shape-seeding approach already used by
+// renderCollapseObstacles()'s own `rnd` — reused here so the rubble pile's
+// jagged shape is stable across frames (seeded once at spawn) rather than
+// re-randomizing every draw.
+function collapseHash(seed, i) {
+  const v = Math.sin(seed + i * 12.9898) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+// NEXT ROUND (spec sections 9-11): the previous version was a single smooth
+// hill polygon + round speckles, which real-play feedback read as "a potato
+// on the road" rather than collapsed man-made structure. Rebuilt as an
+// assembly of distinct angular pieces — tilted concrete slab chunks (rotated
+// rects), diagonal steel beams (long thin rotated rects, some ends
+// intentionally poking past the silhouette), and a few rebar strokes —
+// never circles/ellipses for the structural pieces. formProgress (spec
+// section 8) reveals pieces progressively (a growing subset, each easing in
+// its own height) instead of an instant full-size pop; recedeProgress (spec
+// sections 11/17, unchanged mechanism) reuses the SAME collapseFarVisual()
+// interpolation the player's own recede/approach cinematic uses, so the
+// pile shrinks/lifts away exactly in sync with the existing perspective
+// system once passed.
+const COLLAPSE_RUBBLE_CHUNK_COUNT = 8;
+const COLLAPSE_RUBBLE_BEAM_COUNT = 3;
 function renderCollapseRubble(now) {
   const c = state.escape.collapse;
   if (!c.rubble) return;
   const far = collapseFarVisual(c.rubble.recedeProgress, COLLAPSE_FAR_SCALE_DROP, COLLAPSE_FAR_SCREEN_PX);
   if (far.scaleMul <= 0.02) return;
+  const seed = c.rubble.seed || 1;
+  const formT = c.rubble.formProgress == null ? 1 : c.rubble.formProgress; // pre-STEP8 rubble (shouldn't happen, but never crash) reads as fully formed
   const cx = state.centerX;
   const bottomY = state.cssH * 1.02 - far.screenYPush;
   const w = COLLAPSE_RUBBLE_W_PX * far.scaleMul;
   const h = COLLAPSE_RUBBLE_H_PX * far.scaleMul;
   ctx.save();
-  ctx.globalAlpha = clamp(1 - c.rubble.recedeProgress * 0.15, 0, 1); // very slight fade only at the tail end of receding, mound stays solid/readable most of the way
-  ctx.fillStyle = '#302a24';
+  ctx.globalAlpha = clamp(1 - c.rubble.recedeProgress * 0.15, 0, 1); // very slight fade only at the tail end of receding, pile stays solid/readable most of the way
+
+  // Ground contact dust/scorch — a soft flat smear, never a bright shape,
+  // so the pile reads as SITTING on the road rather than floating.
+  ctx.fillStyle = 'rgba(20,18,15,0.35)';
   ctx.beginPath();
-  ctx.moveTo(cx - w / 2, bottomY);
-  ctx.lineTo(cx - w * 0.32, bottomY - h * 0.55);
-  ctx.lineTo(cx - w * 0.08, bottomY - h);
-  ctx.lineTo(cx + w * 0.1, bottomY - h * 0.92);
-  ctx.lineTo(cx + w * 0.34, bottomY - h * 0.5);
-  ctx.lineTo(cx + w / 2, bottomY);
-  ctx.closePath();
+  ctx.ellipse(cx, bottomY - 2 * far.scaleMul, w * 0.56, h * 0.16, 0, 0, Math.PI * 2);
   ctx.fill();
-  // a few darker debris speckles on the mound's surface for texture — no new assets.
-  ctx.fillStyle = '#1c1815';
-  for (let i = 0; i < 5; i++) {
-    const fx = -0.4 + i * 0.2;
-    ctx.beginPath();
-    ctx.ellipse(cx + fx * w, bottomY - h * (0.35 + (i % 2) * 0.3), w * 0.05, h * 0.07, 0, 0, Math.PI * 2);
-    ctx.fill();
+
+  // Concrete slab chunks: rotated rects of varying gray tone, clustered
+  // taller toward the center and lower at the edges (spec section 10's low
+  // "flanks rising to a middle peak" silhouette), revealed progressively.
+  const chunkGrays = ['#3a352e', '#332f29', '#403a32', '#2c2823', '#453f36'];
+  const visibleChunks = Math.max(1, Math.round(COLLAPSE_RUBBLE_CHUNK_COUNT * formT));
+  for (let i = 0; i < visibleChunks; i++) {
+    const r1 = collapseHash(seed, i), r2 = collapseHash(seed, i + 50), r3 = collapseHash(seed, i + 100);
+    const fx = -0.46 + (i / (COLLAPSE_RUBBLE_CHUNK_COUNT - 1)) * 0.92; // -0.46..+0.46 across the pile width
+    const centerBias = 1 - Math.abs(fx) * 1.3; // taller near the middle, low at the flanks
+    const chunkH = h * (0.28 + Math.max(0, centerBias) * 0.65 + r1 * 0.18);
+    const chunkW = w * (0.16 + r2 * 0.12);
+    // per-chunk own reveal easing so the LAST-revealed chunk visibly grows
+    // in rather than appearing at full height instantly.
+    const growT = clamp(formT * COLLAPSE_RUBBLE_CHUNK_COUNT - i, 0, 1);
+    if (growT <= 0) continue;
+    const px = cx + fx * w;
+    ctx.save();
+    ctx.translate(px, bottomY - (chunkH * growT) / 2);
+    ctx.rotate((r3 - 0.5) * 0.7); // angular tilt, never axis-aligned rubble
+    ctx.fillStyle = chunkGrays[i % chunkGrays.length];
+    ctx.fillRect(-chunkW / 2, -(chunkH * growT) / 2, chunkW, chunkH * growT);
+    // a lighter broken edge on one side reads as a fractured concrete face
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(-chunkW / 2, -(chunkH * growT) / 2, chunkW * 0.22, chunkH * growT);
+    ctx.restore();
   }
+
+  // Steel beams: long thin dark rotated rects crossing diagonally over the
+  // pile, deliberately allowed to extend past the chunk silhouette at one
+  // end (spec section 9's "一部飛び出した鉄筋/鉄骨"). Only settle in once
+  // the pile is mostly formed (heavy pieces land last).
+  const beamT = clamp((formT - 0.5) * 2, 0, 1);
+  if (beamT > 0) {
+    for (let i = 0; i < COLLAPSE_RUBBLE_BEAM_COUNT; i++) {
+      const r1 = collapseHash(seed, i + 200), r2 = collapseHash(seed, i + 260);
+      const bx = cx + (-0.3 + i * 0.3 + (r1 - 0.5) * 0.15) * w;
+      const by = bottomY - h * (0.35 + r2 * 0.35);
+      const len = w * (0.42 + r1 * 0.2) * beamT;
+      const ang = -0.5 + i * 0.35 + (r2 - 0.5) * 0.3;
+      ctx.save();
+      ctx.translate(bx, by);
+      ctx.rotate(ang);
+      ctx.fillStyle = '#1a1a1c';
+      ctx.fillRect(-len / 2, -h * 0.028, len, h * 0.056);
+      ctx.strokeStyle = 'rgba(140,145,150,0.35)';
+      ctx.lineWidth = Math.max(0.5, h * 0.012);
+      ctx.beginPath(); ctx.moveTo(-len / 2, -h * 0.028); ctx.lineTo(len / 2, -h * 0.028); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Thin rebar strokes sticking out of the top chunks, and small angular
+  // debris chips (quads, never circles) scattered for texture/dust.
+  if (formT > 0.4) {
+    ctx.strokeStyle = 'rgba(90,80,70,0.6)';
+    ctx.lineWidth = Math.max(0.5, h * 0.018);
+    for (let i = 0; i < 4; i++) {
+      const r1 = collapseHash(seed, i + 300), r2 = collapseHash(seed, i + 340);
+      const rx = cx + (-0.35 + i * 0.24 + (r1 - 0.5) * 0.1) * w;
+      const ry = bottomY - h * (0.55 + r2 * 0.35);
+      const len = h * (0.18 + r1 * 0.14);
+      const ang = -0.9 + r2 * 1.8;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry);
+      ctx.lineTo(rx + Math.sin(ang) * len, ry - Math.cos(ang) * len);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#1c1815';
+    for (let i = 0; i < 6; i++) {
+      const r1 = collapseHash(seed, i + 400), r2 = collapseHash(seed, i + 440), r3 = collapseHash(seed, i + 480);
+      const qx = cx + (-0.48 + r1 * 0.96) * w;
+      const qy = bottomY - h * (0.06 + r2 * 0.5);
+      const s = w * (0.02 + r3 * 0.025);
+      ctx.save();
+      ctx.translate(qx, qy);
+      ctx.rotate(r1 * Math.PI);
+      ctx.beginPath();
+      ctx.moveTo(-s, -s * 0.6); ctx.lineTo(s * 0.7, -s); ctx.lineTo(s, s * 0.5); ctx.lineTo(-s * 0.6, s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   ctx.restore();
 }
 
@@ -4407,6 +4562,16 @@ function refreshMissileTargetScreenPos(e) {
 // unchanged impact world point (still the correct "it will land here"
 // tell).
 const MISSILE_APPROACH_Z_BONUS = 780;
+// NEXT ROUND (spec section 1): "発射直前に敵中央が一瞬白く発光" — a brief
+// launch flash at the ENEMY's own body center, distinct from the
+// projectile's own body/telegraph, marking the instant of launch. Shared by
+// both the single-missile system (DRONE/ADAM SPHERE) and each individual
+// BARRAGE missile (ROID1/ROID2).
+const MISSILE_LAUNCH_FLASH_MS = 160;
+// NEXT ROUND (spec sections 2-3): the projectile's own tumble — a
+// continuous spin so the dart-shaped body (see getMissile/BarrageProjectileVisual()'s
+// render sites) reads as "回転しながら接近してくる", never a static orb.
+const MISSILE_SPIN_RATE = 0.012;
 function getMissileProjectileVisual(e) {
   const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1); // 1=just launched (far), 0=impact (at target)
   const bodyWorldZ = e.missileTargetWorldZ + MISSILE_APPROACH_Z_BONUS * heightFrac;
@@ -5271,6 +5436,7 @@ function updateEnemy(dt, now) {
         // the height-driven tick below.
         e.missileHeight = MISSILE_PROJECTILE_START_HEIGHT;
         e.missileDestroyed = false;
+        e.missileLaunchFlashUntil = now + MISSILE_LAUNCH_FLASH_MS; // spec section 1: brief white flash at the enemy's own body center at the instant of launch
         e.attackState = 'target';
         e.attackUntil = now + MISSILE_TARGET_MS;
       }
@@ -5363,6 +5529,7 @@ function updateEnemy(dt, now) {
             worldX: lockWorldX + pat.dx + jx,
             worldZ: worldZ + pat.dz + jz,
             launchAt,
+            launchFlashUntil: launchAt + MISSILE_LAUNCH_FLASH_MS, // spec section 1: same per-missile launch flash, timed to THIS missile's own staggered launch
             impactAt: launchAt + BARRAGE_FALL_MS,
             height: MISSILE_PROJECTILE_START_HEIGHT,
             impacted: false,
@@ -7243,6 +7410,73 @@ function renderEnemyTelegraphs(theme) {
     return;
   }
 
+  // NEXT ROUND (spec sections 1-3): the projectile's real BODY — a small
+  // dart/rocket silhouette (angular polygon, never a round orb or a white
+  // rod/line), continuously spinning so it reads as tumbling through the
+  // air as it approaches. Shared by the single-missile system and each
+  // BARRAGE missile so both read identically.
+  function drawMissileDartBody(x, y, scale, hot) {
+    const bodyR = 11 * scale;
+    if (bodyR < 0.6) return;
+    ctx.save();
+    ctx.translate(x, y);
+    // soft ambient glow for visibility against dark backgrounds — a halo
+    // behind the dart, never the dominant shape itself (that was the old
+    // "glowing orb" bug this replaces).
+    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, bodyR * 2.1);
+    glow.addColorStop(0, 'rgba(255,160,70,' + (0.4 * hot) + ')');
+    glow.addColorStop(1, 'rgba(255,90,40,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(0, 0, bodyR * 2.1, 0, Math.PI * 2); ctx.fill();
+
+    ctx.rotate(now * MISSILE_SPIN_RATE);
+    ctx.fillStyle = '#cfd6dc';
+    ctx.beginPath();
+    ctx.moveTo(0, bodyR * 1.35);
+    ctx.lineTo(bodyR * 0.32, bodyR * 0.15);
+    ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
+    ctx.lineTo(-bodyR * 0.2, -bodyR * 0.95);
+    ctx.lineTo(-bodyR * 0.32, bodyR * 0.15);
+    ctx.closePath();
+    ctx.fill();
+    // dark shading down one side for a 3D (not flat-disc) read
+    ctx.fillStyle = 'rgba(20,20,25,0.4)';
+    ctx.beginPath();
+    ctx.moveTo(0, bodyR * 1.35);
+    ctx.lineTo(bodyR * 0.32, bodyR * 0.15);
+    ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
+    ctx.lineTo(0, -bodyR * 0.95);
+    ctx.closePath();
+    ctx.fill();
+    // small tail fins
+    ctx.fillStyle = '#8a9096';
+    ctx.beginPath();
+    ctx.moveTo(-bodyR * 0.2, -bodyR * 0.6); ctx.lineTo(-bodyR * 0.55, -bodyR); ctx.lineTo(-bodyR * 0.2, -bodyR * 0.95);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(bodyR * 0.2, -bodyR * 0.6); ctx.lineTo(bodyR * 0.55, -bodyR); ctx.lineTo(bodyR * 0.2, -bodyR * 0.95);
+    ctx.closePath(); ctx.fill();
+    // small hot exhaust glow at the tail
+    ctx.fillStyle = 'rgba(255,200,120,' + (0.85 * hot) + ')';
+    ctx.beginPath(); ctx.arc(0, -bodyR * 0.95, bodyR * 0.22, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  // NEXT ROUND (spec section 1): brief white flash at the ENEMY's own body
+  // center at the instant of launch — separate from the projectile's own
+  // body above.
+  function renderMissileLaunchFlash(flashUntil) {
+    if (!flashUntil || now >= flashUntil) return;
+    const t = clamp((flashUntil - now) / MISSILE_LAUNCH_FLASH_MS, 0, 1);
+    const anchor = screenSpaceEnemyAnchor();
+    ctx.save();
+    const g = ctx.createRadialGradient(anchor.x, anchor.y, 0, anchor.x, anchor.y, 46);
+    g.addColorStop(0, 'rgba(255,255,255,' + (0.85 * t) + ')');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 46, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
   // PART 7: MISSILE — blinking red LOCK ▲ during PHASE1, then a filled
   // white ellipse at the frozen target ramping transparent->opaque as the
   // countdown during PHASE2 (never just a stroked outline).
@@ -7315,36 +7549,18 @@ function renderEnemyTelegraphs(theme) {
         ctx.ellipse(pv.shadowX, pv.shadowY, shadowRx, shadowRy, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        // A thin connecting line between the object and its shadow reads
-        // the closing GAP as altitude drops — never drawn once they're
-        // effectively touching.
-        if (heightFrac > 0.03) {
-          ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(pv.x, pv.y);
-          ctx.lineTo(pv.shadowX, pv.shadowY);
-          ctx.stroke();
-        }
-
-        // The falling object itself: a small glowing orb, subtly
-        // brightening/pulsing (never flashing) as impact nears.
-        const bodyR = 10 * pv.scale;
-        const bright = 0.6 + 0.4 * (1 - heightFrac);
-        const bodyGrad = ctx.createRadialGradient(pv.x, pv.y, 0, pv.x, pv.y, bodyR * 1.6);
-        bodyGrad.addColorStop(0, 'rgba(255,235,190,' + bright + ')');
-        bodyGrad.addColorStop(0.6, 'rgba(255,150,60,' + (0.7 * bright) + ')');
-        bodyGrad.addColorStop(1, 'rgba(255,90,40,0)');
-        ctx.fillStyle = bodyGrad;
-        ctx.beginPath();
-        ctx.arc(pv.x, pv.y, bodyR * 1.6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(255,255,255,0.9)';
-        ctx.beginPath();
-        ctx.arc(pv.x, pv.y, bodyR * 0.45, 0, Math.PI * 2);
-        ctx.fill();
+        // NEXT ROUND (spec section 2): the old thin white connecting line
+        // between object and shadow is REMOVED — at high heightFrac (just
+        // launched) this line spanned a large fraction of the screen and
+        // was the actual root cause of the repeatedly-flagged "white
+        // rod/pole" complaint (never intentional as a "speed" effect). The
+        // shadow ellipse above already tells the player where it will
+        // land; the dart body below is its own now-legible falling object,
+        // so no connecting line is needed at all.
         ctx.restore();
+        drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
       }
+      renderMissileLaunchFlash(e.missileLaunchFlashUntil);
     }
     return;
   }
@@ -7410,25 +7626,13 @@ function renderEnemyTelegraphs(theme) {
       ctx.beginPath();
       ctx.ellipse(pv.shadowX, pv.shadowY, 14 * pv.scale, 5 * pv.scale, 0, 0, Math.PI * 2);
       ctx.fill();
-      if (heightFrac > 0.03) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(pv.x, pv.y);
-        ctx.lineTo(pv.shadowX, pv.shadowY);
-        ctx.stroke();
-      }
-      const bodyR = 9 * pv.scale;
-      const bright = 0.6 + 0.4 * (1 - heightFrac);
-      const bodyGrad = ctx.createRadialGradient(pv.x, pv.y, 0, pv.x, pv.y, bodyR * 1.6);
-      bodyGrad.addColorStop(0, 'rgba(255,235,190,' + bright + ')');
-      bodyGrad.addColorStop(0.6, 'rgba(255,150,60,' + (0.7 * bright) + ')');
-      bodyGrad.addColorStop(1, 'rgba(255,90,40,0)');
-      ctx.fillStyle = bodyGrad;
-      ctx.beginPath(); ctx.arc(pv.x, pv.y, bodyR * 1.6, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      ctx.beginPath(); ctx.arc(pv.x, pv.y, bodyR * 0.4, 0, Math.PI * 2); ctx.fill();
+      // NEXT ROUND (spec section 2): same root-cause fix as the
+      // single-missile system above — the old thin white connecting line
+      // is removed (it was the actual "white rod" source), replaced with
+      // the same dart body.
       ctx.restore();
+      drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
+      renderMissileLaunchFlash(m.launchFlashUntil);
     }
     return;
   }
