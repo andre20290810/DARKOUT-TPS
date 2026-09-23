@@ -145,7 +145,10 @@ const ESCAPE_DEPTH_DASH_NUDGE = 0.35; // brief depthPos push on NORTH/SOUTH inst
 // 13TH ROUND (item 1): decay rate for the NORTH/SOUTH DASH scale pulse
 // (1/rate ~= the time constant) — ~120ms, short enough to read as a snap,
 // never a residual offset from the normal depth-based perspective scale.
-const ESCAPE_DASH_SCALE_PULSE_DECAY_RATE = 8;
+// NEXT ROUND (spec section 1): slightly slowed from 8 so the bigger 1.16
+// pulse above still reads as a smooth ease back to the normal max size,
+// never an instant snap in either direction.
+const ESCAPE_DASH_SCALE_PULSE_DECAY_RATE = 6;
 // 10TH ROUND (items 33-36): investigated current value first, per spec —
 // 8TH ROUND had cut this from 130 to 32.5 (~25%) after "dash travels too
 // far" feedback, but real-device play now reports the opposite problem:
@@ -234,6 +237,15 @@ const ESCAPE_LEAN_SMOOTH_RATE = 6;
 // TILT_MAX_RAD all reduced (spec sections 12-13), and RECEDE/APPROACH/
 // OBSTACLES_MS all trimmed for tempo (section 15) without changing the
 // underlying progress-based (not fixed-time) JUMP judgment logic.
+// NEXT ROUND (spec section 7): COMBAT MODE's own lighter, less-frequent
+// quake cycle (see updateCombatQuake()) — reuses COLLAPSE_QUAKE_MS/
+// SHAKE_PEAK_PX/TILT_MAX_RAD directly (same shake feel), just a shorter
+// dedicated debris-only tail phase and a longer/less-frequent interval than
+// ESCAPE's own collapse events, since COMBAT already has boss-attack
+// pressure of its own (spec section 15's "常時同時に大量発生させない").
+const COMBAT_QUAKE_DEBRIS_TAIL_MS = 900;
+const COMBAT_QUAKE_MIN_INTERVAL_MS = 14000;
+const COMBAT_QUAKE_MAX_INTERVAL_MS = 22000;
 const COLLAPSE_QUAKE_MS = 700;             // STEP1: tremor + dust begins — was 1400, halved
 const COLLAPSE_OBSTACLES_MS = 1800;        // STEP3: avoidable falling debris/obstacles window
 const COLLAPSE_RECEDE_MS = 850;            // STEP5: player eases FAR (continuous, never a snap)
@@ -878,6 +890,9 @@ const SNIPER_FIRE_TRAVEL_MS = 130;
 const SNIPER_IMPACT_MS = 140;
 const SNIPER_COOLDOWN_MS = 1400;
 const SNIPER_DAMAGE = 16;
+// NEXT ROUND (spec section 4): real hit-radius check at resolve time —
+// mirrors SWEEP_HIT_RADIUS_PX's existing role for SWEEP FIRE.
+const SNIPER_HIT_RADIUS_PX = 46;
 
 const MISSILE_LOCKON_MS = 650;
 const MISSILE_TARGET_MS = 1500;
@@ -2457,6 +2472,19 @@ const state = {
     lastTimeLeftDisplayedSec: -1,
   },
 
+  // NEXT ROUND (spec section 7): COMBAT MODE's own lightweight quake+falling
+  // -debris atmosphere — reuses METROPOLIS COLLAPSE's shake/tilt envelope
+  // and the shared 'quakeDebris' particle type, but deliberately has NO
+  // obstacle/rubble/JUMP machinery (COMBAT has no LEAN/JUMP system and this
+  // spec only asked for the "演出" — presentation — not a new mechanic).
+  // See updateCombatQuake().
+  combatQuake: {
+    phase: 'idle',           // 'idle' | 'quake' | 'debris'
+    phaseStartedAt: 0,
+    nextEventAt: 10000,      // real elapsed ms before the first cycle can fire
+    shakeX: 0, shakeY: 0, tiltAngle: 0,
+  },
+
   gamepadConnected: false,
   gamepadIndex: null,
   prevButtons: [],
@@ -3822,11 +3850,14 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     forwardDelta += ESCAPE_DIR_SIGN * ESCAPE_SOUTH_DASH_DISTANCE_Z;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
     es.depthPos = Math.max(-1, es.depthPos - ESCAPE_DEPTH_DASH_NUDGE);
-    // 13TH ROUND (item 1): SOUTH DASH = lunging toward the camera, so a
-    // brief +2% scale pulse on top of the normal depth perspective — never
-    // a replacement for it (see the decay tick below and the multiply in
-    // renderEscapePlayer()).
-    es.dashScalePulse = 1.02;
+    // NEXT ROUND (spec section 1): real-play feedback said the old +2% pulse
+    // was too subtle to notice once depthPos was already near its own max
+    // (the "5枚目相当" already-largest state) — bumped to a genuinely visible
+    // "one more size up, then eases back to the normal max" pulse, still on
+    // top of (never replacing) the normal depth perspective scale, and still
+    // fully decayed away by ESCAPE_DASH_SCALE_PULSE_DECAY_RATE below (never a
+    // permanent size change, never an instant snap either way).
+    es.dashScalePulse = 1.16;
     // NEXT ROUND PART O: the old spawnDashStreak() white-stick trail call
     // that used to sit here is removed — SOUTH DASH's own scale-pulse +
     // blink already convey the lunge without it.
@@ -4073,9 +4104,66 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
   }
 }
 
+// NEXT ROUND (spec section 7): COMBAT MODE's own quake+falling-debris
+// atmosphere — "戦闘の緊張感を高める演出" only, deliberately NOT a copy of
+// METROPOLIS COLLAPSE's full obstacle/rubble/JUMP gameplay (COMBAT has no
+// LEAN/JUMP input at all). Reuses the exact same shake/tilt envelope shape
+// and the shared 'quakeDebris' particle type/physics/render so the two
+// modes read as the same underlying phenomenon, just with COMBAT getting
+// only the atmospheric half of it. Never fires during a boss's own
+// 'impact' resolution (same soft anti-stacking guard COLLAPSE already
+// uses), and never damages the player — pure visual/atmosphere.
+function updateCombatQuake(dt, now) {
+  const q = state.combatQuake;
+  const elapsed = now - q.phaseStartedAt;
+  let shakeEnvelope = 0;
+  if (q.phase === 'quake') {
+    shakeEnvelope = clamp(elapsed / 260, 0, 1) * clamp(1 - Math.max(0, elapsed - (COLLAPSE_QUAKE_MS - 300)) / 300, 0, 1);
+  }
+  if (shakeEnvelope > 0) {
+    q.shakeX = (Math.random() * 2 - 1) * COLLAPSE_SHAKE_PEAK_PX * shakeEnvelope;
+    q.shakeY = (Math.random() * 2 - 1) * COLLAPSE_SHAKE_PEAK_PX * shakeEnvelope;
+    q.tiltAngle = Math.sin(now * 0.006) * COLLAPSE_TILT_MAX_RAD * shakeEnvelope;
+  } else {
+    q.shakeX = 0; q.shakeY = 0; q.tiltAngle = 0;
+  }
+
+  if ((q.phase === 'quake' || q.phase === 'debris') && Math.random() < dt * 9) {
+    spawnParticle({
+      type: 'quakeDebris',
+      x: state.centerX + (Math.random() * 2 - 1) * state.cssW * 0.42,
+      y: state.horizonY - 20 - Math.random() * 40,
+      vx: (Math.random() * 2 - 1) * 18, vy: 40 + Math.random() * 40,
+      rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() * 2 - 1) * 6,
+      size: 2 + Math.random() * 4,
+      born: now, until: now + 1800 + Math.random() * 600,
+    });
+  }
+
+  if (q.phase === 'idle') {
+    if (now >= q.nextEventAt && state.enemy.attackState !== 'impact') {
+      q.phase = 'quake'; q.phaseStartedAt = now;
+    }
+  } else if (q.phase === 'quake') {
+    if (elapsed >= COLLAPSE_QUAKE_MS) { q.phase = 'debris'; q.phaseStartedAt = now; }
+  } else if (q.phase === 'debris') {
+    if (elapsed >= COMBAT_QUAKE_DEBRIS_TAIL_MS) {
+      q.phase = 'idle'; q.phaseStartedAt = now;
+      q.nextEventAt = now + COMBAT_QUAKE_MIN_INTERVAL_MS + Math.random() * (COMBAT_QUAKE_MAX_INTERVAL_MS - COMBAT_QUAKE_MIN_INTERVAL_MS);
+    }
+  }
+}
+
 // Rough jagged rock-chunk silhouette — pure Canvas fill, no new image
 // assets (spec section 17), seeded once at spawn (ob.seed) so each chunk's
 // shape stays stable frame-to-frame instead of re-randomizing every draw.
+// NEXT ROUND (spec section 8/9): the previous version was a single smooth,
+// randomly-perturbed semicircle silhouette — real-play feedback read it as
+// "じゃがいも" (a potato) or a flat brown triangle, not collapsed man-made
+// debris. Rebuilt from the same angular-chunk language renderCollapseRubble()
+// already uses: a small cluster of distinct rotated-rect concrete-slab
+// pieces (dark gray, never brown) plus a thin protruding rebar sliver —
+// never a rounded/smooth outline, never a circle/ellipse.
 function renderCollapseObstacles() {
   const obstacles = state.escape.collapse.obstacles;
   for (const ob of obstacles) {
@@ -4083,21 +4171,34 @@ function renderCollapseObstacles() {
     const h = 60 * proj.scale;
     if (h < 2) continue;
     const w = h * 1.3;
+    const rnd = (n) => { const v = Math.sin(ob.seed + n * 12.9898) * 43758.5453; return v - Math.floor(v); };
     ctx.save();
     ctx.translate(proj.x, proj.y);
-    ctx.fillStyle = ob.hit ? '#7a2a20' : '#2c2925';
-    ctx.beginPath();
-    const rnd = (n) => (Math.sin(ob.seed + n * 12.9898) * 43758.5453) % 1;
-    const spikes = 6;
-    for (let i = 0; i <= spikes; i++) {
-      const ang = (i / spikes) * Math.PI - Math.PI; // top half-circle silhouette resting on the floor
-      const r = (0.55 + Math.abs(rnd(i)) * 0.45);
-      const px = Math.cos(ang) * w * 0.5 * r;
-      const py = -Math.abs(Math.sin(ang)) * h * r;
-      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    const baseColor = ob.hit ? '#8a3226' : '#38383b';
+    const darkColor = ob.hit ? '#5c2018' : '#212124';
+    const pieceCount = 3;
+    for (let i = 0; i < pieceCount; i++) {
+      const fx = (rnd(i * 3 + 1) - 0.5) * w * 0.75;
+      const pieceW = w * (0.36 + rnd(i * 3 + 2) * 0.32);
+      const pieceH = h * (0.5 + rnd(i * 3 + 3) * 0.55);
+      const rot = (rnd(i * 3 + 4) - 0.5) * 0.6;
+      ctx.save();
+      ctx.translate(fx, -pieceH * 0.5);
+      ctx.rotate(rot);
+      ctx.fillStyle = i === 0 ? baseColor : darkColor;
+      ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
+      // fractured-edge highlight, same trick renderCollapseRubble() uses
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH * 0.25);
+      ctx.restore();
     }
-    ctx.closePath();
-    ctx.fill();
+    // a thin protruding rebar sliver — never a circle/round speckle
+    ctx.strokeStyle = 'rgba(120,110,100,0.7)';
+    ctx.lineWidth = Math.max(1, h * 0.05);
+    ctx.beginPath();
+    ctx.moveTo((rnd(20) - 0.5) * w * 0.4, -h * 0.7);
+    ctx.lineTo((rnd(21) - 0.5) * w * 0.5, -h * 1.05);
+    ctx.stroke();
     ctx.restore();
   }
 }
@@ -4445,6 +4546,15 @@ function updateEnemyFacing(dt, now) {
       e.facing = desired;
       e.lastTurnAt = now;
     }
+  } else if ((e.kind === 'sweep' && e.attackState === 'sweepFiring') || (e.kind === 'barrage' && e.attackState === 'barrageFalling')) {
+    // NEXT ROUND (spec section 3): once a SWEEP/BARRAGE shot's own lock has
+    // frozen e.zone (see startSweepAttack/startBarrageAttack's lock
+    // transitions), the live player-tracking below is skipped for the rest
+    // of that burst — otherwise this same live tracking would immediately
+    // drift the body pose away from the direction the shot is actually
+    // going, reintroducing the "image doesn't match bullet direction" bug.
+    // Resumes normal tracking as soon as the attack leaves this state
+    // (cooldown/idle).
   } else {
     // PART 9 (3rd round): ROID1/ROID2 — 3-zone hysteresis-held facing
     // (SW/S/SE only — the old 5-zone farLeft/farRight tier that used to
@@ -4489,6 +4599,17 @@ function resolveSniperImpact(now) {
   // shockwave is spawned, but it still reads as a genuine small detonation
   // (core flash + fire blob + traveling sparks), never a bare UI dot.
   spawnBlast(e.fireToX, e.fireToY, now, { scale: 0.42, big: false, shockwave: false });
+  // NEXT ROUND (spec section 4): the frozen fireToX/fireToY is where the
+  // shot was AIMED (locked at YELLOW, via playerMarkerPos()) — recheck the
+  // player's CURRENT position in that SAME coordinate space (playerMarkerPos()
+  // again, not currentPlayerFloorScreenPos(), which projects a different,
+  // perspective-based Y and would make every shot register as "always out
+  // of range" regardless of X movement) so a player who moved away after
+  // the lock froze genuinely dodges, not just one who happened to be
+  // DASH-invincible or in COVER at the exact resolve instant.
+  const nowMarker = playerMarkerPos();
+  const dist = Math.hypot(nowMarker.x - e.fireToX, nowMarker.y - e.fireToY);
+  const outOfRange = dist >= SNIPER_HIT_RADIUS_PX;
   if (invincible) {
     // 15TH ROUND (items 10-13): on-screen "AVOIDED" text removed — the
     // judgment itself (no damage while DASH-invincible) is unchanged, just
@@ -4497,6 +4618,8 @@ function resolveSniperImpact(now) {
     r10DebugLog('SNIPER: AVOIDED (dash-invincible)');
   } else if (blocked) {
     r10DebugLog('SNIPER: BLOCKED (cover)');
+  } else if (outOfRange) {
+    r10DebugLog('SNIPER: DODGED (moved out of locked point)');
   } else {
     p.hp = Math.max(0, p.hp - SNIPER_DAMAGE);
     // 5TH ROUND PART 12/13: "HIT!" text removed — the blink IS the hit
@@ -5379,15 +5502,30 @@ function updateEnemy(dt, now) {
   // --- SNIPER (PART 8): lock_red -> lock_yellow -> fire -> impact -> cooldown ---
   if (e.kind === 'sniper') {
     if (e.attackState === 'lock_red' || e.attackState === 'lock_yellow') {
-      // the lock box tracks the player LIVE through both lock phases.
-      const m = playerMarkerPos();
-      e.lockX = m.x; e.lockY = m.y;
+      // NEXT ROUND (spec section 4): root cause of "ロックオン後もほぼ
+      // 回避不能" — the lock box used to track the player LIVE all the way
+      // through BOTH phases (900ms RED + 500ms YELLOW), so moving during
+      // the telegraph never actually avoided anything (the aim just
+      // re-centered on you every frame). Now the aim point freezes the
+      // MOMENT it turns YELLOW ("ロック確定" — RED is still the real,
+      // dodgeable "being tracked" phase), giving a genuine
+      // SNIPER_LOCK_YELLOW_MS + SNIPER_FIRE_TRAVEL_MS (~630ms) window where
+      // moving away from the now-fixed point is a real, working dodge —
+      // on top of (not instead of) the existing DASH-invincibility/COVER
+      // escapes. resolveSniperImpact() below now also rechecks the
+      // player's CURRENT position against this frozen point, matching how
+      // SWEEP FIRE's resolveSweepShot() already worked.
+      if (e.attackState === 'lock_red') {
+        const m = playerMarkerPos();
+        e.lockX = m.x; e.lockY = m.y;
+      }
       if (now >= e.attackUntil) {
         if (e.attackState === 'lock_red') {
           e.attackState = 'lock_yellow';
           e.attackUntil = now + SNIPER_LOCK_YELLOW_MS;
         } else {
-          // FIRE begins: freeze the bolt's endpoints right now.
+          // FIRE begins: freeze the bolt's origin (the aim point itself,
+          // e.lockX/Y, was already frozen the instant YELLOW started).
           const proj = screenSpaceEnemyAnchor();
           e.fireFromX = proj.x; e.fireFromY = proj.y;
           e.fireToX = e.lockX; e.fireToY = e.lockY;
@@ -5481,6 +5619,17 @@ function updateEnemy(dt, now) {
         e.sweepStartWorldX = lockWorldX + (e.sweepDirPending >= 0 ? half : -half);
         e.sweepEndWorldX = lockWorldX + (e.sweepDirPending >= 0 ? -half : half);
         e.sweepWorldZ = worldZ;
+        // NEXT ROUND (spec section 3): freeze e.zone to match THIS lock's
+        // own screen position right now, bypassing the normal slow-turn
+        // cooldown/hysteresis for this one instant — the body pose (see
+        // computeEnemyDrawRect()) and the whole burst's own start/end points
+        // are now guaranteed to agree on which side the shot is going,
+        // instead of the body possibly still showing a stale, independently
+        // -tracked zone from a moment earlier.
+        const lockProj = project(lockWorldX, CORRIDOR_FLOOR_Y, worldZ);
+        const anchorProj = screenSpaceEnemyAnchor();
+        const lockDiff = lockProj.x - anchorProj.x;
+        e.zone = lockDiff > ROID_FACE_ZONE_NEAR_PX ? 'right' : lockDiff < -ROID_FACE_ZONE_NEAR_PX ? 'left' : 'center';
         const baseCount = SWEEP_BULLET_COUNT_MIN + Math.floor(Math.random() * (SWEEP_BULLET_COUNT_MAX - SWEEP_BULLET_COUNT_MIN + 1));
         e.sweepCount = e.sweepEnhanced ? baseCount + SWEEP_BULLET_COUNT_ENHANCED_BONUS : baseCount;
         e.sweepIndex = 0;
@@ -5520,6 +5669,12 @@ function updateEnemy(dt, now) {
         const count = e.forcedBarrageCount || (3 + (Math.random() < 0.5 ? 0 : 1));
         e.forcedBarrageCount = 0;
         e.barrage = [];
+        // NEXT ROUND (spec section 3): same lock->zone freeze as SWEEP FIRE
+        // above, so the body pose agrees with where this barrage is aimed.
+        const lockProjB = project(lockWorldX, CORRIDOR_FLOOR_Y, worldZ);
+        const anchorProjB = screenSpaceEnemyAnchor();
+        const lockDiffB = lockProjB.x - anchorProjB.x;
+        e.zone = lockDiffB > ROID_FACE_ZONE_NEAR_PX ? 'right' : lockDiffB < -ROID_FACE_ZONE_NEAR_PX ? 'left' : 'center';
         for (let i = 0; i < count; i++) {
           const pat = BARRAGE_OFFSET_PATTERN[i] || BARRAGE_OFFSET_PATTERN[BARRAGE_OFFSET_PATTERN.length - 1];
           const jx = (Math.random() * 2 - 1) * BARRAGE_OFFSET_JITTER;
@@ -5595,8 +5750,13 @@ function resolveSweepShot(e, now) {
   const t = e.sweepCount <= 1 ? 0 : e.sweepIndex / (e.sweepCount - 1);
   const worldX = e.sweepStartWorldX + (e.sweepEndWorldX - e.sweepStartWorldX) * t;
   const proj = project(worldX, CORRIDOR_FLOOR_Y, e.sweepWorldZ);
-  const gun = screenSpaceEnemyAnchor();
-  e.sweepTracers.push({ x1: gun.x, y1: gun.y - 30, x2: proj.x, y2: proj.y, until: now + SWEEP_TRACER_LIFE_MS });
+  // NEXT ROUND (spec section 3): was the generic floor-anchored
+  // screenSpaceEnemyAnchor() offset by a flat, non-scale-aware -30px —
+  // now the real measured muzzle point (LEFT/RIGHT zone) or the world-
+  // scaled chest anchor (CENTER zone), so the tracer visibly starts at
+  // the held gun instead of a fixed offset from the feet.
+  const gun = getRoidMuzzlePoint(e);
+  e.sweepTracers.push({ x1: gun.x, y1: gun.y, x2: proj.x, y2: proj.y, until: now + SWEEP_TRACER_LIFE_MS });
   // small, non-explosion-scale impact — a spark/flash/debris beat, never
   // the full MISSILE-scale blast (item 140).
   spawnBlast(proj.x, proj.y, now, { scale: 0.22 * (proj.scale || 1), big: false, shockwave: false });
@@ -5657,6 +5817,39 @@ function screenSpaceEnemyAnchor() {
   return proj;
 }
 
+// NEXT ROUND (spec section 5): screenSpaceEnemyAnchor() is a FLOOR-anchored
+// point (project() at CORRIDOR_FLOOR_Y — the enemy's feet), which is why the
+// MISSILE launch flash used to appear down at ROID1/ROID2's feet ("発射位置
+// が低すぎる"). This projects at roughly chest height instead, world-scale
+// aware (so it stays visually correct near/far), reused as the launch-flash
+// anchor and as the default (center-zone) gun origin.
+const ROID_CHEST_HEIGHT_FRAC = 0.55;
+function screenSpaceEnemyChestAnchor() {
+  const e = state.enemy;
+  const worldHeight = e.type === 'adamSphere' ? ADAM_SPHERE_WORLD_HEIGHT : e.type === 'drone' ? DRONE_WORLD_HEIGHT : ROID_WORLD_HEIGHT;
+  return project(e.lane, CORRIDOR_FLOOR_Y - worldHeight * ROID_CHEST_HEIGHT_FRAC, e.z);
+}
+
+// NEXT ROUND (spec section 3): measured muzzle-tip fraction (along the
+// currently-drawn sprite's own width/height) for ROID1/ROID2's real
+// directional SEARCH poses — found by sampling the actual PNGs for the
+// gun's own extremity (see this round's investigation), so the SWEEP tracer
+// /muzzle-flash origin for a LEFT/RIGHT-facing shot genuinely starts at the
+// held gun, never the generic body-center anchor. Only used for zone
+// 'left'/'right' — 'center' keeps the existing FIRE-pose's own baked-in
+// centered muzzle flash.
+const ROID_MUZZLE_FRAC = {
+  roid1: { right: { x: 0.882, y: 0.495 }, left: { x: 0.137, y: 0.322 } },
+  roid2: { right: { x: 0.957, y: 0.485 }, left: { x: 0.214, y: 0.388 } },
+};
+function getRoidMuzzlePoint(e) {
+  const table = ROID_MUZZLE_FRAC[e.type];
+  if (!table || (e.zone !== 'left' && e.zone !== 'right')) return screenSpaceEnemyChestAnchor();
+  const frac = table[e.zone];
+  const rect = computeEnemyDrawRect();
+  return { x: rect.x + frac.x * rect.w, y: rect.y + frac.y * rect.h };
+}
+
 // PART 2/3/4 (2nd round): per-frame body-height normalization for
 // ROID1/ROID2 — mirrors ACTION-GAME's own real computeBodyVisualScale(),
 // so a frame's own canvas padding (varies a lot between the 9 real source
@@ -5710,7 +5903,13 @@ function computeEnemyDrawRect() {
         : (e.attackState === 'impact' || e.attackState === 'counterAttack' ? set.release
         : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle)));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
-    const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 2.6;
+    // NEXT ROUND (spec section 6): real-play feedback said GABRIEL's
+    // close-range size (was up to +117% at point-blank: 1+(1-0.55)*2.6)
+    // felt like a sudden jump-scare-scale blowup rather than a natural
+    // "closing the distance" read. Multiplier roughly halved (2.6 -> 1.3,
+    // "2段階ほど" smaller) — GABRIEL still visibly grows as it closes in
+    // (up to +58.5% at point-blank), just far less jarring.
+    const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 1.3;
     const drawH = worldHeight * proj.scale * closeBoost;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
@@ -5737,9 +5936,23 @@ function computeEnemyDrawRect() {
   // camera/player — i.e. this game's "south") on spawn (spawnEnemy() resets
   // roidFireFrame to 0) satisfies "デフォルト方向を南向きへ" without any
   // new asset or a second, ROID-only-shared facing map.
+  // NEXT ROUND (spec section 3): root cause of "画像の向きと弾道の向きが
+  // 一致しない" — the FIRE ping-pong pose used to be forced for ANY active
+  // firing regardless of e.zone, and that art is a single non-directional
+  // (dead-ahead) muzzle-flash pose. A LEFT/RIGHT-zone shot now keeps using
+  // its own genuinely directional SEARCH pose (gun visibly held to that
+  // side) instead of silently swapping to a forward-facing pose — the
+  // dedicated FIRE art (with its baked-in centered flash) is reserved for
+  // zone==='center', where it's already correct. ADAM SPHERE is untouched
+  // (it has no directional search art at all, always uses its own
+  // continuously-rotating fire[] frame, as before).
+  const activelyFiringRoid = e.type !== 'adamSphere' && isRoidActivelyFiring(performance.now());
+  const useFirePose = activelyFiringRoid && e.zone === 'center';
   const frame = e.type === 'adamSphere'
     ? sprites.fire[e.roidFireFrame]
-    : (isRoidActivelyFiring(performance.now()) ? sprites.fire[e.roidFireFrame] : sprites.search[ROID_FACE_FRAME[e.zone] != null ? ROID_FACE_FRAME[e.zone] : 2]);
+    : ((activelyFiringRoid && !useFirePose) || !activelyFiringRoid
+      ? sprites.search[ROID_FACE_FRAME[e.zone] != null ? ROID_FACE_FRAME[e.zone] : 2]
+      : sprites.fire[e.roidFireFrame]);
   const img = frame.img;
 
   const targetBodyHeightPx = (e.type === 'adamSphere' ? ADAM_SPHERE_WORLD_HEIGHT : e.type === 'drone' ? DRONE_WORLD_HEIGHT : ROID_WORLD_HEIGHT) * proj.scale;
@@ -7333,6 +7546,24 @@ function renderEnemyTelegraphs(theme) {
   const e = state.enemy;
   const now = performance.now();
 
+  // NEXT ROUND (spec section 3): ROID1/ROID2's dedicated FIRE-pose art has
+  // its own baked-in centered muzzle flash, but a LEFT/RIGHT-zone shot now
+  // uses the directional SEARCH pose instead (see computeEnemyDrawRect()),
+  // which has no flash baked in — this draws a small Canvas-only glow at
+  // the real measured muzzle point so those shots still get a punchy
+  // launch cue, in the correct place, never the old dead-center flash.
+  if ((e.type === 'roid1' || e.type === 'roid2') && (e.zone === 'left' || e.zone === 'right') && isRoidActivelyFiring(now)) {
+    const mp = getRoidMuzzlePoint(e);
+    const flashT = 0.5 + 0.5 * Math.sin(now * 0.03);
+    ctx.save();
+    const g = ctx.createRadialGradient(mp.x, mp.y, 0, mp.x, mp.y, 20);
+    g.addColorStop(0, 'rgba(255,225,180,' + (0.75 * flashT) + ')');
+    g.addColorStop(1, 'rgba(255,180,90,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(mp.x, mp.y, 20, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
   if (e.kind === 'claw' && (e.attackState === 'telegraph' || e.attackState === 'impact' || e.attackState === 'counterAttack')) {
     // GABRIEL's melee telegraph is unchanged from before this batch: a
     // simple growing warning ring at the player's position.
@@ -7429,7 +7660,14 @@ function renderEnemyTelegraphs(theme) {
     ctx.fillStyle = glow;
     ctx.beginPath(); ctx.arc(0, 0, bodyR * 2.1, 0, Math.PI * 2); ctx.fill();
 
-    ctx.rotate(now * MISSILE_SPIN_RATE);
+    // NEXT ROUND (spec section 5): real-play feedback clarified the
+    // "rotation" request was about a DIFFERENT kind of object (something
+    // approaching head-on that visibly spins clockwise/counter-clockwise as
+    // it nears camera) — it was never meant for THIS falling/parabolic
+    // missile, which should read as a real depth-based arcing drop, not a
+    // spinning object. The continuous ctx.rotate() call that used to sit
+    // here is removed; the dart now keeps a fixed nose-down orientation
+    // through its whole flight.
     ctx.fillStyle = '#cfd6dc';
     ctx.beginPath();
     ctx.moveTo(0, bodyR * 1.35);
@@ -7467,7 +7705,10 @@ function renderEnemyTelegraphs(theme) {
   function renderMissileLaunchFlash(flashUntil) {
     if (!flashUntil || now >= flashUntil) return;
     const t = clamp((flashUntil - now) / MISSILE_LAUNCH_FLASH_MS, 0, 1);
-    const anchor = screenSpaceEnemyAnchor();
+    // NEXT ROUND (spec section 5): screenSpaceEnemyAnchor() is floor-level
+    // (the enemy's feet), which read as "発射位置が低すぎる" — chest-height
+    // anchor instead, for both ROID1 and ROID2.
+    const anchor = screenSpaceEnemyChestAnchor();
     ctx.save();
     const g = ctx.createRadialGradient(anchor.x, anchor.y, 0, anchor.x, anchor.y, 46);
     g.addColorStop(0, 'rgba(255,255,255,' + (0.85 * t) + ')');
@@ -8090,35 +8331,34 @@ function renderClearSequence(now) {
   const gateH = gateW * 1.5;
 
   if (cs.phase === 'gateAppear') {
+    // NEXT ROUND (spec section 2): the bordered "door" strokeRect that used
+    // to sit here was reported repeatedly as an unwanted white rectangular
+    // frame lingering through the whole sequence — removed entirely (not
+    // just dimmed). Replaced with a plain, borderless soft light source
+    // growing in at the same spot, so the effect reads purely as "光が現れ
+    // 始める" (光→白く包まれる), never a UI frame/box shape.
     const t = Math.min(1, elapsed / CLEAR_GATE_APPEAR_MS);
+    const r = 40 + t * 90;
+    const grad = ctx.createRadialGradient(gateCX, gateCY, 0, gateCX, gateCY, Math.max(1, r));
+    grad.addColorStop(0, 'rgba(255,255,255,' + (0.55 * t).toFixed(3) + ')');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.save();
-    ctx.globalAlpha = t;
-    ctx.strokeStyle = '#cfd8e0';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(gateCX - gateW / 2, gateCY - gateH / 2, gateW, gateH);
-    ctx.fillStyle = '#05070a';
-    ctx.fillRect(gateCX - gateW / 2 + 3, gateCY - gateH / 2 + 3, gateW - 6, gateH - 6);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
     ctx.restore();
   } else if (cs.phase === 'gateOpen' || cs.phase === 'playerRun') {
+    // NEXT ROUND (spec section 2): same removal as gateAppear above — no
+    // door leaves, no strokeRect border, ever. The light simply keeps
+    // growing/brightening from the same point, continuing straight into
+    // 'lightExpand' below (which already had no frame).
     const t = cs.phase === 'gateOpen' ? Math.min(1, elapsed / CLEAR_GATE_OPEN_MS) : 1;
-    ctx.save();
-    // two door halves slide apart, revealing a growing white gap between them
-    const doorGap = gateW * 0.5 * t;
-    ctx.strokeStyle = '#cfd8e0';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(gateCX - gateW / 2, gateCY - gateH / 2, gateW, gateH);
-    // light spilling through the opening gap
-    const glowW = Math.max(1, doorGap * 2);
-    const grad = ctx.createLinearGradient(gateCX - glowW / 2, 0, gateCX + glowW / 2, 0);
-    grad.addColorStop(0, 'rgba(255,255,255,0)');
-    grad.addColorStop(0.5, 'rgba(255,255,255,0.95)');
+    const r = 130 + t * 110;
+    const grad = ctx.createRadialGradient(gateCX, gateCY, 0, gateCX, gateCY, Math.max(1, r));
+    grad.addColorStop(0, 'rgba(255,255,255,' + (0.55 + t * 0.3).toFixed(3) + ')');
     grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.save();
     ctx.fillStyle = grad;
-    ctx.fillRect(gateCX - glowW / 2, gateCY - gateH / 2 + 3, glowW, gateH - 6);
-    // left/right door leaves sliding outward
-    ctx.fillStyle = '#0b0f14';
-    ctx.fillRect(gateCX - gateW / 2 + 3, gateCY - gateH / 2 + 3, gateW / 2 - 3 - doorGap, gateH - 6);
-    ctx.fillRect(gateCX + doorGap, gateCY - gateH / 2 + 3, gateW / 2 - 3 - doorGap, gateH - 6);
+    ctx.fillRect(0, 0, w, h);
     if (cs.phase === 'playerRun') {
       // player sprint cue: brighten + scale the existing player draw slightly
       // toward the gate by nudging strafeOffset toward center — purely
@@ -8278,6 +8518,7 @@ function frame(ts) {
     } else {
       const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
       applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
+      updateCombatQuake(dt, ts); // NEXT ROUND (spec section 7): COMBAT's own lightweight quake+debris atmosphere
       updateEnemy(dt, ts);
       updateBullets(ts);
       updateGabrielAdamReaim(ts); // 14TH ROUND (items 27-30): must tick every frame, independent of firing, so AIM-moved-away tracking never misses a frame
@@ -8301,13 +8542,14 @@ function frame(ts) {
   // NEW FEATURE: METROPOLIS COLLAPSE — whole-scene camera shake/tilt, a
   // single cheap Canvas transform wrapping every canvas draw call for the
   // rest of this frame (restored right after renderClearSequence() below).
-  // Only ever non-zero in ESCAPE during a collapse 'quake'/'obstacles'/
-  // 'recede' phase (see updateEscapeCollapse()) — COMBAT is completely
-  // unaffected (shakeX/Y/tiltAngle simply stay 0), and this never touches
-  // project()/world-space math, so it can't affect any hit-test geometry.
-  const collapseShakeX = state.gameMode === 'escape' ? state.escape.collapse.shakeX : 0;
-  const collapseShakeY = state.gameMode === 'escape' ? state.escape.collapse.shakeY : 0;
-  const collapseTilt = state.gameMode === 'escape' ? state.escape.collapse.tiltAngle : 0;
+  // Non-zero in ESCAPE during a collapse 'quake'/'obstacles'/'recede' phase
+  // (see updateEscapeCollapse()), and NEXT ROUND (spec section 7) also in
+  // COMBAT during its own lighter updateCombatQuake() 'quake' phase — same
+  // shared transform, never touches project()/world-space math, so it can't
+  // affect any hit-test geometry either way.
+  const collapseShakeX = state.gameMode === 'escape' ? state.escape.collapse.shakeX : (state.gameMode === 'combat' ? state.combatQuake.shakeX : 0);
+  const collapseShakeY = state.gameMode === 'escape' ? state.escape.collapse.shakeY : (state.gameMode === 'combat' ? state.combatQuake.shakeY : 0);
+  const collapseTilt = state.gameMode === 'escape' ? state.escape.collapse.tiltAngle : (state.gameMode === 'combat' ? state.combatQuake.tiltAngle : 0);
   ctx.save();
   ctx.translate(collapseShakeX, collapseShakeY);
   if (collapseTilt) {
@@ -8566,4 +8808,12 @@ window.__darkoutTps = {
   GABRIEL_ADAM_COUNTER_TOTAL_HITS, GABRIEL_ADAM_DAMAGE_INTERVAL_MS,
   GABRIEL_ADAM_REAIM_THRESHOLD_PX, GABRIEL_ADAM_DEFENSE_MS,
   GABRIEL_ADAM_COUNTER_APPROACH_MS, updateEnemy,
+  // NEXT ROUND: muzzle/direction fix, SNIPER dodge-window fix, COMBAT
+  // quake+debris atmosphere, ESCAPE south-dash pulse, GABRIEL close-attack
+  // size, CLEAR-sequence frame removal — exposed for automated testing only.
+  screenSpaceEnemyChestAnchor, getRoidMuzzlePoint, ROID_MUZZLE_FRAC,
+  updateEnemyFacing, resolveSniperImpact, SNIPER_HIT_RADIUS_PX,
+  updateCombatQuake, COMBAT_QUAKE_MIN_INTERVAL_MS, COMBAT_QUAKE_MAX_INTERVAL_MS,
+  updateEscapeCollapse, renderCollapseObstacles, spawnCollapseObstacles,
+  triggerClearSequence, renderClearSequence, updateClearSequence,
 };
