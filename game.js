@@ -363,6 +363,17 @@ const ESCAPE_TIME_LIMIT_SEC = 90;
 const ESCAPE_ENEMY_PURSUIT_MIN_Z = 500;
 const ESCAPE_ENEMY_PURSUIT_MAX_Z = 1100;
 const ESCAPE_ENEMY_PURSUIT_PERIOD_MS = 6000;
+// 25TH ROUND item 6: root cause of "GABRIEL/ADAM approach but never attack
+// in ESCAPE" — their real CLAW attack only ever starts once e.z <
+// CLAW_TRIGGER_Z_MAX (300, see updateEnemy()'s idle-check branch below),
+// but the pursuit range above (500-1100) was tuned for the RANGED types'
+// much more permissive z<900 eligibility gate and never dips under 300 —
+// so GABRIEL/ADAM's oscillation LOOKED like a real approach but could
+// mathematically never cross into real attack range. A tighter,
+// CLAW-specific near point (comfortably under CLAW_TRIGGER_Z_MAX) is used
+// for gabriel/adam only in updateEscapeEnemyPursuit() below — the ranged
+// types keep their existing tuned 500-1100 range untouched.
+const ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z = 200;
 // 9TH ROUND (item 30-35): CLEAR SEQUENCE phase durations — real elapsed-time
 // budgets, not frame counts (see updateClearSequence()). Named/tunable
 // rather than inline magic numbers, same convention as every other timing
@@ -518,13 +529,21 @@ const ADAM_WORLD_HEIGHT = 560;
 // computeBodyVisualScale()/the ROID-style branch derive width from the
 // SAME uniform scale factor as height, for whichever real source image is
 // actually drawn.
-const ADAM_SPHERE_WORLD_HEIGHT = ROID_WORLD_HEIGHT / 2.5; // = 280
-// 10TH ROUND (items 37-39): DRONE's real on-screen size relative to other
-// enemies, derived from ACTION-GAME's own real constants rather than
-// guessed — its SECURITY_ROBOT_DRAW_D (DRONE diameter) is exactly HALF of
-// ADAM_SPHERE_TARGET_DIAMETER there (`SECURITY_ROBOT_DRAW_D * 2`), so DRONE
-// here is sized at half of this project's own ADAM_SPHERE_WORLD_HEIGHT.
-const DRONE_WORLD_HEIGHT = ADAM_SPHERE_WORLD_HEIGHT / 2; // = 140
+// 10TH ROUND (items 37-39): DRONE's real on-screen size, derived from
+// ACTION-GAME's own real constants rather than guessed — its
+// SECURITY_ROBOT_DRAW_D (DRONE diameter) is exactly HALF of
+// ADAM_SPHERE_TARGET_DIAMETER there. Was expressed as ADAM_SPHERE_WORLD_
+// HEIGHT/2 (=140 at the OLD Adam Sphere size); now stated as its own fixed
+// value so shrinking ADAM SPHERE below (25TH ROUND item 8) can never
+// silently shrink DRONE along with it.
+const DRONE_WORLD_HEIGHT = 140;
+// 7TH ROUND PART 5 note: was ROID_WORLD_HEIGHT/2.5 (=280, exactly 2x DRONE)
+// — 25TH ROUND item 8 ("大きすぎます...的として大きすぎて不自然"):
+// real-play feedback said ADAM SPHERE still reads as too large a target;
+// user's own guideline was "Droneより約30%大きい程度" (roughly 30% bigger
+// than DRONE, not 2x). Re-based directly off DRONE_WORLD_HEIGHT so the
+// ratio is exact and self-documenting: 140 * 1.3 = 182.
+const ADAM_SPHERE_WORLD_HEIGHT = DRONE_WORLD_HEIGHT * 1.3; // = 182 (was 280 = 2.0x DRONE; now exactly 1.3x DRONE)
 // 7TH ROUND PART 7 ("常時回転しているように見せる"): continuous rotation
 // cadence for ADAM SPHERE's own 4 real frames (adam_sphere_01..04.png) —
 // independent of ROID_FIRE_FRAME_MS (which only ever applies to ROID1/
@@ -920,8 +939,16 @@ const COVER_BLOCKS_ATTACK = { sniper: true, missile: false, claw: false };
 // square, so half-width ≈ BARREL_DRAW_H/2 ≈ 37.5 at scale 1; 40 is a hair
 // outside that so the collision boundary reads as "the barrel's edge",
 // not "somewhere inside the barrel's own graphic").
-const BARREL_DRAW_H = 75; // was 150 (a 50% cut, within the requested 40-60% range)
-const BARREL_TOUCH_RADIUS_PX = 40; // was COVER_RADIUS_PX=36 (a different, ellipse-shadow-sized concept) — now shared by collision AND cover
+// 25TH ROUND additional item 1: real-play feedback said the barrel had
+// become too hard to spot/judge as a hiding spot at 75 — enlarged +30%
+// (75 -> 97.5) per the explicit request. Still well under the old 150 ("taller
+// than an adult male"), so the earlier "clearly shorter than an adult male"
+// intent is not undone. BARREL_TOUCH_RADIUS_PX is scaled up by the same
+// +30% so the physical/cover boundary keeps matching the enlarged sprite's
+// own edge (see its own original comment for the "hair outside half-width"
+// relationship this preserves).
+const BARREL_DRAW_H = 97.5; // was 75 (25TH ROUND: +30%)
+const BARREL_TOUCH_RADIUS_PX = 52; // was 40 (25TH ROUND: +30%, matches BARREL_DRAW_H's own +30%)
 const BARREL_TOUCH_Z_MAX = 300; // was COVER_BARREL_Z_MAX — barrel must be this close (world-z) to be interactable at all
 const BARREL_COLLIDE_Z_FLOOR = 55; // PART 11: forward movement can never push an X-aligned barrel's own z below this (walking into it from the front)
 const BARREL_SPACING_Z = 420;
@@ -959,11 +986,19 @@ const MISSILE_COOLDOWN_MS = 850;
 // to the same shared depth state as the player and BARREL/structures.
 const MISSILE_TARGET_BASE_WORLD_Z = 130;
 const MISSILE_TARGET_WORLD_Z_RANGE = 40;
-// 12TH ROUND (items 60-75): the falling PROJECTILE's starting WORLD HEIGHT
-// above its locked impact point, and the fixed screen-space radius its
-// midair intercept hit-test uses (see updateBullets()) — a generous, easy-
-// to-hit target befitting "shoot it down" being a real, viable counter.
-const MISSILE_PROJECTILE_START_HEIGHT = 240;
+// 25TH ROUND item 1: shrunk from 240 -> 65. This is the projectile's own
+// vertical/ALTITUDE travel only (never its approach-through-depth, which is
+// MISSILE_APPROACH_Z_BONUS above) — at the old 240 it produced a screen-Y
+// swing large enough to visually dominate over the Z-approach scale growth,
+// reading as "an object falling from the sky" rather than "an object flying
+// toward the camera." A modest 65 keeps just enough vertical arc for the
+// object to read as airborne (not sliding along the floor) while letting
+// the (now much larger) Z-approach do the actual "closing the distance and
+// growing" work — see getMissileProjectileVisual()/getBarrageProjectileVisual().
+// Interception hit-test radius (MISSILE_PROJECTILE_HIT_RADIUS_PX) and the
+// "shoot it down" gameplay are untouched — this only reweights position
+// axes used for the DRAW, not the hit-test geometry itself.
+const MISSILE_PROJECTILE_START_HEIGHT = 65;
 const MISSILE_PROJECTILE_HIT_RADIUS_PX = 26;
 const MISSILE_DAMAGE = 24;
 
@@ -2508,6 +2543,12 @@ const state = {
     // NEXT ROUND PART N: smoothed lean angle (radians) for normal (non-DASH)
     // EAST/WEST movement — see updateEscapePlayer()/renderEscapePlayer().
     leanAngle: 0,
+    // 25TH ROUND item 5: JUMP is now usable basically any time (not just
+    // during a METROPOLIS COLLAPSE 'approach' rubble event) — a free-
+    // standing hop, independent of state.escape.collapse.jumping, reusing
+    // the exact same visual arc. See updateEscapeCollapse()/renderEscapePlayer().
+    freeJumping: false,
+    freeJumpStartedAt: 0,
     // edge-triggered ESCAPE-exclusive actions, consumed each frame by
     // consumeEscapeActions() — separate from state.actions above so an
     // ESCAPE dash can never be misread as a LAB dash or vice versa.
@@ -4114,6 +4155,12 @@ function advanceCollapseWorldZ(forwardDelta, dt, now) {
           ob.rollZSpeed = COLLAPSE_DEBRIS_ROLL_Z_SPEED_MIN + Math.random() * (COLLAPSE_DEBRIS_ROLL_Z_SPEED_MAX - COLLAPSE_DEBRIS_ROLL_Z_SPEED_MIN);
           ob.rollXSpeed = ob.rollDirSign * (Math.abs(COLLAPSE_DEBRIS_ROLL_X_SPEED_MIN) + Math.random() * (COLLAPSE_DEBRIS_ROLL_X_SPEED_MAX - COLLAPSE_DEBRIS_ROLL_X_SPEED_MIN)) * 0.5;
           ob.rollStartZ = ob.z;
+          // 25TH ROUND additional item 5: a small physical "burst" beat the
+          // instant it stops bouncing and starts rolling — chips/dust
+          // kicking off the impact, reusing the existing lightweight spark
+          // particle pool (no new asset, no heavy blast).
+          const landProj = project(ob.worldX, CORRIDOR_FLOOR_Y, ob.z);
+          for (let s = 0; s < 5; s++) spawnSparkEmber(landProj.x, landProj.y, now, 220 + Math.random() * 180);
         } else {
           // real energy loss per bounce — each bounce a bit smaller than the last
           ob.fallVel = -ob.fallVel * ob.bounceDamping;
@@ -4196,7 +4243,24 @@ function spawnCollapseObstacles(now) {
 // consumed) JUMP action from consumeEscapeActions().
 function updateEscapeCollapse(dt, now, jumpPressed) {
   const c = state.escape.collapse;
+  const es = state.escape;
   const elapsed = now - c.phaseStartedAt;
+
+  // 25TH ROUND item 5: JUMP was only ever readable during the 'approach'
+  // rubble-clearing window (the branch below still owns that real
+  // rubble-avoidance behavior, unchanged) — everywhere else a press simply
+  // did nothing, which read as "JUMP is broken". Outside that window, a
+  // press now always starts a free-standing hop with the identical visual
+  // arc (renderEscapePlayer() below), so the LB+RB input is live basically
+  // any time, exactly as requested — no new dodge/damage-avoidance
+  // behavior is attached to it, only the missing visual response.
+  if (jumpPressed && c.phase !== 'approach' && !c.jumping && !es.freeJumping) {
+    es.freeJumping = true;
+    es.freeJumpStartedAt = now;
+  }
+  if (es.freeJumping && now - es.freeJumpStartedAt >= COLLAPSE_JUMP_MS) {
+    es.freeJumping = false;
+  }
 
   // Shake/tilt envelope — shared by 'quake'/'obstacles' (ramps in, sustains,
   // tapers) and 'recede' (tapering out the last of it). Zero in every other
@@ -4408,8 +4472,17 @@ function renderCollapseObstacles() {
     ctx.save();
     ctx.translate(proj.x, proj.y);
     ctx.rotate(ob.rotationAngle);
-    const baseColor = ob.hit ? '#8a3226' : '#3a3a3d';
-    const darkColor = ob.hit ? '#5c2018' : '#222225';
+    const baseColor = ob.hit ? '#8a3226' : '#403c34';
+    const darkColor = ob.hit ? '#5c2018' : '#211e19';
+    const topColor = ob.hit ? '#b3543f' : '#5c554a';
+    // 25TH ROUND additional item 4 (pseudo-3D reinforcement): each concrete
+    // piece is now drawn as a real 3-face block (front/top/side), never a
+    // single flat rotated rect — the extrusion offset is a FIXED screen-
+    // space vector (not rotating with ob.rotationAngle), the same trick used
+    // to fake solid rotating cubes in 2D — so it keeps reading as a solid
+    // chunk with thickness even as the whole cluster spins. Corner "chip"
+    // triangles (broken-edge flecks) reinforce the angular/fractured-
+    // concrete read the user asked for over the old flat-rect look.
     const pieceCount = 3;
     for (let i = 0; i < pieceCount; i++) {
       const fx = (rnd(i * 3 + 1) - 0.5) * w * 0.7;
@@ -4417,29 +4490,100 @@ function renderCollapseObstacles() {
       const pieceW = w * (0.34 + rnd(i * 3 + 2) * 0.3);
       const pieceH = h * (0.46 + rnd(i * 3 + 3) * 0.5);
       const rot = (rnd(i * 3 + 4) - 0.5) * 0.9;
+      const depth = Math.min(pieceW, pieceH) * 0.4;
       ctx.save();
       ctx.translate(fx, fy);
       ctx.rotate(rot);
+      // front face
       ctx.fillStyle = i === 0 ? baseColor : darkColor;
       ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
-      ctx.fillStyle = 'rgba(255,255,255,0.09)';
-      ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH * 0.25);
+      // top face (extruded up-left in FIXED screen space, undone by -rot so
+      // it stays screen-aligned rather than spinning with the piece's own
+      // random tilt): lighter tone reads as a lit, angled concrete face.
+      ctx.save();
+      ctx.rotate(-rot);
+      ctx.rotate(-ob.rotationAngle);
+      ctx.beginPath();
+      ctx.moveTo(-pieceW / 2, -pieceH / 2);
+      ctx.lineTo(-pieceW / 2 + depth * 0.6, -pieceH / 2 - depth);
+      ctx.lineTo(pieceW / 2 + depth * 0.6, -pieceH / 2 - depth);
+      ctx.lineTo(pieceW / 2, -pieceH / 2);
+      ctx.closePath();
+      ctx.fillStyle = topColor;
+      ctx.fill();
+      // side face: darker, gives the block right-edge thickness
+      ctx.beginPath();
+      ctx.moveTo(pieceW / 2, -pieceH / 2);
+      ctx.lineTo(pieceW / 2 + depth * 0.6, -pieceH / 2 - depth);
+      ctx.lineTo(pieceW / 2 + depth * 0.6, pieceH / 2 - depth);
+      ctx.lineTo(pieceW / 2, pieceH / 2);
+      ctx.closePath();
+      ctx.fillStyle = darkColor;
+      ctx.fill();
+      ctx.restore();
+      // fine crack lines + a broken-corner chip triangle for a fractured,
+      // not-smooth, concrete read.
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = Math.max(0.6, h * 0.012);
+      ctx.beginPath();
+      ctx.moveTo(-pieceW * 0.3, -pieceH * 0.4);
+      ctx.lineTo(pieceW * 0.1, pieceH * 0.1);
+      ctx.lineTo(-pieceW * 0.05, pieceH * 0.45);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.moveTo(pieceW / 2, pieceH / 2);
+      ctx.lineTo(pieceW / 2 - pieceW * 0.22, pieceH / 2);
+      ctx.lineTo(pieceW / 2, pieceH / 2 - pieceH * 0.22);
+      ctx.closePath();
+      ctx.fill();
+      // dark outline for legibility against a dark ESCAPE background.
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = Math.max(0.8, h * 0.02);
+      ctx.strokeRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
       ctx.restore();
     }
-    // two thick rebar rods, crossed, protruding from the cluster — the
-    // primary "this is rebar, not a rock" visual cue, spinning WITH the
-    // whole cluster via the ctx.rotate() above.
-    ctx.strokeStyle = 'rgba(150,138,120,0.88)';
+    // 25TH ROUND additional item 4: two rebar rods drawn as shaded cylinders
+    // (dark rod + offset bright highlight stripe = metallic-round read, not
+    // a flat line) and their apparent LENGTH breathes with a fast secondary
+    // tumble phase (own per-rod frequency) to fake end-over-end 3D rotation
+    // (foreshortening) on top of the cluster's shared 2D spin.
+    const tumbleA = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 2.3 + ob.seed);
+    const tumbleB = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 1.7 + ob.seed * 1.7 + 2.1);
+    const rebarColor = 'rgba(120,108,92,0.95)';
+    const rebarHighlight = 'rgba(215,205,185,0.65)';
+    const rodW = Math.max(2.4, h * 0.11);
     ctx.lineCap = 'round';
-    ctx.lineWidth = Math.max(2, h * 0.09);
+    ctx.save();
+    const ax1 = -w * 0.55, ay1 = -h * 0.15, ax2 = w * 0.6, ay2 = -h * 0.85;
+    const amx = (ax1 + ax2) / 2, amy = (ay1 + ay2) / 2;
+    ctx.strokeStyle = rebarColor;
+    ctx.lineWidth = rodW;
     ctx.beginPath();
-    ctx.moveTo(-w * 0.55, -h * 0.15);
-    ctx.lineTo(w * 0.6, -h * 0.85);
+    ctx.moveTo(amx + (ax1 - amx) * tumbleA, amy + (ay1 - amy) * tumbleA);
+    ctx.lineTo(amx + (ax2 - amx) * tumbleA, amy + (ay2 - amy) * tumbleA);
     ctx.stroke();
+    ctx.strokeStyle = rebarHighlight;
+    ctx.lineWidth = Math.max(1, rodW * 0.3);
     ctx.beginPath();
-    ctx.moveTo(-w * 0.4, h * 0.05);
-    ctx.lineTo(w * 0.35, h * 0.75);
+    ctx.moveTo(amx + (ax1 - amx) * tumbleA, amy + (ay1 - amy) * tumbleA - rodW * 0.22);
+    ctx.lineTo(amx + (ax2 - amx) * tumbleA, amy + (ay2 - amy) * tumbleA - rodW * 0.22);
     ctx.stroke();
+    const bx1 = -w * 0.4, by1 = h * 0.05, bx2 = w * 0.35, by2 = h * 0.75;
+    const bmx = (bx1 + bx2) / 2, bmy = (by1 + by2) / 2;
+    ctx.strokeStyle = rebarColor;
+    ctx.lineWidth = rodW;
+    ctx.beginPath();
+    ctx.moveTo(bmx + (bx1 - bmx) * tumbleB, bmy + (by1 - bmy) * tumbleB);
+    ctx.lineTo(bmx + (bx2 - bmx) * tumbleB, bmy + (by2 - bmy) * tumbleB);
+    ctx.stroke();
+    ctx.strokeStyle = rebarHighlight;
+    ctx.lineWidth = Math.max(1, rodW * 0.3);
+    ctx.beginPath();
+    ctx.moveTo(bmx + (bx1 - bmx) * tumbleB, bmy + (by1 - bmy) * tumbleB - rodW * 0.22);
+    ctx.lineTo(bmx + (bx2 - bmx) * tumbleB, bmy + (by2 - bmy) * tumbleB - rodW * 0.22);
+    ctx.stroke();
+    ctx.restore();
     ctx.restore();
 
     // soft contact shadow pinned to the FLOOR (never rotates/rises with the
@@ -4935,7 +5079,15 @@ function refreshMissileTargetScreenPos(e) {
 // and grow it as it closes in, while the SHADOW stays fixed at the real,
 // unchanged impact world point (still the correct "it will land here"
 // tell).
-const MISSILE_APPROACH_Z_BONUS = 780;
+// 25TH ROUND item 1: widened further — real-device feedback said the
+// missile still read as "a bullet falling straight down from above," not
+// "flying toward you from a distance." Root cause: MISSILE_PROJECTILE_
+// START_HEIGHT (240, a pure vertical/altitude axis) produced a screen-Y
+// swing far larger than the Z-bonus-driven scale growth, so the vertical
+// fall visually dominated even though the Z-approach math was already
+// correct. Fixed by rebalancing both constants together (not just this
+// one) — see MISSILE_PROJECTILE_START_HEIGHT's own updated comment below.
+const MISSILE_APPROACH_Z_BONUS = 1450;
 // NEXT ROUND (spec section 1): "発射直前に敵中央が一瞬白く発光" — a brief
 // launch flash at the ENEMY's own body center, distinct from the
 // projectile's own body/telegraph, marking the instant of launch. Shared by
@@ -5597,14 +5749,16 @@ function updateEnemy(dt, now) {
           startBarrageAttack(e, now, 0, stealthMul);
         }
       } else {
-        e.kind = Math.random() < 0.45 ? 'missile' : 'sniper';
-        if (e.kind === 'sniper') {
-          e.attackState = 'lock_red';
-          e.attackUntil = now + SNIPER_LOCK_RED_MS * stealthMul;
-        } else {
-          e.attackState = 'lockon';
-          e.attackUntil = now + MISSILE_LOCKON_MS * stealthMul;
-        }
+        // 25TH ROUND item 7: DRONE/AdamSphere no longer roll into a MISSILE
+        // attack at all — user-confirmed this contradicted the intended
+        // spec for these two types ("仕様と違うのでやめてください"). Both
+        // now always use SNIPER (their other existing, untouched pool
+        // member) — no new attack invented, nothing else about SNIPER's own
+        // sequence changed. Applies in COMBAT and ESCAPE alike, since both
+        // modes share this exact same updateEnemy() idle-check branch.
+        e.kind = 'sniper';
+        e.attackState = 'lock_red';
+        e.attackUntil = now + SNIPER_LOCK_RED_MS * stealthMul;
       }
     } else if (now >= e.nextIdleCheckAt) {
       e.nextIdleCheckAt = now + 400; // too far, re-check soon without attacking
@@ -6053,7 +6207,18 @@ function resolveSweepShot(e, now) {
   // scaled chest anchor (CENTER zone), so the tracer visibly starts at
   // the held gun instead of a fixed offset from the feet.
   const gun = getRoidMuzzlePoint(e);
-  e.sweepTracers.push({ x1: gun.x, y1: gun.y, x2: proj.x, y2: proj.y, until: now + SWEEP_TRACER_LIFE_MS });
+  // 25TH ROUND item 2: the LEFT/RIGHT search art's gun barrel is drawn at a
+  // fixed, essentially horizontal angle (confirmed by inspecting the actual
+  // roid2_search_02/04 PNGs), while this tracer always runs muzzle-height ->
+  // floor-level, i.e. a steep downward diagonal. For CENTER that reads fine
+  // (front-on pose, plausible downward shot), but for LEFT/RIGHT it visibly
+  // fights the horizontal gun art. Per the user's explicit permission ("画像
+  // 向き・銃口・弾道が揃わない場合は、弾道を省略してもよい"), the tracer line
+  // is omitted for LEFT/RIGHT zones — the fire pose + impact blast alone
+  // (below) stays, which reads as natural without a mismatched line.
+  if (e.zone === 'center') {
+    e.sweepTracers.push({ x1: gun.x, y1: gun.y, x2: proj.x, y2: proj.y, until: now + SWEEP_TRACER_LIFE_MS });
+  }
   // small, non-explosion-scale impact — a spark/flash/debris beat, never
   // the full MISSILE-scale blast (item 140).
   spawnBlast(proj.x, proj.y, now, { scale: 0.22 * (proj.scale || 1), big: false, shockwave: false });
@@ -7203,6 +7368,18 @@ function drawBarrelBody(b, proj) {
   if (imgReady(img)) {
     const aspect = img.naturalWidth / img.naturalHeight;
     const drawW = drawH * aspect;
+    // 25TH ROUND additional item 1: a soft warm rim-glow (pure Canvas
+    // shadow, no new asset) behind the sprite so its silhouette stays
+    // readable even sitting against a dark/black corridor background —
+    // previously a plain drawImage() with no contrast cue could blend
+    // straight into the gloom. Redrawn once more without the shadow so the
+    // sprite's own edges stay crisp (shadowBlur would otherwise soften
+    // them too).
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,176,90,0.6)';
+    ctx.shadowBlur = Math.max(4, drawH * 0.2);
+    ctx.drawImage(img, proj.x - drawW / 2, proj.y - drawH, drawW, drawH);
+    ctx.restore();
     ctx.drawImage(img, proj.x - drawW / 2, proj.y - drawH, drawW, drawH);
   } else {
     ctx.fillStyle = '#6b2a20';
@@ -7623,9 +7800,24 @@ function renderEscapePlayer() {
   // per-phase easing for how farProgress/jumpStartedAt change over time).
   const collapse = es.collapse;
   const collapseFar = collapseFarVisual(collapse.farProgress, COLLAPSE_FAR_SCALE_DROP, COLLAPSE_FAR_SCREEN_PX);
+  // 25TH ROUND item 4: "it's a collapse cutscene" is not license to shrink
+  // the player smaller than ORDINARY gameplay ever allows — clamp the
+  // recede multiplier so the FINAL combined scale (depth * dash-pulse *
+  // recede) never drops under ordinary play's own worst-case minimum
+  // (perspectiveScaleFromDepth at the farthest normal depthPos==1). The
+  // easing curve above the floor is untouched, so the perspective "receding
+  // into the distance" feel is preserved right up to that hard floor.
+  const ordinaryMinScale = 1 - ESCAPE_DEPTH_SCALE_RANGE;
+  const depthScaleNow = perspectiveScaleFromDepth(es.depthPos, ESCAPE_DEPTH_SCALE_RANGE);
+  const floorMul = ordinaryMinScale / Math.max(0.0001, depthScaleNow * es.dashScalePulse);
+  collapseFar.scaleMul = Math.max(collapseFar.scaleMul, Math.min(1, floorMul));
   bottomY -= collapseFar.screenYPush;
   if (collapse.phase === 'jumping') {
     const jumpT = clamp((now - collapse.jumpStartedAt) / COLLAPSE_JUMP_MS, 0, 1);
+    bottomY -= Math.sin(jumpT * Math.PI) * COLLAPSE_JUMP_ARC_PX;
+  } else if (es.freeJumping) {
+    // 25TH ROUND item 5: identical hop arc, used outside rubble events.
+    const jumpT = clamp((now - es.freeJumpStartedAt) / COLLAPSE_JUMP_MS, 0, 1);
     bottomY -= Math.sin(jumpT * Math.PI) * COLLAPSE_JUMP_ARC_PX;
   }
 
@@ -8004,14 +8196,15 @@ function renderEnemyTelegraphs(theme) {
     ctx.fillStyle = glow;
     ctx.beginPath(); ctx.arc(0, 0, bodyR * 2.1, 0, Math.PI * 2); ctx.fill();
 
-    // NEXT ROUND (spec section 5): real-play feedback clarified the
-    // "rotation" request was about a DIFFERENT kind of object (something
-    // approaching head-on that visibly spins clockwise/counter-clockwise as
-    // it nears camera) — it was never meant for THIS falling/parabolic
-    // missile, which should read as a real depth-based arcing drop, not a
-    // spinning object. The continuous ctx.rotate() call that used to sit
-    // here is removed; the dart now keeps a fixed nose-down orientation
-    // through its whole flight.
+    // 25TH ROUND item 1: re-added — the missile is now explicitly THE
+    // "approaching head-on, visibly spinning as it nears camera" object a
+    // much earlier round's feedback described (see MISSILE_SPIN_RATE,
+    // defined once back then but left unused after a later round removed
+    // this same rotate() call for the OLD pure-vertical-fall design). Now
+    // that item 1 rebalances the flight itself to be Z-approach-dominant
+    // (MISSILE_APPROACH_Z_BONUS/MISSILE_PROJECTILE_START_HEIGHT above), a
+    // continuous tumble reinforces "flying toward you," not "falling."
+    ctx.rotate(performance.now() * MISSILE_SPIN_RATE);
     ctx.fillStyle = '#cfd6dc';
     ctx.beginPath();
     ctx.moveTo(0, bodyR * 1.35);
@@ -8618,9 +8811,14 @@ function updateEscapeEnemyPursuit(now) {
   // attack-side z write) — same "idle = free to move" rule COMBAT's own
   // recovery gating uses (see applyForwardDelta()'s isClawIdle).
   if (e.attackState !== 'idle') return;
+  // 25TH ROUND item 6: gabriel/adam use the tighter CLAW-specific near
+  // point so the cycle actually swings into real CLAW attack range (see
+  // ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z's own comment) — every other type keeps
+  // the original 500-1100 range exactly as tuned.
+  const minZ = (e.type === 'gabriel' || e.type === 'adam') ? ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z : ESCAPE_ENEMY_PURSUIT_MIN_Z;
   const phase = (now % ESCAPE_ENEMY_PURSUIT_PERIOD_MS) / ESCAPE_ENEMY_PURSUIT_PERIOD_MS;
-  const mid = (ESCAPE_ENEMY_PURSUIT_MIN_Z + ESCAPE_ENEMY_PURSUIT_MAX_Z) / 2;
-  const amp = (ESCAPE_ENEMY_PURSUIT_MAX_Z - ESCAPE_ENEMY_PURSUIT_MIN_Z) / 2;
+  const mid = (minZ + ESCAPE_ENEMY_PURSUIT_MAX_Z) / 2;
+  const amp = (ESCAPE_ENEMY_PURSUIT_MAX_Z - minZ) / 2;
   e.z = mid - amp * Math.cos(phase * Math.PI * 2); // starts near MAX (falling behind), closes in, retreats, repeats
 }
 
