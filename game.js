@@ -203,6 +203,61 @@ const ESCAPE_AFTERIMAGE_MS = 220;
 // that target (never instant, per spec) — an exponential per-second rate.
 const ESCAPE_LEAN_MAX_RAD = 30 * Math.PI / 180;
 const ESCAPE_LEAN_SMOOTH_RATE = 9;
+
+// ============================================================
+// METROPOLIS COLLAPSE EVENTS (ESCAPE MODE ONLY) — new feature.
+// ============================================================
+// Investigated first: ESCAPE's player has NO world-Z of its own (only
+// screen-space strafeOffset + the depthPos->scale/screenY perspective trick
+// above), while structures[]/barrels[] DO have a real world Z that
+// applyForwardDelta() already decrements every ESCAPE frame by the SAME
+// forwardDelta driving the auto-scroll (confirmed: the "ESCAPE has no
+// combat" gate on applyForwardDelta() only wraps the enemy.z block —
+// structures/barrels move unconditionally). COLLAPSE OBSTACLES reuse that
+// exact mechanism (their own world Z, pulled toward the camera by the same
+// forwardDelta via advanceCollapseWorldZ(), rendered via the same
+// project() every barrel/structure already uses) rather than any new
+// scroll system. The RUBBLE PILE and the PLAYER's own "recede far away"
+// cinematic (spec section 8) instead reuse the SAME depthPos->scale/
+// screenY CONCEPT (perspectiveScaleFromDepth()) through a dedicated, much
+// wider range stacked multiplicatively on top of the player's normal
+// depthPos-driven scale exactly like dashScalePulse already does — never a
+// raw teleport/instant resize, and the rubble stays visually fixed in the
+// near foreground the whole approach (matching the spec's own "手前に瓦礫
+// の山" diagram) rather than needing its own moving world-Z.
+const COLLAPSE_QUAKE_MS = 1400;            // STEP1: tremor + dust begins
+const COLLAPSE_OBSTACLES_MS = 2200;        // STEP3: avoidable falling debris/obstacles window
+const COLLAPSE_RECEDE_MS = 1100;           // STEP5: player eases FAR (continuous, never a snap)
+const COLLAPSE_APPROACH_MS = 2600;         // STEP6/11: player eases back NEAR toward the rubble — the "timing game" window
+const COLLAPSE_JUMP_MS = 480;              // STEP7/8: airborne arc duration
+const COLLAPSE_JUMP_EARLY_CAP = 0.85;      // an early JUMP press is BUFFERED (held until this progress), never wasted
+const COLLAPSE_RUBBLE_RECEDE_MS = 1000;    // STEP9: rubble shrinks away BEHIND the player after a clear/hit
+const COLLAPSE_RECOVER_MS = 500;           // STEP10: brief settle before returning to normal ESCAPE
+const COLLAPSE_MIN_INTERVAL_MS = 9000;     // how soon after one cycle ends the next can begin
+const COLLAPSE_MAX_INTERVAL_MS = 15000;
+const COLLAPSE_SHAKE_PEAK_PX = 7;          // camera shake jitter amplitude at its strongest (quake start)
+const COLLAPSE_TILT_MAX_RAD = 2.4 * Math.PI / 180; // whole-scene rotation during quake — "消失点が左右へ動く" via one cheap canvas transform, never touches project()/world math
+const COLLAPSE_OBSTACLE_COUNT = 2;         // how many left/right-avoid hazards spawn per obstacles phase
+const COLLAPSE_OBSTACLE_SPAWN_Z = 1000;    // world z each obstacle starts at (far), pulled in by the normal auto-scroll
+const COLLAPSE_OBSTACLE_HIT_Z = 90;        // world z at which an un-dodged obstacle resolves (hit or dodged)
+const COLLAPSE_OBSTACLE_CULL_Z = 4;        // despawned once it scrolls this close (visibly passed by)
+const COLLAPSE_OBSTACLE_HALF_W_PX = 34;    // collision half-width in screen px at hit-Z, checked against player screen X
+const COLLAPSE_OBSTACLE_DAMAGE = 30;
+const COLLAPSE_RUBBLE_DAMAGE = 45;
+const COLLAPSE_FAR_SCALE_DROP = 0.74;      // at full recede (progress=1), player shrinks to ~26% of its normal depthPos-scale
+const COLLAPSE_FAR_SCREEN_PX = 150;        // at full recede, player's screen anchor lifts this many extra px (on top of normal depthPos screen range)
+const COLLAPSE_JUMP_ARC_PX = 46;           // peak visual height (screen px) of the JUMP hop
+const COLLAPSE_JUMP_COMBO_WINDOW_MS = 140; // LB+RB "natural simultaneous press" tolerance
+const COLLAPSE_RUBBLE_W_PX = 132;          // base rubble-pile draw width at scale 1 (never taller than roughly hip/chest height on the bike — spec section 6)
+const COLLAPSE_RUBBLE_H_PX = 62;
+
+// Shared by the PLAYER's own recede/approach AND the rubble's post-jump
+// recede — one interpolation, reused twice (never a separate ad-hoc formula
+// per object). progress: 0 = normal/near, 1 = maximally far.
+function collapseFarVisual(progress, scaleDrop, screenPxRange) {
+  const t = clamp(progress, 0, 1);
+  return { scaleMul: 1 - t * scaleDrop, screenYPush: t * screenPxRange };
+}
 const ESCAPE_ANIM_FRAME_MS = 45; // NEXT ROUND PART A: was 90 — halved to match ESCAPE_AUTO_SCROLL_SPEED's doubling so PLAYER anim and stage scroll read as the same speed (time-elapsed interval, drives the always-on 5-frame RUN LOOP)
 // 11TH ROUND (item 5): investigated first — ESCAPE's continuous lateral
 // move had NO separate smoothing/acceleration/interpolation layer at all;
@@ -2346,7 +2401,28 @@ const state = {
     // edge-triggered ESCAPE-exclusive actions, consumed each frame by
     // consumeEscapeActions() — separate from state.actions above so an
     // ESCAPE dash can never be misread as a LAB dash or vice versa.
-    actions: { westDash: false, eastDash: false, northBackstep: false, southDash: false },
+    actions: { westDash: false, eastDash: false, northBackstep: false, southDash: false, jump: false },
+    // NEW FEATURE: METROPOLIS COLLAPSE — LB+RB JUMP combo edge-detection
+    // timestamps (see pollGamepad()'s ESCAPE branch) — separate from
+    // `actions` above since these track raw button-down MOMENTS across
+    // frames, not a one-shot edge-triggered command.
+    lbDownAt: 0, rbDownAt: 0,
+    // NEW FEATURE: METROPOLIS COLLAPSE state — see the COLLAPSE_* constants
+    // and updateEscapeCollapse()/renderCollapse*() for the full design
+    // rationale. phase: 'idle'|'quake'|'obstacles'|'recede'|'approach'|
+    // 'jumping'|'rubbleRecede'|'recover'.
+    collapse: {
+      phase: 'idle',
+      phaseStartedAt: 0,
+      nextEventAt: 6000, // real elapsed ms before the FIRST cycle can fire (real interval is re-rolled every cycle after — see updateEscapeCollapse())
+      shakeX: 0, shakeY: 0, tiltAngle: 0,
+      farProgress: 0,       // player's own recede(1)/approach(0) cinematic progress
+      jumpQueued: false,    // JUMP pressed during 'approach' but buffered (see COLLAPSE_JUMP_EARLY_CAP)
+      jumpStartedAt: 0,
+      jumpLaunchProgress: 0,
+      rubble: null,          // { recedeProgress, passed } while a rubble pile exists on screen
+      obstacles: [],         // [{ z, worldX, screenXAtHit, resolved, hit }]
+    },
     // 9TH ROUND (item 36): counts down from ESCAPE_TIME_LIMIT_SEC in real
     // elapsed seconds (see frame()'s ESCAPE branch); reset by setGameMode()
     // whenever ESCAPE MODE is (re-)entered so a stale value from a previous
@@ -2834,9 +2910,10 @@ function pollGamepad(now) {
     }
 
     // ESCAPE-EXCLUSIVE CONTROL SCHEME. This mode has its own fixed mapping
-    // (LB/X=WEST dash, RB/B=EAST dash, Y=NORTH backstep, A=SOUTH dash,
-    // D-PAD+LEFT STICK unified for lateral dodge) and NO combat input
-    // exists in it at all — so this branch returns BEFORE any of LAB's own
+    // (X=WEST dash, B=EAST dash, Y=NORTH backstep, A=SOUTH dash, LB+RB
+    // together=JUMP — see below, D-PAD+LEFT STICK unified for lateral
+    // dodge) and NO combat input exists in it at all — so this branch
+    // returns BEFORE any of LAB's own
     // STEALTH(LT+RT)/D-PAD-AIM-trim/gpFire(RB)/FOCUS(LB)/DASH(X/Y/B/A)/
     // RELOAD(L3) code below ever runs. That is what guarantees a single
     // button press can never produce both an ESCAPE action AND a LAB
@@ -2862,11 +2939,32 @@ function pollGamepad(now) {
       else depthAxis = applyEscapeMoveCurve(gp.axes[1] || 0);
       gpMove.y = depthAxis;
 
-      if (edge(4) || edge(2)) state.escape.actions.westDash = true;      // LB or X = WEST DASH
-      if (edge(5) || edge(1)) state.escape.actions.eastDash = true;      // RB or B = EAST DASH
+      if (edge(2)) state.escape.actions.westDash = true;                  // X = WEST DASH
+      if (edge(1)) state.escape.actions.eastDash = true;                  // B = EAST DASH
       if (edge(3)) state.escape.actions.northBackstep = true;             // Y = NORTH BACKSTEP
       if (edge(0)) state.escape.actions.southDash = true;                 // A = SOUTH DASH
       if (edge(9)) state.actions.pauseToggle = true;                      // Start/Menu — generic UI, shared with LAB, not combat
+
+      // NEW FEATURE: METROPOLIS COLLAPSE — LB+RB pressed together = JUMP
+      // over a rubble pile. LB/X used to BOTH fire WEST DASH (and RB/B both
+      // EAST DASH) — that redundant mapping is retired here (X/B alone
+      // still cover both dashes instantly, unchanged above) so LB/RB can be
+      // fully dedicated to this new combo with zero ambiguity against the
+      // existing dash inputs, and zero effect on COMBAT (this whole branch
+      // only ever runs for state.gameMode==='escape'). Edge-triggered
+      // down-timestamps rather than same-frame-only detection, so a natural
+      // (not pixel-perfect) simultaneous press within
+      // COLLAPSE_JUMP_COMBO_WINDOW_MS still registers as JUMP regardless of
+      // which of the two physically lands first.
+      const es = state.escape;
+      if (edge(4)) es.lbDownAt = now || 0;
+      if (edge(5)) es.rbDownAt = now || 0;
+      if (es.lbDownAt && es.rbDownAt && Math.abs(es.lbDownAt - es.rbDownAt) <= COLLAPSE_JUMP_COMBO_WINDOW_MS) {
+        es.actions.jump = true;
+        es.lbDownAt = 0; es.rbDownAt = 0;
+      }
+      if (es.lbDownAt && (now || 0) - es.lbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.lbDownAt = 0;
+      if (es.rbDownAt && (now || 0) - es.rbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.rbDownAt = 0;
 
       const nextPrevEscape = new Array(b.length);
       for (let i = 0; i < b.length; i++) nextPrevEscape[i] = pressed(i);
@@ -3076,6 +3174,12 @@ wireButton('touch-dash-s', () => {
 // see style.css) rather than leaving WEST/EAST dash touch-inaccessible.
 wireButton('touch-dash-w', () => { if (state.gameMode === 'escape') state.escape.actions.westDash = true; });
 wireButton('touch-dash-e', () => { if (state.gameMode === 'escape') state.escape.actions.eastDash = true; });
+// NEW FEATURE: METROPOLIS COLLAPSE — touch parity for the gamepad's LB+RB
+// JUMP combo (see pollGamepad()'s ESCAPE branch for the combo-window
+// detector); touch has no two-button-combo concept, so a single dedicated
+// button fires JUMP directly, same as N-DASH/S-STEP's own single-button
+// touch equivalents for their own gamepad actions.
+wireButton('touch-dash-jump', () => { if (state.gameMode === 'escape') state.escape.actions.jump = true; });
 
 // 9TH ROUND (item 0-2): STAGE TYPE (state.theme — cosmetic world/background
 // only) and GAME MODE (state.gameMode — control scheme + win condition)
@@ -3304,7 +3408,7 @@ function consumeActions() {
 function consumeEscapeActions() {
   const a = state.escape.actions;
   const out = { ...a };
-  a.westDash = a.eastDash = a.northBackstep = a.southDash = false;
+  a.westDash = a.eastDash = a.northBackstep = a.southDash = a.jump = false;
   return out;
 }
 
@@ -3718,6 +3822,261 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   }
 
   return forwardDelta;
+}
+
+// ============================================================
+// METROPOLIS COLLAPSE — implementation (see the COLLAPSE_* constants'
+// shared design-rationale comment above for the architecture summary).
+// Every function here is ESCAPE-exclusive and only ever called from
+// frame()'s ESCAPE branch — COMBAT/LAB/ARMORED never reach any of this.
+// ============================================================
+
+// Applies a brief red hit-flash + real HP damage, respecting the SAME
+// DASH invincibility window (p.invincibleUntil) every other ESCAPE/COMBAT
+// damage site already checks — no separate damage system invented.
+function damageEscapePlayer(amount, now) {
+  const p = state.player;
+  if (now < p.invincibleUntil) return false;
+  p.hp = Math.max(0, p.hp - amount);
+  p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
+  return true;
+}
+
+// Obstacles are given a real world Z and pulled toward the camera by the
+// SAME forwardDelta driving structures[]/barrels[] (see this feature's own
+// top-of-file design comment) — called once per ESCAPE frame, right after
+// applyForwardDelta(), from frame(). Resolves each obstacle's hit/dodge
+// outcome the instant it crosses COLLAPSE_OBSTACLE_HIT_Z, then culls it
+// once it has visibly scrolled past.
+function advanceCollapseWorldZ(forwardDelta, now) {
+  const p = state.player;
+  const obstacles = state.escape.collapse.obstacles;
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const ob = obstacles[i];
+    ob.z -= forwardDelta;
+    if (!ob.resolved && ob.z <= COLLAPSE_OBSTACLE_HIT_Z) {
+      ob.resolved = true;
+      const playerScreenX = state.centerX + p.strafeOffset;
+      if (Math.abs(playerScreenX - ob.screenXAtHit) < COLLAPSE_OBSTACLE_HALF_W_PX) {
+        ob.hit = true;
+        damageEscapePlayer(COLLAPSE_OBSTACLE_DAMAGE, now);
+      }
+    }
+    if (ob.z <= COLLAPSE_OBSTACLE_CULL_Z) obstacles.splice(i, 1);
+  }
+}
+
+// STEP4/6/7 spawn: three fixed lanes (left/center/right), computed from the
+// player's OWN real dodge range (state.cssW*STRAFE_MAX_OFFSET) at the exact
+// world Z the hit-test resolves at, so "can I actually dodge this" is
+// always true regardless of device width — never a fixed pixel guess.
+function spawnCollapseObstacles(now) {
+  const scaleAtHit = FOCAL / (FOCAL + COLLAPSE_OBSTACLE_HIT_Z);
+  const maxOff = state.cssW * STRAFE_MAX_OFFSET;
+  const laneFracs = [-0.85, 0, 0.85];
+  // pick COLLAPSE_OBSTACLE_COUNT distinct lanes so at least one lane always
+  // stays clear — never all 3 lanes blocked at once.
+  const lanes = laneFracs.slice();
+  for (let i = lanes.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [lanes[i], lanes[j]] = [lanes[j], lanes[i]];
+  }
+  const chosen = lanes.slice(0, Math.min(COLLAPSE_OBSTACLE_COUNT, lanes.length - 1));
+  const obstacles = state.escape.collapse.obstacles;
+  chosen.forEach((frac, idx) => {
+    const screenXAtHit = state.centerX + frac * maxOff;
+    const worldX = (screenXAtHit - state.centerX) / scaleAtHit;
+    // staggered arrival: each successive obstacle starts farther away so
+    // they reach the player at different moments (never a simultaneous
+    // pop-in wall) using the SAME shared scroll speed, no extra timers.
+    obstacles.push({
+      z: COLLAPSE_OBSTACLE_SPAWN_Z * (1 + idx * 0.6),
+      worldX, screenXAtHit, resolved: false, hit: false,
+      seed: Math.random() * 1000,
+    });
+  });
+}
+
+// The main METROPOLIS COLLAPSE phase state machine — advances exactly one
+// tick per ESCAPE frame. jumpPressed is this frame's (already edge-
+// consumed) JUMP action from consumeEscapeActions().
+function updateEscapeCollapse(dt, now, jumpPressed) {
+  const c = state.escape.collapse;
+  const elapsed = now - c.phaseStartedAt;
+
+  // Shake/tilt envelope — shared by 'quake'/'obstacles' (ramps in, sustains,
+  // tapers) and 'recede' (tapering out the last of it). Zero in every other
+  // phase. Pure Canvas transform (see frame()'s own wrap around the whole
+  // render section) — never touches project()/world-space math, so
+  // AIM/hit-test geometry (none of which exists in ESCAPE anyway) can never
+  // be affected.
+  let shakeEnvelope = 0;
+  if (c.phase === 'quake') {
+    shakeEnvelope = clamp(elapsed / 260, 0, 1) * clamp(1 - Math.max(0, elapsed - (COLLAPSE_QUAKE_MS - 300)) / 300, 0, 1);
+  } else if (c.phase === 'obstacles') {
+    shakeEnvelope = 0.55 * clamp(1 - Math.max(0, elapsed - (COLLAPSE_OBSTACLES_MS - 300)) / 300, 0, 1);
+  } else if (c.phase === 'recede') {
+    shakeEnvelope = 0.35 * clamp(1 - elapsed / COLLAPSE_RECEDE_MS, 0, 1);
+  }
+  if (shakeEnvelope > 0) {
+    c.shakeX = (Math.random() * 2 - 1) * COLLAPSE_SHAKE_PEAK_PX * shakeEnvelope;
+    c.shakeY = (Math.random() * 2 - 1) * COLLAPSE_SHAKE_PEAK_PX * shakeEnvelope;
+    c.tiltAngle = Math.sin(now * 0.006) * COLLAPSE_TILT_MAX_RAD * shakeEnvelope;
+  } else {
+    c.shakeX = 0; c.shakeY = 0; c.tiltAngle = 0;
+  }
+
+  // Small falling debris chips — real particles (reuses the existing pool/
+  // physics/render pipeline, see updateParticles()/renderParticles()'s own
+  // 'quakeDebris' cases), spawned throughout 'quake' and 'obstacles' so the
+  // causal chain (地震->小規模崩落->大規模崩落) reads as one continuous
+  // event rather than obstacles/rubble popping in out of nowhere.
+  if ((c.phase === 'quake' || c.phase === 'obstacles') && Math.random() < dt * 9) {
+    spawnParticle({
+      type: 'quakeDebris',
+      x: state.centerX + (Math.random() * 2 - 1) * state.cssW * 0.42,
+      y: state.horizonY - 20 - Math.random() * 40,
+      vx: (Math.random() * 2 - 1) * 18, vy: 40 + Math.random() * 40,
+      rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() * 2 - 1) * 6,
+      size: 2 + Math.random() * 4,
+      born: now, until: now + 1800 + Math.random() * 600,
+    });
+  }
+
+  if (c.phase === 'idle') {
+    // Soft gate against stacking a new event exactly on a boss melee-hit
+    // resolution (spec section 15's "常時同時に大量発生させない") — a
+    // minimal, real check rather than a full priority scheduler.
+    if (now >= c.nextEventAt && state.enemy.attackState !== 'impact') {
+      c.phase = 'quake';
+      c.phaseStartedAt = now;
+      c.farProgress = 0;
+      c.jumpQueued = false;
+      c.rubble = null;
+      c.obstacles.length = 0;
+    }
+  } else if (c.phase === 'quake') {
+    if (elapsed >= COLLAPSE_QUAKE_MS) {
+      c.phase = 'obstacles'; c.phaseStartedAt = now;
+      spawnCollapseObstacles(now);
+    }
+  } else if (c.phase === 'obstacles') {
+    if (elapsed >= COLLAPSE_OBSTACLES_MS) {
+      c.obstacles.length = 0; // any not-yet-resolved obstacle simply never reached hit-Z — counts as dodged, never a stuck hazard
+      c.phase = 'recede'; c.phaseStartedAt = now;
+    }
+  } else if (c.phase === 'recede') {
+    const t = clamp(elapsed / COLLAPSE_RECEDE_MS, 0, 1);
+    c.farProgress = t; // STEP5: current size -> continuously smaller -> fully far, never a snap
+    if (t >= 1) {
+      c.rubble = { recedeProgress: 0, passed: false };
+      c.phase = 'approach'; c.phaseStartedAt = now;
+    }
+  } else if (c.phase === 'approach') {
+    if (jumpPressed && !c.jumping) c.jumpQueued = true;
+    const t = clamp(elapsed / COLLAPSE_APPROACH_MS, 0, 1);
+    if (!c.jumping) c.farProgress = 1 - t; // STEP6/11: continuously grows back toward normal size as it "runs toward camera"
+    if (c.jumpQueued && !c.jumping && c.farProgress <= COLLAPSE_JUMP_EARLY_CAP) {
+      // STEP7: launch — an early press was buffered above (COLLAPSE_JUMP_EARLY_CAP), never wasted/ignored.
+      c.jumping = true;
+      c.jumpStartedAt = now;
+      c.jumpLaunchProgress = c.farProgress;
+      c.jumpQueued = false;
+      c.phase = 'jumping'; c.phaseStartedAt = now;
+    } else if (t >= 1) {
+      // STEP14: never jumped in time -> collided with the rubble. Non-lethal per spec (just damage).
+      damageEscapePlayer(COLLAPSE_RUBBLE_DAMAGE, now);
+      c.farProgress = 0;
+      if (c.rubble) c.rubble.passed = true;
+      c.phase = 'rubbleRecede'; c.phaseStartedAt = now;
+    }
+  } else if (c.phase === 'jumping') {
+    const jumpT = clamp(elapsed / COLLAPSE_JUMP_MS, 0, 1);
+    c.farProgress = c.jumpLaunchProgress * (1 - jumpT); // continues approaching THROUGH the jump — never freezes mid-air
+    if (jumpT >= 1) {
+      // STEP12/13: landed exactly at the rubble's own position -> cleared it.
+      c.jumping = false;
+      c.farProgress = 0;
+      if (c.rubble) c.rubble.passed = true;
+      c.phase = 'rubbleRecede'; c.phaseStartedAt = now;
+    }
+  } else if (c.phase === 'rubbleRecede') {
+    const t = clamp(elapsed / COLLAPSE_RUBBLE_RECEDE_MS, 0, 1);
+    if (c.rubble) c.rubble.recedeProgress = t; // STEP9: rubble (now behind the player) shrinks/recedes away, never vanishes instantly
+    if (t >= 1) { c.rubble = null; c.phase = 'recover'; c.phaseStartedAt = now; }
+  } else if (c.phase === 'recover') {
+    if (elapsed >= COLLAPSE_RECOVER_MS) {
+      c.phase = 'idle'; c.phaseStartedAt = now;
+      c.nextEventAt = now + COLLAPSE_MIN_INTERVAL_MS + Math.random() * (COLLAPSE_MAX_INTERVAL_MS - COLLAPSE_MIN_INTERVAL_MS);
+    }
+  }
+}
+
+// Rough jagged rock-chunk silhouette — pure Canvas fill, no new image
+// assets (spec section 17), seeded once at spawn (ob.seed) so each chunk's
+// shape stays stable frame-to-frame instead of re-randomizing every draw.
+function renderCollapseObstacles() {
+  const obstacles = state.escape.collapse.obstacles;
+  for (const ob of obstacles) {
+    const proj = project(ob.worldX, CORRIDOR_FLOOR_Y, ob.z);
+    const h = 60 * proj.scale;
+    if (h < 2) continue;
+    const w = h * 1.3;
+    ctx.save();
+    ctx.translate(proj.x, proj.y);
+    ctx.fillStyle = ob.hit ? '#7a2a20' : '#2c2925';
+    ctx.beginPath();
+    const rnd = (n) => (Math.sin(ob.seed + n * 12.9898) * 43758.5453) % 1;
+    const spikes = 6;
+    for (let i = 0; i <= spikes; i++) {
+      const ang = (i / spikes) * Math.PI - Math.PI; // top half-circle silhouette resting on the floor
+      const r = (0.55 + Math.abs(rnd(i)) * 0.45);
+      const px = Math.cos(ang) * w * 0.5 * r;
+      const py = -Math.abs(Math.sin(ang)) * h * r;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// The rubble pile itself — drawn in pure screen space (no world-Z of its
+// own, see this feature's top-of-file design comment for why) as a
+// procedural mound: low debris rising to a moderate peak, per spec section
+// 6 ("バイクの上半身まで隠さない、飛び越えられそうな高さ"). recedeProgress
+// reuses collapseFarVisual() — the SAME interpolation the player's own
+// recede/approach cinematic uses.
+function renderCollapseRubble(now) {
+  const c = state.escape.collapse;
+  if (!c.rubble) return;
+  const far = collapseFarVisual(c.rubble.recedeProgress, COLLAPSE_FAR_SCALE_DROP, COLLAPSE_FAR_SCREEN_PX);
+  if (far.scaleMul <= 0.02) return;
+  const cx = state.centerX;
+  const bottomY = state.cssH * 1.02 - far.screenYPush;
+  const w = COLLAPSE_RUBBLE_W_PX * far.scaleMul;
+  const h = COLLAPSE_RUBBLE_H_PX * far.scaleMul;
+  ctx.save();
+  ctx.globalAlpha = clamp(1 - c.rubble.recedeProgress * 0.15, 0, 1); // very slight fade only at the tail end of receding, mound stays solid/readable most of the way
+  ctx.fillStyle = '#302a24';
+  ctx.beginPath();
+  ctx.moveTo(cx - w / 2, bottomY);
+  ctx.lineTo(cx - w * 0.32, bottomY - h * 0.55);
+  ctx.lineTo(cx - w * 0.08, bottomY - h);
+  ctx.lineTo(cx + w * 0.1, bottomY - h * 0.92);
+  ctx.lineTo(cx + w * 0.34, bottomY - h * 0.5);
+  ctx.lineTo(cx + w / 2, bottomY);
+  ctx.closePath();
+  ctx.fill();
+  // a few darker debris speckles on the mound's surface for texture — no new assets.
+  ctx.fillStyle = '#1c1815';
+  for (let i = 0; i < 5; i++) {
+    const fx = -0.4 + i * 0.2;
+    ctx.beginPath();
+    ctx.ellipse(cx + fx * w, bottomY - h * (0.35 + (i % 2) * 0.3), w * 0.05, h * 0.07, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 // PART 4 (2nd round): the closest world-z ROID1/ROID2 can ever be pushed to
@@ -5673,9 +6032,20 @@ function updateBullets(now) {
 // frame (light drag so they scatter and settle rather than fly forever).
 // Every other particle type is purely alpha/size-animated in place and has
 // no vx/vy, so this is a no-op for them.
+// NEW FEATURE: METROPOLIS COLLAPSE — small falling debris chips need real
+// gravity (constantly accelerating downward), unlike every other particle
+// type here which only ever decelerates (the shared *=0.92 damping below).
+// Kept as a small, explicitly type-gated addition rather than a parallel
+// particle system.
+const COLLAPSE_DEBRIS_GRAVITY_PX_S2 = 340;
+
 function updateParticles(dt) {
   for (const pt of state.particles) {
     if (!pt.active || (!pt.vx && !pt.vy)) continue;
+    if (pt.type === 'quakeDebris') {
+      pt.vy += COLLAPSE_DEBRIS_GRAVITY_PX_S2 * dt;
+      pt.rot = (pt.rot || 0) + (pt.rotSpeed || 0) * dt;
+    }
     pt.x += pt.vx * dt;
     pt.y += pt.vy * dt;
     pt.vx *= 0.92;
@@ -6510,7 +6880,21 @@ function renderEscapePlayer() {
   // the anchor UP the screen (subtracts), es.depthPos<0 (SOUTH/near) drops
   // it DOWN, matching the perspective sense computeEnemyDrawRect()/
   // project() already use elsewhere (farther = higher on screen).
-  const bottomY = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
+  let bottomY = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
+
+  // NEW FEATURE: METROPOLIS COLLAPSE — the player's own recede(far)/
+  // approach(near) cinematic (spec section 8/9) and the mid-air JUMP hop
+  // (section 12), both layered on TOP of the normal depthPos-driven
+  // position/scale exactly like dashScalePulse already does — never a
+  // replacement, never an instant snap (see updateEscapeCollapse()'s own
+  // per-phase easing for how farProgress/jumpStartedAt change over time).
+  const collapse = es.collapse;
+  const collapseFar = collapseFarVisual(collapse.farProgress, COLLAPSE_FAR_SCALE_DROP, COLLAPSE_FAR_SCREEN_PX);
+  bottomY -= collapseFar.screenYPush;
+  if (collapse.phase === 'jumping') {
+    const jumpT = clamp((now - collapse.jumpStartedAt) / COLLAPSE_JUMP_MS, 0, 1);
+    bottomY -= Math.sin(jumpT * Math.PI) * COLLAPSE_JUMP_ARC_PX;
+  }
 
   // 11TH ROUND (items 1-4, 7): the 5-frame RUN LOOP replaces the old
   // facing-based (south/west/east) sprite selection entirely — moveX/
@@ -6551,7 +6935,7 @@ function renderEscapePlayer() {
   // point (cx, bottomY) every frame, regardless of each source image's own
   // padding — so the bike neither grows/shrinks, bounces vertically, nor
   // drifts horizontally when the sprite switches (spec section 3).
-  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
+  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse * collapseFar.scaleMul);
 
   // NEXT ROUND PART M: draw any live lateral-DASH afterimages BEHIND the
   // real sprite first — real captured PLAYER-sprite ghosts (see
@@ -6598,7 +6982,17 @@ function renderEscapePlayer() {
   ctx.translate(cx, bottomY);
   ctx.rotate(es.leanAngle);
   ctx.translate(-cx, -bottomY);
-  ctx.drawImage(frame.img, rect.dx, rect.dy, rect.drawW, rect.drawH);
+  // NEW FEATURE: METROPOLIS COLLAPSE — real damage feedback for obstacle/
+  // rubble collisions reuses the SAME p.hitFlashUntil red-tint convention
+  // COMBAT's own renderPlayer() already uses (drawRedTintedSprite()) —
+  // previously nothing in ESCAPE ever rendered this field at all, so a hit
+  // here would have been silent; damageEscapePlayer() sets it exactly like
+  // every other damage site in this file.
+  if (now < p.hitFlashUntil) {
+    drawRedTintedSprite(frame.img, rect.dx, rect.dy, rect.drawW, rect.drawH);
+  } else {
+    ctx.drawImage(frame.img, rect.dx, rect.dy, rect.drawW, rect.drawH);
+  }
   ctx.restore();
 }
 
@@ -7098,6 +7492,18 @@ function renderParticles() {
       const growProgress = 1 - fadeAlpha; // 0 at spawn -> 1 at expiry, always >= 0
       ctx.fillStyle = 'rgba(90,90,90,' + fadeAlpha * 0.35 + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, (pt.r || 18) * (1 + growProgress * 0.8), 0, Math.PI * 2); ctx.fill();
+    } else if (pt.type === 'quakeDebris') {
+      // NEW FEATURE: METROPOLIS COLLAPSE — small falling concrete/debris
+      // chips (spec section 3/4). A tiny rotating dark chip, never a full
+      // game-UI shape; real gravity/rotation are handled in
+      // updateParticles() (COLLAPSE_DEBRIS_GRAVITY_PX_S2), not here.
+      ctx.save();
+      ctx.translate(pt.x, pt.y);
+      ctx.rotate(pt.rot || 0);
+      ctx.fillStyle = 'rgba(60,56,50,' + fadeAlpha + ')';
+      const s = pt.size || 3;
+      ctx.fillRect(-s / 2, -s / 2, s, s * 0.7);
+      ctx.restore();
     } else if (pt.type === 'dashstreak') {
       // 12TH ROUND (item 47): DASH motion trail — short fading light
       // streaks from the player's position trailing opposite the dash
@@ -7645,6 +8051,13 @@ function frame(ts) {
       const escActions = consumeEscapeActions();
       const forwardDelta = updateEscapePlayer(dt, ts, state.input.moveX, state.input.moveY, escActions);
       applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
+      // NEW FEATURE: METROPOLIS COLLAPSE — obstacles are pulled toward the
+      // camera by the SAME forwardDelta as everything else above (see this
+      // feature's own top-of-file design comment), and the phase state
+      // machine advances once per frame; escActions.jump is this frame's
+      // already-edge-consumed JUMP action (LB+RB combo or the touch button).
+      advanceCollapseWorldZ(forwardDelta, ts);
+      updateEscapeCollapse(dt, ts, escActions.jump);
       updateEnemy(dt, ts);
       updateEscapeEnemyPursuit(ts);
       updateExplosionChain(ts); // 14TH ROUND (items 5-8): outlives the brief attackState impact/cooldown window, so must tick every frame independent of it
@@ -7681,6 +8094,24 @@ function frame(ts) {
     }
   }
 
+  // NEW FEATURE: METROPOLIS COLLAPSE — whole-scene camera shake/tilt, a
+  // single cheap Canvas transform wrapping every canvas draw call for the
+  // rest of this frame (restored right after renderClearSequence() below).
+  // Only ever non-zero in ESCAPE during a collapse 'quake'/'obstacles'/
+  // 'recede' phase (see updateEscapeCollapse()) — COMBAT is completely
+  // unaffected (shakeX/Y/tiltAngle simply stay 0), and this never touches
+  // project()/world-space math, so it can't affect any hit-test geometry.
+  const collapseShakeX = state.gameMode === 'escape' ? state.escape.collapse.shakeX : 0;
+  const collapseShakeY = state.gameMode === 'escape' ? state.escape.collapse.shakeY : 0;
+  const collapseTilt = state.gameMode === 'escape' ? state.escape.collapse.tiltAngle : 0;
+  ctx.save();
+  ctx.translate(collapseShakeX, collapseShakeY);
+  if (collapseTilt) {
+    ctx.translate(state.centerX, state.cssH * 0.5);
+    ctx.rotate(collapseTilt);
+    ctx.translate(-state.centerX, -state.cssH * 0.5);
+  }
+
   const theme = THEMES[state.theme];
   renderCorridor(theme);
   // 11TH ROUND (item 9): ESCAPE never shows BARRELs — COMBAT's own BARREL/
@@ -7697,9 +8128,21 @@ function frame(ts) {
     // updateBullets()/fireWeapon()/renderBullets()/renderAimReticle() stay
     // excluded.
     renderEnemy(theme);
+    // NEW FEATURE: METROPOLIS COLLAPSE — left/right-avoid hazards render at
+    // the same environmental layer as the enemy (both are real world-Z
+    // objects via project()). The rubble pile is bracketed around
+    // renderEscapePlayer() below instead: it has NO world-Z of its own (see
+    // this feature's design comment), and needs to render IN FRONT of the
+    // player while approaching (matching spec section 9's "手前に瓦礫があ
+    // る" diagram) but BEHIND the player once passed/cleared (section 13 —
+    // "瓦礫が背後へ遠ざかる").
+    renderCollapseObstacles();
     renderParticles();
     renderBlasts(); // 16TH ROUND (Part A/B)
+    const rubble = state.escape.collapse.rubble;
+    if (rubble && rubble.passed) renderCollapseRubble(ts); // already behind the player -> draw first (ends up behind)
     renderEscapePlayer();
+    if (rubble && !rubble.passed) renderCollapseRubble(ts); // still ahead of the player -> draw after (ends up in front)
     // 9TH ROUND (item 20): ESCAPE MODE has no LIGHT at all — it is a
     // survive-until-TIME-LIMIT mode, not explore-in-darkness, so the
     // darkness mask/flashlight is never drawn here (was previously called
@@ -7776,6 +8219,7 @@ function frame(ts) {
   // (gate/door/light-expand/WHITE OUT), in both COMBAT and ESCAPE — a
   // genuine no-op draw whenever inactive.
   renderClearSequence(ts);
+  ctx.restore(); // matches the METROPOLIS COLLAPSE shake/tilt ctx.save() near this function's start
 
   updateHud();
 
