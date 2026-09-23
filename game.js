@@ -2337,6 +2337,16 @@ const state = {
 
   particles: [], // muzzle flash / tracer / hit spark, fixed pool
 
+  // 16TH ROUND (Part A-C): a genuine destructive BLAST — CORE FLASH + MAIN
+  // BLAST (layered radial-gradient fire blobs) + SPARKS/DEBRIS/SHOCKWAVE/
+  // SMOKE — as its own dedicated array/render path, deliberately separate
+  // from the generic `particles` pool above (a blast needs its own baked
+  // spark/debris sub-particle set per instance, plus multi-phase gradient
+  // draws neither `particles`' simple type switch nor its pool slot model
+  // are shaped for). Replaces the old asterisk-style 'spark' (6 static rays
+  // from one point) used at every explosion site — see spawnBlast().
+  blasts: [],
+
   debug: {
     frameTimes: [],
     lastReportAt: 0,
@@ -2361,6 +2371,21 @@ function spawnParticle(cfg) {
     }
   }
   return null; // pool exhausted -> drop silently, never allocate mid-frame
+}
+
+// 16TH ROUND (Part A/B): spawns ONE real traveling ember/spark — random
+// angle+speed baked in at spawn (never redrawn as fixed rays from a static
+// point), decelerating via updateParticles()'s existing vx/vy*0.92 damping,
+// exactly like 'ishard' debris already does. Shared by every remaining
+// 'spark' call site (SNIPER impact, GABRIEL/ADAM burn-death embers) so none
+// of them can regress back into the old asterisk shape.
+function spawnSparkEmber(x, y, now, lifeMs) {
+  const ang = Math.random() * Math.PI * 2;
+  const speed = 50 + Math.random() * 90;
+  spawnParticle({
+    type: 'spark', x, y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+    born: now, until: now + lifeMs,
+  });
 }
 
 // PART 3: the player's own shot — a fast traveling bullet, resolved
@@ -3818,8 +3843,12 @@ function resolveSniperImpact(now) {
   const p = state.player;
   const invincible = now < p.invincibleUntil;
   const blocked = COVER_BLOCKS_ATTACK.sniper && isPlayerInCover();
-  spawnParticle({ type: 'explosionFlash', x: e.fireToX, y: e.fireToY, r: 16, born: now, until: now + 90 });
-  spawnParticle({ type: 'spark', x: e.fireToX, y: e.fireToY, born: now, until: now + 170 });
+  // 16TH ROUND (Part A/B): small real BLAST instead of the old flat white
+  // circle + single asterisk-ray spark — a SNIPER bolt impact is smaller
+  // than a MISSILE/enemy-death explosion, so scale is reduced and no floor
+  // shockwave is spawned, but it still reads as a genuine small detonation
+  // (core flash + fire blob + traveling sparks), never a bare UI dot.
+  spawnBlast(e.fireToX, e.fireToY, now, { scale: 0.42, big: false, shockwave: false });
   if (invincible) {
     // 15TH ROUND (items 10-13): on-screen "AVOIDED" text removed — the
     // judgment itself (no damage while DASH-invincible) is unchanged, just
@@ -3885,12 +3914,190 @@ function getMissileProjectileVisual(e) {
   };
 }
 
+// 16TH ROUND (Part A-C): the real destructive BLAST — replaces the old
+// asterisk-style 'explosionFlash'+'spark'(6 static rays)+'smoke'+'shockwave'
+// (outline-only) combo entirely. Investigated /home/user/action-game's own
+// spawnExplosionVisual()/drawExplosion() first (per spec item 14) — that
+// codebase's phased white-yellow CORE FLASH -> multi-blob orange/red MAIN
+// BLAST (radial gradients, never a flat single-color circle) -> individually
+// -traveling spark dots/tumbling debris squares/soft smoke puffs (never a
+// fixed ray-burst from one point, see that file's own "the fixed symmetry
+// is what read as an asterisk" reasoning, mirrored in this project's OWN
+// 'ishard' debris — see its comment) is genuinely higher quality than what
+// existed here, so its phase timing/gradient-stop shape is ported directly
+// (not just "add color to the old shapes" — item 3 explicitly forbids
+// that), adapted to this project's own floor-perspective flattening (the
+// SAME Y-scale squash 'shockwave' already used) and BLAST_SCATTER driven by
+// the existing EXPLOSION CHAIN system (spawnExplosionChainBurst() below)
+// rather than action-game's own single-shot model, so DARKOUT-TPS's
+// "BOOM -> BA-BA-BA-BA" chained-impact feel (already correct — see
+// EXPLOSION_CHAIN_COUNT/WINDOW_MS) is preserved on top of the new visuals.
+const BLAST_DURATION_MS = 640; // 0-90 core flash, 50-380 main blast, sparks/debris/smoke decay to ~640
+function spawnBlast(x, y, now, opts) {
+  const o = opts || {};
+  const scale = o.scale || 1;
+  const big = !!o.big;
+  const sparks = [];
+  const nSparks = big ? 13 : 6;
+  for (let i = 0; i < nSparks; i++) {
+    sparks.push({ angle: Math.random() * Math.PI * 2, speed: (170 + Math.random() * 170) * scale, size: 1.3 + Math.random() * 1.6 });
+  }
+  const debris = [];
+  if (big) {
+    const nDebris = 6;
+    for (let i = 0; i < nDebris; i++) {
+      debris.push({ angle: Math.random() * Math.PI * 2, speed: (70 + Math.random() * 120) * scale, size: (2.6 + Math.random() * 3) * scale, spin: (Math.random() - 0.5) * 11 });
+    }
+  }
+  state.blasts.push({
+    active: true, x, y, startAt: now, scale, big,
+    shockwave: !!o.shockwave, sparks, debris,
+  });
+}
+function updateBlasts(now) {
+  for (let i = state.blasts.length - 1; i >= 0; i--) {
+    if (now - state.blasts[i].startAt >= BLAST_DURATION_MS) state.blasts.splice(i, 1);
+  }
+}
+// Floor-perspective flatten — the SAME Y-scale squash the old 'shockwave'
+// particle already used (ry = rx*0.4-ish), applied to every disc/gradient
+// drawn here so the whole blast reads as sitting on the corridor floor from
+// this game's own TPS camera angle, not a sphere floating in open air.
+const BLAST_FLATTEN_Y = 0.58;
+function renderBlast(b, now) {
+  const t = now - b.startAt;
+  if (t < 0 || t >= BLAST_DURATION_MS) return;
+  const sc = b.scale;
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.scale(1, BLAST_FLATTEN_Y);
+
+  // CORE FLASH: brief, sharp, white -> hot-yellow radial gradient — a FACE
+  // of light expanding from the impact center, never a symbol/glyph.
+  if (t < 95) {
+    const ft = t / 95;
+    const r = (15 + ft * 62) * sc;
+    const alpha = 1 - ft * 0.3;
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(1, r));
+    grad.addColorStop(0, `rgba(255,255,246,${alpha})`);
+    grad.addColorStop(0.5, `rgba(255,236,150,${alpha * 0.9})`);
+    grad.addColorStop(1, 'rgba(255,196,70,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(0, 0, Math.max(1, r), 0, Math.PI * 2); ctx.fill();
+  }
+
+  // MAIN BLAST: the fireball proper — a main radial blob (white-hot core ->
+  // yellow -> orange -> red-orange, fading to transparent) plus several
+  // smaller offset blobs at fixed angles (irregular silhouette, never a
+  // perfect single circle), reads as fire/heat, not a UI marker.
+  if (t > 55 && t < 380) {
+    const ft = Math.min(1, (t - 55) / 325);
+    const baseR = (20 + ft * (b.big ? 68 : 40)) * sc;
+    const alpha = 1 - ft * 0.88;
+    const mainGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(1, baseR));
+    mainGrad.addColorStop(0, `rgba(255,232,150,${alpha})`);
+    mainGrad.addColorStop(0.35, `rgba(255,150,40,${alpha * 0.9})`);
+    mainGrad.addColorStop(0.7, `rgba(220,60,20,${alpha * 0.6})`);
+    mainGrad.addColorStop(1, 'rgba(150,25,10,0)');
+    ctx.fillStyle = mainGrad;
+    ctx.beginPath(); ctx.arc(0, 0, Math.max(1, baseR), 0, Math.PI * 2); ctx.fill();
+    const nBlobs = b.big ? 5 : 3;
+    for (let i = 0; i < nBlobs; i++) {
+      const a = (i / nBlobs) * Math.PI * 2 + 0.35;
+      const dist = baseR * 0.42;
+      const bx = Math.cos(a) * dist, by = Math.sin(a) * dist;
+      const br = Math.max(1, baseR * 0.5);
+      const grad2 = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+      grad2.addColorStop(0, `rgba(255,170,80,${alpha * 0.8})`);
+      grad2.addColorStop(1, 'rgba(190,55,18,0)');
+      ctx.fillStyle = grad2;
+      ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // SHOCKWAVE: a filled, fading pressure-ring along the floor — a soft
+  // annulus (gradient, not a bare stroke outline) so it reads as a wave of
+  // force rather than a UI target ring.
+  if (b.shockwave && t < 300) {
+    const ft = t / 300;
+    const r = (30 + ft * 130) * sc;
+    const alpha = (1 - ft) * 0.55;
+    const ringGrad = ctx.createRadialGradient(0, 0, Math.max(1, r * 0.72), 0, 0, Math.max(2, r));
+    ringGrad.addColorStop(0, 'rgba(255,170,90,0)');
+    ringGrad.addColorStop(0.75, `rgba(255,160,70,${alpha})`);
+    ringGrad.addColorStop(1, 'rgba(255,140,50,0)');
+    ctx.fillStyle = ringGrad;
+    ctx.beginPath(); ctx.arc(0, 0, Math.max(2, r), 0, Math.PI * 2); ctx.fill();
+  }
+
+  // SPARKS/DEBRIS: each individually travels along its own baked angle/
+  // speed from spawn — never redrawn as fixed rays from one static point.
+  const tSec = t / 1000;
+  for (const s of b.sparks) {
+    if (t > 260) continue;
+    const dx = Math.cos(s.angle) * s.speed * tSec;
+    const dy = Math.sin(s.angle) * s.speed * tSec;
+    const alpha = Math.max(0, 1 - t / 260);
+    // 16TH ROUND (Part C, legibility pass): a short trailing streak back
+    // toward the blast center (same "moving spark reads as moving" idea as
+    // the fixed particles.js 'spark' case) makes each ember read as a real
+    // traveling point rather than a nearly-invisible 1-2px static dot once
+    // scaled down to real device resolution — confirmed too subtle via a
+    // zoomed screenshot crop before this change.
+    const trailX = dx - Math.cos(s.angle) * 7;
+    const trailY = dy - Math.sin(s.angle) * 7;
+    ctx.strokeStyle = `rgba(255,220,150,${alpha * 0.8})`;
+    ctx.lineWidth = Math.max(1, s.size * 0.8);
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(trailX, trailY); ctx.lineTo(dx, dy); ctx.stroke();
+    ctx.fillStyle = `rgba(255,240,200,${alpha})`;
+    ctx.beginPath(); ctx.arc(dx, dy, s.size, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const d of b.debris) {
+    if (t < 35 || t > 470) continue;
+    const lt = (t - 35) / 435;
+    const alpha = Math.max(0, 1 - lt);
+    const dx = Math.cos(d.angle) * d.speed * tSec;
+    const dy = Math.sin(d.angle) * d.speed * tSec;
+    ctx.save();
+    ctx.translate(dx, dy);
+    ctx.rotate(d.spin * lt);
+    // 16TH ROUND (Part C, legibility pass): a warm charred-ember tint (was
+    // flat rgba(85,85,90,...) — nearly indistinguishable from the dark
+    // background/floor) so debris reads as glowing fragments thrown from
+    // the blast, not invisible flecks.
+    ctx.fillStyle = `rgba(120,70,45,${alpha})`;
+    ctx.fillRect(-d.size / 2, -d.size / 2, d.size, d.size);
+    ctx.fillStyle = `rgba(255,160,90,${alpha * 0.7})`;
+    ctx.fillRect(-d.size / 2, -d.size / 2, d.size * 0.5, d.size * 0.5);
+    ctx.restore();
+  }
+
+  // SMOKE: dark, soft, drifts/grows and fades in late — the visual tail
+  // the blast dissolves into, lingering longest of anything here.
+  if (t > 140) {
+    const lt = Math.min(1, (t - 140) / 500);
+    const alpha = (1 - lt) * 0.4;
+    const r = (18 + lt * 24) * sc;
+    ctx.fillStyle = `rgba(55,55,58,${alpha})`;
+    ctx.beginPath(); ctx.arc(0, -lt * 14, Math.max(1, r), 0, Math.PI * 2); ctx.fill();
+  }
+
+  ctx.restore();
+}
+function renderBlasts() {
+  const now = performance.now();
+  for (const b of state.blasts) renderBlast(b, now);
+}
+
 // 14TH ROUND (items 5-8): spawns ONE scattered burst of the chain — a small
 // offset from the true impact point (upper-left/right/center/lower-right
 // etc., per spec: "決して1点から同じ形で", "本当の着弾点から大きく離れない"),
 // Y-flattened for floor perspective (mirrors ACTION-GAME's own radius*0.6
 // pattern). burstIndex 0 is always dead-center (the instant, legible "着弾
-// した" read); later indices scatter.
+// した" read); later indices scatter. 16TH ROUND: now spawns a real
+// spawnBlast() instead of the old flat-circle/asterisk/outline-ring combo —
+// see spawnBlast()'s own comment.
 function spawnExplosionChainBurst(e, now, burstIndex) {
   const sc = e.explosionChainScale || 1;
   let ox = 0, oy = 0;
@@ -3903,17 +4110,7 @@ function spawnExplosionChainBurst(e, now, burstIndex) {
   const x = e.explosionChainX + ox;
   const y = e.explosionChainY + oy;
   const big = burstIndex === 0;
-  spawnParticle({ type: 'explosionFlash', x, y, r: (big ? 34 : 20 + Math.random() * 10) * sc, born: now, until: now + 130 });
-  for (let i = 0; i < (big ? 3 : 2); i++) {
-    spawnParticle({ type: 'spark', x: x + (i - 1) * 8, y, born: now, until: now + 180 + i * 30 });
-  }
-  spawnParticle({ type: 'smoke', x, y, r: (big ? 26 : 16 + Math.random() * 8) * sc, born: now, until: now + 380 });
-  // Only the FIRST burst gets the expanding floor SHOCKWAVE ring (one ring
-  // per impact reads clearly; six overlapping rings would just look like
-  // one soup) — later bursts stay small blasts/flash/sparks/smoke only.
-  if (big) {
-    spawnParticle({ type: 'shockwave', x, y, r: 40 * sc, born: now, until: now + 260 });
-  }
+  spawnBlast(x, y, now, { scale: (big ? 1 : 0.6) * sc, big, shockwave: big });
 }
 
 // 14TH ROUND (items 5-8): the per-frame driver that spreads the remaining
@@ -4175,31 +4372,32 @@ function startEnemyDeath(now) {
 
   const rect = computeEnemyDrawRect();
   if (family === 'explode') {
-    // PART 25: DRONE/ROID1/ROID2/ADAM SPHERE — reuses the EXACT SAME
-    // particle types (explosionFlash/spark/smoke) resolveMissileImpact()
-    // already spawns elsewhere in this file, just bigger/more of them for
-    // a "defeated" moment instead of a mid-fight impact. No new particle
-    // type, no new image asset.
-    spawnParticle({ type: 'explosionFlash', x: rect.cx, y: rect.cy, r: 60, born: now, until: now + 170 });
-    for (let i = 0; i < 3; i++) {
-      spawnParticle({ type: 'smoke', x: rect.cx + (i - 1) * 16, y: rect.cy, r: 30, born: now, until: now + 500 + i * 90 });
-    }
-    for (let i = 0; i < 8; i++) {
-      spawnParticle({
-        type: 'spark', x: rect.cx + (Math.random() - 0.5) * rect.w * 0.5, y: rect.cy + (Math.random() - 0.5) * rect.h * 0.3,
-        born: now, until: now + 180 + Math.random() * 160,
-      });
-    }
+    // 16TH ROUND (Part A/B, item 14): DRONE/ROID1/ROID2/ADAM SPHERE defeat
+    // now reuses the SAME chained-BLAST system (spawnExplosionChainBurst()/
+    // updateExplosionChain(), see their own comments) resolveMissileImpact()
+    // drives, rather than the old flat white circle + asterisk-ray + plain
+    // grey circle combo — a genuine "BOOM -> BA-BA-BA-BA" defeat explosion,
+    // scaled up a bit (1.3x) so a boss defeat still reads bigger/more final
+    // than a mid-fight MISSILE impact.
+    e.explosionChainX = rect.cx;
+    e.explosionChainY = rect.cy;
+    e.explosionChainScale = 1.3;
+    e.explosionChainActive = true;
+    e.explosionChainStartAt = now;
+    e.explosionChainSpawned = 0;
+    spawnExplosionChainBurst(e, now, 0);
+    e.explosionChainSpawned = 1;
   } else {
-    // PART 26: GABRIEL/ADAM — NOT the same explosion. A scatter of ember
-    // ('spark', already amber-toned — see renderParticles()) bursts across
-    // the body, paired with renderEnemy()'s own bottom-up dissolve/tint for
-    // the sustained "burning down" read over DEATH_BURN_MS.
+    // PART 26: GABRIEL/ADAM — NOT the same explosion. A scatter of REAL
+    // traveling embers (spawnSparkEmber() — see its own comment for why
+    // this is no longer a fixed ray-burst) across the body, paired with
+    // renderEnemy()'s own bottom-up dissolve/tint for the sustained
+    // "burning down" read over DEATH_BURN_MS.
     for (let i = 0; i < 7; i++) {
-      spawnParticle({
-        type: 'spark', x: rect.cx + (Math.random() - 0.5) * rect.w * 0.6, y: rect.y + rect.h * (0.3 + Math.random() * 0.5),
-        born: now, until: now + 260 + Math.random() * 320,
-      });
+      spawnSparkEmber(
+        rect.cx + (Math.random() - 0.5) * rect.w * 0.6, rect.y + rect.h * (0.3 + Math.random() * 0.5),
+        now, 260 + Math.random() * 320,
+      );
     }
   }
 }
@@ -4907,11 +5105,10 @@ function updateBullets(now) {
       const pdist = Math.hypot(b.x2 - pv.x, b.y2 - pv.y);
       if (pdist <= pv.hitRadius) {
         e.missileDestroyed = true;
-        spawnParticle({ type: 'explosionFlash', x: pv.x, y: pv.y, r: 20, born: now, until: now + 120 });
-        for (let i = 0; i < 3; i++) {
-          spawnParticle({ type: 'spark', x: pv.x + (i - 1) * 8, y: pv.y, born: now, until: now + 160 + i * 20 });
-        }
-        spawnParticle({ type: 'smoke', x: pv.x, y: pv.y, r: 16, born: now, until: now + 320 });
+        // 16TH ROUND (Part A/B): real BLAST for the midair intercept too —
+        // same small-scale, no-shockwave treatment as SNIPER's bolt impact
+        // (it's a projectile detonating in open air, not a ground impact).
+        spawnBlast(pv.x, pv.y, now, { scale: 0.5, big: false, shockwave: false });
         e.attackState = 'cooldown';
         e.attackUntil = now + MISSILE_COOLDOWN_MS;
         if (DEBUG_MODE) r10DebugLog('PROJECTILE INTERCEPTED midair (' + (ENEMY_LABEL[e.type] || e.type) + ') dist=' + pdist.toFixed(1) + '/r=' + pv.hitRadius.toFixed(1));
@@ -5027,6 +5224,19 @@ function updateBullets(now) {
               e.counterPhaseUntil = now + ROID_COUNTER_PHASE_MS;
               e.hitFlashUntil = now + ROID_COUNTER_BLINK_MS; // reuses the existing hit-flash blink — no new visual system
               e.nextIdleCheckAt = now; // force the next attack roll immediately, so the counter phase reads as a real reprisal, not a coincidence
+              // 16TH ROUND (Part I, root-cause fix): the forced idle-check
+              // above only actually STARTS an attack if e.z < 900 (see
+              // updateEnemy()'s idle branch) — "merely invulnerable, no real
+              // attack" was reproducible whenever the enemy's z happened to
+              // sit at/above that gate the instant a threshold fired, since
+              // the forced recheck would then just re-arm for 400ms later
+              // with no attack, repeatedly, for as long as the slow
+              // (ENEMY_IDLE_APPROACH_SPEED=40/s) idle creep-in took to close
+              // the gap — exactly the "merely invulnerable" FAIL the spec
+              // calls out. Clamping z here guarantees the forced recheck on
+              // the very next frame always lands inside attack range, so the
+              // MANDATORY counter-attack always actually launches.
+              if (e.z >= 900) e.z = 850;
               if (DEBUG_MODE) r10DebugLog('COUNTER PHASE START (' + (ENEMY_LABEL[e.type] || e.type) + ' @' + Math.round(t * 100) + '%)');
               break;
             }
@@ -5607,6 +5817,37 @@ const stealthDistortCtx = stealthDistortCanvas.getContext('2d');
 const stealthMaskCanvas = document.createElement('canvas');
 const stealthMaskCtx = stealthMaskCanvas.getContext('2d');
 
+const redTintCanvas = document.createElement('canvas');
+const redTintCtx = redTintCanvas.getContext('2d');
+// 16TH ROUND (Part F, root-cause fix): the old DAMAGE red blink drew its
+// source-atop fill directly on the MAIN canvas, right after the sprite —
+// but source-atop composites onto whatever destination pixels already have
+// alpha>0, and the main canvas at that point still carries everything
+// painted underneath (background, LIGHT/flashlight mask circle, floor),
+// not just the sprite that was "just drawn". So a distant, mostly-
+// transparent sprite's PNG canvas rect (and any LIGHT circle overlapping
+// it) got reddened along with it — confirmed visually (a full red rectangle
+// + reddened LIGHT circle around a hit ROID2). Fix: draw the sprite to a
+// small OFFSCREEN canvas first (which starts fully transparent and holds
+// ONLY the sprite's own pixels), apply source-atop there — so it can only
+// ever redden pixels the sprite itself painted — then blit that tinted
+// result onto the main canvas with a normal source-over draw.
+function drawRedTintedSprite(img, dx, dy, w, h) {
+  const cw = Math.max(1, Math.round(w));
+  const ch = Math.max(1, Math.round(h));
+  if (redTintCanvas.width !== cw || redTintCanvas.height !== ch) {
+    redTintCanvas.width = cw;
+    redTintCanvas.height = ch;
+  }
+  redTintCtx.clearRect(0, 0, cw, ch);
+  redTintCtx.globalCompositeOperation = 'source-over';
+  redTintCtx.drawImage(img, 0, 0, cw, ch);
+  redTintCtx.globalCompositeOperation = 'source-atop';
+  redTintCtx.fillStyle = 'rgba(255,40,40,0.65)';
+  redTintCtx.fillRect(0, 0, cw, ch);
+  ctx.drawImage(redTintCanvas, dx, dy, w, h);
+}
+
 function getStealthStrength(now) {
   const p = state.player;
   const sinceToggle = now - p.stealthToggledAt;
@@ -5831,10 +6072,7 @@ function renderPlayer(theme) {
     // resolveMissileImpact/the CLAW hit-tests: MISS/DODGED/AVOIDED/BLOCKED/
     // DEFENSE never set p.hitFlashUntil), so DAMAGE=0 cases never blink.
     ctx.save();
-    ctx.drawImage(img, dx, dy, drawW, drawH);
-    ctx.globalCompositeOperation = 'source-atop';
-    ctx.fillStyle = 'rgba(255,40,40,0.65)';
-    ctx.fillRect(dx, dy, drawW, drawH);
+    drawRedTintedSprite(img, dx, dy, drawW, drawH);
     ctx.restore();
     return;
   }
@@ -6090,12 +6328,11 @@ function renderEnemy(theme) {
   if (imgReady(rect.img)) {
     const w = rect.w * bobScale;
     const h = rect.h;
-    ctx.drawImage(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
     if (flashing) {
       ctx.filter = 'none';
-      ctx.globalCompositeOperation = 'source-atop';
-      ctx.fillStyle = 'rgba(255,40,40,0.65)';
-      ctx.fillRect(rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
+      drawRedTintedSprite(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
+    } else {
+      ctx.drawImage(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
     }
   } else {
     ctx.fillStyle = '#334';
@@ -6129,16 +6366,35 @@ function renderEnemyTelegraphs(theme) {
     // warning ring (grown over CLAW_WINDUP_MS, same as a normal telegraph)
     // rather than inventing a second warning visual — a real DASH-avoidable
     // tell, per item 37/spec ("プレイヤーはDASHで回避可能").
+    // 16TH ROUND (Part D): the old white/warn-colored STROKE-ONLY ellipse
+    // outline (a bare ring, no fill) read as a UI target marker, not an
+    // in-world warning — exactly the pattern PART D bans. Replaced with a
+    // filled, soft radial-gradient FLOOR GLOW at the same position/size/
+    // timing (grow/pulse logic untouched, so the DASH-avoidable warning
+    // window is identical) — reads as the floor itself locally brightening
+    // ahead of the strike, flashing warm-white right at 'impact', rather
+    // than a drawn ring shape.
     const m = playerMarkerPos();
     const tRemain = Math.max(0, e.attackUntil - now);
     const grow = (e.attackState === 'telegraph' || e.attackState === 'counterAttack') ? (1 - tRemain / 700) : 1;
+    const isImpact = e.attackState === 'impact';
+    const rx = 50 + grow * 20, ry = 16 + grow * 6;
+    const pulse = isImpact ? 1 : 0.55 + 0.35 * Math.sin(now * 0.02);
     ctx.save();
-    ctx.strokeStyle = e.attackState === 'impact' ? '#fff' : theme.warn;
-    ctx.lineWidth = 3;
-    ctx.globalAlpha = e.attackState === 'impact' ? 1 : 0.55 + 0.35 * Math.sin(now * 0.02);
-    ctx.beginPath();
-    ctx.ellipse(m.x, m.y, 50 + grow * 20, 16 + grow * 6, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.translate(m.x, m.y);
+    ctx.scale(1, ry / rx);
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(1, rx));
+    if (isImpact) {
+      grad.addColorStop(0, `rgba(255,250,235,${0.6 * pulse})`);
+      grad.addColorStop(0.55, `rgba(255,205,110,${0.4 * pulse})`);
+      grad.addColorStop(1, 'rgba(255,205,110,0)');
+    } else {
+      grad.addColorStop(0, `rgba(255,150,60,${0.34 * pulse})`);
+      grad.addColorStop(0.6, `rgba(255,110,40,${0.2 * pulse})`);
+      grad.addColorStop(1, 'rgba(255,110,40,0)');
+    }
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(0, 0, rx, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
     return;
   }
@@ -6300,21 +6556,26 @@ function renderParticles() {
       ctx.fillStyle = 'rgba(255,220,140,' + fadeAlpha + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2); ctx.fill();
     } else if (pt.type === 'spark') {
-      // PART 3: a small burst of short radiating spark lines, gone fast —
-      // "小さな火花・瞬間的に散る複数のspark・短時間で消える", not a
-      // lingering glow or a big explosion.
-      ctx.strokeStyle = 'rgba(255,235,180,' + fadeAlpha + ')';
+      // 16TH ROUND (Part A/B): was 6 FIXED rays drawn from one static
+      // point every frame — exactly the "束ねた棒線/アスタリスク" shape
+      // explicitly banned this round. A real spark/ember is now a SINGLE
+      // glowing dot that genuinely TRAVELS along its own baked vx/vy (set
+      // at spawn — see spawnSparkEmber()) and decelerates via the SAME
+      // updateParticles() integration 'ishard'/'dashstreak' already use,
+      // drawn with a short trailing streak behind its direction of motion
+      // — never a symmetric static burst.
+      const speed = Math.hypot(pt.vx, pt.vy);
+      const trail = Math.min(10, speed * 0.045 + 1.5);
+      const ang = Math.atan2(pt.vy, pt.vx);
+      ctx.strokeStyle = 'rgba(255,225,150,' + fadeAlpha + ')';
       ctx.lineWidth = 2;
-      for (let i = 0; i < 6; i++) {
-        const ang = (i / 6) * Math.PI * 2 + pt.x * 0.01; // cheap per-spark angle jitter
-        const len = 7 + 6 * fadeAlpha;
-        ctx.beginPath();
-        ctx.moveTo(pt.x, pt.y);
-        ctx.lineTo(pt.x + Math.cos(ang) * len, pt.y + Math.sin(ang) * len);
-        ctx.stroke();
-      }
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pt.x - Math.cos(ang) * trail, pt.y - Math.sin(ang) * trail);
+      ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
       ctx.fillStyle = 'rgba(255,255,255,' + fadeAlpha + ')';
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, 2, 0, Math.PI * 2); ctx.fill();
     } else if (pt.type === 'defenseBlock') {
       // 14TH ROUND (items 25-26): DEFENSE/COUNTER's own 0-damage block
       // feedback — a small, brief, cool-blue ring + flat "shield" chord,
@@ -6328,24 +6589,17 @@ function renderParticles() {
       ctx.stroke();
       ctx.fillStyle = 'rgba(210,230,255,' + fadeAlpha + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, 2, 0, Math.PI * 2); ctx.fill();
-    } else if (pt.type === 'explosionFlash') {
-      ctx.fillStyle = 'rgba(255,255,255,' + fadeAlpha + ')';
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.r || 30, 0, Math.PI * 2); ctx.fill();
     } else if (pt.type === 'smoke') {
+      // Still used by spawnPlayerImpact() (small bullet-hit puff) — the old
+      // 'explosionFlash'/'shockwave' plain-white-circle/outline-ring types
+      // that used to sit here were removed in the 16TH ROUND (Part A/B):
+      // every real explosion now goes through spawnBlast()/renderBlasts()
+      // instead (see their own comments), which already has its own phased
+      // CORE FLASH/MAIN BLAST/SHOCKWAVE/SMOKE — nothing spawns those two
+      // particle types anymore.
       const growProgress = 1 - fadeAlpha; // 0 at spawn -> 1 at expiry, always >= 0
       ctx.fillStyle = 'rgba(90,90,90,' + fadeAlpha * 0.35 + ')';
       ctx.beginPath(); ctx.arc(pt.x, pt.y, (pt.r || 18) * (1 + growProgress * 0.8), 0, Math.PI * 2); ctx.fill();
-    } else if (pt.type === 'shockwave') {
-      // 8TH ROUND (items 21/22/29): a floor-anchored expanding, fading
-      // ring — flattened to match the floor-perspective ellipse the
-      // MISSILE warning already uses, so the impact reads as the SAME
-      // ground point the warning was on, not a generic circular burst.
-      const growProgress = 1 - fadeAlpha; // 0 at spawn -> 1 at expiry
-      const rx = (pt.r || 40) * (0.3 + growProgress * 1.4);
-      const ry = rx * 0.4;
-      ctx.strokeStyle = 'rgba(255,160,70,' + (fadeAlpha * 0.85) + ')';
-      ctx.lineWidth = 3 * fadeAlpha + 1;
-      ctx.beginPath(); ctx.ellipse(pt.x, pt.y, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
     } else if (pt.type === 'dashstreak') {
       // 12TH ROUND (item 47): DASH motion trail — short fading light
       // streaks from the player's position trailing opposite the dash
@@ -6897,6 +7151,7 @@ function frame(ts) {
       updateEscapeEnemyPursuit(ts);
       updateExplosionChain(ts); // 14TH ROUND (items 5-8): outlives the brief attackState impact/cooldown window, so must tick every frame independent of it
       updateParticles(dt); // ESCAPE itself still spawns no particles directly, but the now-active enemy's own attack impacts do (spark/smoke/shockwave) — no longer a pure no-op
+      updateBlasts(ts); // 16TH ROUND (Part A/B): the new real-BLAST instances (spawnBlast()) prune themselves independent of attackState, same reasoning as updateExplosionChain() above
       // 9TH ROUND (item 36): real elapsed-time countdown, ticked only while
       // unpaused and the CLEAR SEQUENCE isn't already running (guarded
       // above) — reaching 0 triggers the SAME shared CLEAR SEQUENCE COMBAT
@@ -6913,6 +7168,7 @@ function frame(ts) {
       updateGabrielAdamReaim(ts); // 14TH ROUND (items 27-30): must tick every frame, independent of firing, so AIM-moved-away tracking never misses a frame
       updateExplosionChain(ts); // 14TH ROUND (items 5-8): outlives the brief attackState impact/cooldown window, so must tick every frame independent of it
       updateParticles(dt);
+      updateBlasts(ts); // 16TH ROUND (Part A/B)
 
       if (state.input.fireHeld) {
         fireWeapon(ts);
@@ -6944,6 +7200,7 @@ function frame(ts) {
     // excluded.
     renderEnemy(theme);
     renderParticles();
+    renderBlasts(); // 16TH ROUND (Part A/B)
     renderEscapePlayer();
     // 9TH ROUND (item 20): ESCAPE MODE has no LIGHT at all — it is a
     // survive-until-TIME-LIMIT mode, not explore-in-darkness, so the
@@ -6962,14 +7219,29 @@ function frame(ts) {
     // sprite now naturally overlaps/hides part of the flash instead of the
     // reverse.
     renderParticles();
-    renderPlayer(theme);
-    // 9TH ROUND (item 14): redraw the cover-providing barrel's foreground
-    // portion on top of the player so COVER visually reads as "behind the
-    // drum can," not "sprite swap while standing in front of it." Runs
-    // before the darkness mask so it is lit/darkened like any other world
-    // object, consistent with renderBarrels() itself.
-    renderBarrelForeground();
+    // 16TH ROUND (Part E, root-cause fix): PLAYER used to draw HERE, before
+    // renderFlashlightMask() below — so the mask's own ~0.90-alpha black
+    // overlay painted over it like any other world object, dimming the
+    // player's own sprite whenever they stood outside the lit circle. Spec:
+    // only the WORLD should darken outside LIGHT — the player sprite itself
+    // must always read at normal brightness. Root cause was purely draw
+    // order (same bug class already fixed for telegraphs/bullets — see
+    // their own comments), so the fix is the same: PLAYER now draws ONLY
+    // ONCE, after the mask (below), never before it. The barrel-foreground
+    // "behind the drum can" redraw moves with it (was previously paired
+    // with this now-removed early draw).
     renderFlashlightMask();
+    // 16TH ROUND (Part A/B, root-cause fix): a BLAST must read as its own
+    // bright, self-illuminating event, not get dimmed into a faint grey
+    // smudge by the darkness mask above — same bug class as
+    // renderEnemyTelegraphs()/renderBullets() below (drawn-before-the-mask
+    // content is ~0.90-alpha darkened outside the lit circle). Moved from
+    // its old spot right after renderParticles() (before renderPlayer()) to
+    // here, after the mask, so CORE FLASH/MAIN BLAST/sparks/shockwave/smoke
+    // stay fully visible regardless of where the flashlight currently
+    // points — confirmed via screenshot: the blast was nearly invisible
+    // (dim grey, no fire color) until this move.
+    renderBlasts();
     // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
     // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
     // below — otherwise any tracer segment landing outside the lit circle
@@ -6977,28 +7249,17 @@ function frame(ts) {
     // invisible against the 0.90-alpha overlay, which is why the tracer
     // used to appear to vanish depending on input state.
     renderBullets();
-    // 15TH ROUND (items 1-3): "射撃弾道がPLAYER画像の上へoverlayされる" — the
-    // 3RD-ROUND fix above (renderBullets() must run AFTER renderFlashlightMask()
-    // to stay visible outside the lit circle) is still correct and left
-    // untouched, but it necessarily left the tracer drawing on top of the
-    // ALREADY-drawn player sprite (drawn once, before the mask, so it reads
-    // as a normal lit/darkened world object). Rather than reordering around
-    // that hard constraint (which would reopen the exact "tracer vanishes in
-    // the dark" bug the 3RD ROUND fixed), this redraws the player sprite a
-    // SECOND time, on top of the tracer — the SAME "foreground redraw"
-    // pattern already established by renderBarrelForeground() (see its own
-    // comment above) for exactly this class of problem. Gated on an actually
-    // active bullet (BULLET_TRAVEL_MS=55ms — 3-4 frames at most) so the
-    // player's normal darkness-masked look is completely unchanged for the
-    // vast majority of frames where no bullet is in flight; renderPlayer()/
-    // renderBarrelForeground() are both pure (read state, mutate nothing),
-    // so calling them again here is safe. renderBarrelForeground() is
-    // re-run right after so COVER's own "barrel in front of player" ordering
-    // (9TH ROUND, item 14 — untouched) still holds even during these frames.
-    if (state.bullets.some((b) => b.active)) {
-      renderPlayer(theme);
-      renderBarrelForeground();
-    }
+    // 16TH ROUND (Part E): PLAYER's one-and-only draw for this frame — always
+    // after the mask/blasts/bullets, so it's never darkened and always sits
+    // on top of the tracer (matches the pre-16th-round "player redraws on
+    // top of an active bullet" behavior, made unconditional now that there
+    // is no earlier pre-mask draw to leave stale underneath). renderPlayer()/
+    // renderBarrelForeground() are both pure (read state, mutate nothing), so
+    // calling them here only is safe; renderBarrelForeground() right after
+    // keeps COVER's "barrel in front of player" ordering (9TH ROUND, item
+    // 14) intact.
+    renderPlayer(theme);
+    renderBarrelForeground();
     // FOLLOWUP FIX: telegraphs (LOCK boxes/▲/target ellipse/bolts) render
     // AFTER the darkness mask so they stay legible as warnings no matter
     // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
