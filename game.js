@@ -124,7 +124,7 @@ const PLAYER_DEPTH_RECOVER_PER_SEC = 0.9; // COMBAT depthPos eases back toward 0
 // without doubling raw player input speed, per the explicit spec
 // instruction. CLEAR SEQUENCE trigger stays purely on timeLeftSec (real
 // elapsed seconds), so this doesn't touch SURVIVE MM:SS pacing.
-const ESCAPE_AUTO_SCROLL_SPEED = 340; // was 170
+const ESCAPE_AUTO_SCROLL_SPEED = 680; // NEXT ROUND PART A: was 340 (12TH ROUND doubled it from 170) — doubled again for real high-speed-getaway pacing
 const ESCAPE_STRAFE_SPEED = 300;             // px/sec continuous lateral dodge (left stick + D-PAD, unified)
 // 12TH ROUND (items 15-18): ESCAPE gains a genuine, sustained NORTH/SOUTH
 // movement axis (es.depthPos, [-1, +1]) alongside the existing WEST/EAST
@@ -193,7 +193,17 @@ const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 260; // was 200 (11th round) — Y, bri
 const ESCAPE_DASH_BLINK_MS = 300;
 const ESCAPE_DASH_BLINK_TOGGLE_MS = 75; // legacy — no longer read by the blink render logic, kept only for the existing test-export
 const ESCAPE_DASH_BLINK_CYCLES = 1; // exact number of "visible -> invisible" flashes per DASH, deterministic regardless of wall-clock phase
-const ESCAPE_ANIM_FRAME_MS = 90; // time-elapsed (not requestAnimationFrame-count) interval — now drives the always-on 5-frame RUN LOOP (items 1-4), not the old per-direction facing loop
+// NEXT ROUND PART M: how long a single lateral-DASH afterimage snapshot
+// takes to fully fade — "afterimages fade quickly" per spec, never a long
+// lingering trail.
+const ESCAPE_AFTERIMAGE_MS = 220;
+// NEXT ROUND PART N: normal (non-DASH) EAST/WEST movement leans the whole
+// bike sprite up to this many degrees toward the travel direction, and
+// ESCAPE_LEAN_SMOOTH_RATE controls how quickly it eases toward/away from
+// that target (never instant, per spec) — an exponential per-second rate.
+const ESCAPE_LEAN_MAX_RAD = 30 * Math.PI / 180;
+const ESCAPE_LEAN_SMOOTH_RATE = 9;
+const ESCAPE_ANIM_FRAME_MS = 45; // NEXT ROUND PART A: was 90 — halved to match ESCAPE_AUTO_SCROLL_SPEED's doubling so PLAYER anim and stage scroll read as the same speed (time-elapsed interval, drives the always-on 5-frame RUN LOOP)
 // 11TH ROUND (item 5): investigated first — ESCAPE's continuous lateral
 // move had NO separate smoothing/acceleration/interpolation layer at all;
 // it applies raw input directly to strafeOffset every frame
@@ -851,7 +861,7 @@ const SWEEP_COOLDOWN_MS = 1200;
 // single blast. Each impact reuses the 16TH ROUND PART A/B/C spawnBlast()
 // pipeline directly (never the old asterisk-style effect — item 153).
 const BARRAGE_LOCKON_MS = 550;
-const BARRAGE_LAUNCH_INTERVAL_MS = 320; // stagger between each missile's own launch/fall start
+const BARRAGE_LAUNCH_INTERVAL_MS = 200; // NEXT ROUND PART G: was 320 — tightened so impacts read as "piling on" while still leaving each blast individually visible (not simultaneous)
 const BARRAGE_FALL_MS = 850; // each missile's own fall duration, reuses MISSILE_PROJECTILE_START_HEIGHT
 const BARRAGE_IMPACT_TAIL_MS = 260; // grace after the LAST impact before cooldown begins
 const BARRAGE_COOLDOWN_MS = 1900;
@@ -993,9 +1003,21 @@ const ENEMY_ATTACK_FREQ_MULT = {
 // (no parallel frequency system), just with this extra ESCAPE-only
 // multiplier stacked on top. <1 = shorter wait = more frequent attacks.
 const ESCAPE_ATTACK_FREQ_MULT = 0.55;
+// NEXT ROUND PART L: ROID1/ROID2/DRONE/ADAM SPHERE (GABRIEL/ADAM explicitly
+// excluded per spec) get their OWN much more aggressive ESCAPE-only
+// multiplier on top of the same idle-wait-window mechanism above — divides
+// the wait window by ~5x (targeting a new attack arriving roughly every
+// ~3s), while leaving the attack's own telegraph/impact/cooldown timing
+// (and GABRIEL/ADAM's own ESCAPE pacing) completely untouched.
+const ESCAPE_ATTACK_FREQ_MULT_BY_TYPE = {
+  drone: ESCAPE_ATTACK_FREQ_MULT / 5, roid1: ESCAPE_ATTACK_FREQ_MULT / 5,
+  roid2: ESCAPE_ATTACK_FREQ_MULT / 5, adamSphere: ESCAPE_ATTACK_FREQ_MULT / 5,
+};
 function enemyAttackFreqMult(type) {
   const base = ENEMY_ATTACK_FREQ_MULT[type] || 1;
-  return state.gameMode === 'escape' ? base * ESCAPE_ATTACK_FREQ_MULT : base;
+  if (state.gameMode !== 'escape') return base;
+  const escapeMult = ESCAPE_ATTACK_FREQ_MULT_BY_TYPE[type] !== undefined ? ESCAPE_ATTACK_FREQ_MULT_BY_TYPE[type] : ESCAPE_ATTACK_FREQ_MULT;
+  return base * escapeMult;
 }
 
 const THEMES = {
@@ -2312,6 +2334,15 @@ const state = {
     // only as harmless legacy fields nothing reads anymore.
     strafeDashUntil: 0, strafeDashDir: 0, strafeDashStart: 0, // LB/X WEST, RB/B EAST
     fwdDashUntil: 0, fwdDashSign: 0, fwdDashCoveredZ: 0,       // A SOUTH DASH (+1) / Y NORTH BACKSTEP (-1)
+    // NEXT ROUND PART M: live lateral-DASH afterimage snapshots (real
+    // PLAYER sprite ghosts, never white lines) — see updateEscapePlayer()/
+    // renderEscapePlayer(). lateralDashBlinkSuppressUntil stops the old
+    // strobe blink from also running during a lateral DASH's afterimage
+    // window (the two effects must never stack).
+    afterimages: [], lateralDashBlinkSuppressUntil: 0,
+    // NEXT ROUND PART N: smoothed lean angle (radians) for normal (non-DASH)
+    // EAST/WEST movement — see updateEscapePlayer()/renderEscapePlayer().
+    leanAngle: 0,
     // edge-triggered ESCAPE-exclusive actions, consumed each frame by
     // consumeEscapeActions() — separate from state.actions above so an
     // ESCAPE dash can never be misread as a LAB dash or vice versa.
@@ -3579,6 +3610,14 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   const maxOff = state.cssW * STRAFE_MAX_OFFSET; // reused: a generic screen-fraction clamp bound, not LAB-specific behavior
   p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset));
 
+  // NEXT ROUND PART N: normal (non-DASH) lateral movement leans the whole
+  // bike sprite up to ESCAPE_LEAN_MAX_RAD toward the travel direction —
+  // smoothed toward the target AND back to 0 on neutral input (never an
+  // instant snap either way). Driven by raw moveX (not strafeOffset), so it
+  // reads as "leaning because I'm steering", independent of clamp state.
+  const targetLean = Math.max(-1, Math.min(1, moveX)) * ESCAPE_LEAN_MAX_RAD;
+  es.leanAngle += (targetLean - es.leanAngle) * Math.min(1, dt * ESCAPE_LEAN_SMOOTH_RATE);
+
   // 12TH ROUND (items 15-17): continuous NORTH/SOUTH — the SECOND free axis
   // ("横一直線移動から解放"), read from the SAME moveY the shared MOVE
   // pipeline already produces for touch (touchMove.y) and now also for
@@ -3596,15 +3635,29 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   // item 7's explicit "reuse existing" instruction). All 4 directions
   // funnel through the same two lines of logic (item 8's "統一") — only
   // WHICH value (screen-x vs world-z) and WHICH distance constant differs.
-  if (actions.westDash) {
-    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset - ESCAPE_STRAFE_DASH_DISTANCE_PX));
+  // NEXT ROUND PART M/O: lateral (WEST/EAST) DASH no longer spawns the old
+  // spawnDashStreak() white-stick/line-bundle trail (PART O — the repeated
+  // "tire white line" complaint) and no longer strobes the live sprite
+  // (PART M — banned as eye-straining). Instead it snapshots the REAL
+  // current PLAYER run-frame at its pre-dash screen position (a genuine
+  // afterimage, start point) plus one interpolated mid-point snapshot,
+  // BEFORE strafeOffset actually moves — see computeEscapePlayerDrawRect()/
+  // renderEscapePlayer() for how these are drawn and faded out.
+  if (actions.westDash || actions.eastDash) {
+    const dashDirSign = actions.westDash ? -1 : 1;
+    const oldCx = state.centerX + p.strafeOffset;
+    const bottomYNow = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
+    const frameNow = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
+    if (imgReady(frameNow.img)) {
+      const startRect = computeEscapePlayerDrawRect(oldCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
+      es.afterimages.push({ img: frameNow.img, dx: startRect.dx, dy: startRect.dy, drawW: startRect.drawW, drawH: startRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS });
+      const midCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
+      const midRect = computeEscapePlayerDrawRect(midCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
+      es.afterimages.push({ img: frameNow.img, dx: midRect.dx, dy: midRect.dy, drawW: midRect.drawW, drawH: midRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS * 0.7 });
+    }
+    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
-    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, -1, 0, now);
-  }
-  if (actions.eastDash) {
-    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + ESCAPE_STRAFE_DASH_DISTANCE_PX));
-    p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
-    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 1, 0, now);
+    es.lateralDashBlinkSuppressUntil = now + ESCAPE_DASH_BLINK_MS;
   }
 
   // Continuous, automatic SOUTH-heading auto-scroll. 8TH ROUND (item 13,
@@ -3633,7 +3686,9 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     // a replacement for it (see the decay tick below and the multiply in
     // renderEscapePlayer()).
     es.dashScalePulse = 1.02;
-    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 0, 1, now);
+    // NEXT ROUND PART O: the old spawnDashStreak() white-stick trail call
+    // that used to sit here is removed — SOUTH DASH's own scale-pulse +
+    // blink already convey the lunge without it.
   }
   if (actions.northBackstep) {
     forwardDelta += ESCAPE_DIR_SIGN * -ESCAPE_NORTH_BACKSTEP_DISTANCE_Z;
@@ -3641,7 +3696,8 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     es.depthPos = Math.min(1, es.depthPos + ESCAPE_DEPTH_DASH_NUDGE);
     // NORTH DASH = lunging away, so a brief -2% pulse (same decay).
     es.dashScalePulse = 0.98;
-    spawnDashStreak(state.centerX + p.strafeOffset, state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX, 0, -1, now);
+    // NEXT ROUND PART O: the old spawnDashStreak() white-stick trail call
+    // that used to sit here is removed — see the SOUTH DASH branch above.
   }
   // 13TH ROUND (item 1): decay dashScalePulse back to exactly 1 — runs
   // every ESCAPE frame regardless of whether a dash just fired, so it can
@@ -3769,11 +3825,27 @@ function applyForwardDelta(forwardDelta) {
   // rule COMBAT's claw types already follow), so this block is simply
   // skipped in ESCAPE and left entirely to that system.
   if (state.gameMode !== 'escape') {
-    const isClawIdle = (e.type === 'gabriel' || e.type === 'adam') ? e.attackState === 'idle' : true;
-    if (isClawIdle) {
+    const isClaw = e.type === 'gabriel' || e.type === 'adam';
+    // NEXT-ROUND PART C (root-cause fix): root cause of "SOUTH DASH creates
+    // no real distance from GABRIEL/ADAM right after a melee attack" was
+    // this whole player-driven z update being gated to ONLY
+    // attackState==='idle' for claw types — 'recovery' (900ms) and
+    // 'cooldown' (1200ms), together roughly 2 seconds right after every
+    // attack, silently ignored the player's own forward/back movement
+    // entirely. 'cooldown' has no z-tween of its own (confirmed in
+    // updateEnemy()), so it can now take the exact same direct update idle
+    // already used. 'recovery' DOES actively tween e.z every frame in
+    // updateEnemy() (which runs after this), so writing e.z here would just
+    // be silently overwritten — instead this accumulates the player's
+    // movement into e.clawDistanceBonusZ, which updateEnemy()'s recovery
+    // tween reads and offsets its own target by (see that block's comment).
+    const isClawIdleLike = isClaw ? (e.attackState === 'idle' || e.attackState === 'cooldown') : true;
+    if (isClawIdleLike) {
       const zMin = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : (e.type === 'adam' ? ADAM_NORMAL_Z_MIN : approachZMinForRoid());
       e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
-    } else if (e.type !== 'gabriel' && e.type !== 'adam') {
+    } else if (isClaw && e.attackState === 'recovery') {
+      e.clawDistanceBonusZ = (e.clawDistanceBonusZ || 0) - forwardDelta;
+    } else if (!isClaw) {
       const zMin = approachZMinForRoid();
       e.z = Math.max(zMin, Math.min(ENEMY_Z_MAX, e.z - forwardDelta));
     }
@@ -3958,9 +4030,29 @@ function refreshMissileTargetScreenPos(e) {
 // its shadow, never a raw 2D Y slide. Also returns the shadow's own
 // (height-independent) screen position and a perspective-scaled intercept
 // hit radius, so updateBullets()/renderEnemyAttack() share one calculation.
+// NEXT ROUND PART F (root-cause fix): the body used to project at the SAME
+// world Z as its own shadow — only WORLD HEIGHT (a pure vertical axis)
+// ever changed, so the "falling object" never actually traveled through
+// depth at all. On screen this reads as a thin white line (the shadow-
+// connector) dropping straight down onto a fixed point, with no sense of
+// "flying in from a distance" — exactly the "縦方向の白線が落ちてくるだけ"
+// bug report. Root cause: MISSILE_TARGET_WORLD_Z was only ever used for
+// the (correct, unchanged) SHADOW/impact point; the body's own Z was never
+// derived from a genuine "launch" point at all. Fixed by interpolating the
+// body's own world Z from a distant MISSILE_APPROACH_Z_BONUS offset (at
+// launch, height=START_HEIGHT) down to the real target Z (at impact,
+// height=0) — same driver (e.missileHeight) as the existing vertical
+// fall, so no new timing/state is needed. This makes project()'s own
+// existing FOCAL/(FOCAL+z) perspective naturally shrink the body far away
+// and grow it as it closes in, while the SHADOW stays fixed at the real,
+// unchanged impact world point (still the correct "it will land here"
+// tell).
+const MISSILE_APPROACH_Z_BONUS = 780;
 function getMissileProjectileVisual(e) {
+  const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1); // 1=just launched (far), 0=impact (at target)
+  const bodyWorldZ = e.missileTargetWorldZ + MISSILE_APPROACH_Z_BONUS * heightFrac;
   const shadow = project(e.missileTargetWorldX, CORRIDOR_FLOOR_Y, e.missileTargetWorldZ);
-  const body = project(e.missileTargetWorldX, CORRIDOR_FLOOR_Y - e.missileHeight, e.missileTargetWorldZ);
+  const body = project(e.missileTargetWorldX, CORRIDOR_FLOOR_Y - e.missileHeight, bodyWorldZ);
   return {
     shadowX: shadow.x, shadowY: shadow.y,
     x: body.x, y: body.y, scale: body.scale,
@@ -4362,6 +4454,7 @@ function spawnEnemy(type) {
   e.barrage = [];
   e.forcedBarrageCount = 0;
   e.clawApproachStartZ = 0;
+  e.clawDistanceBonusZ = 0; // NEXT-ROUND PART C — see applyForwardDelta()/updateEnemy()'s 'recovery' block
   e.deathState = 'alive';
   e.deathStartedAt = 0;
   e.deathUntil = 0;
@@ -4525,8 +4618,12 @@ function updateEnemy(dt, now) {
       // own idle-only gate already enforces) — ATTACK's own 'approach'
       // sub-state is still the only thing that ever closes past that floor.
       const stalkFloor = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : ADAM_NORMAL_Z_MIN;
+      // NEXT ROUND PART B: ADAM's own normal approach speed doubled (spec
+      // item 5 — ADAM only, GABRIEL unchanged) — still the SAME continuous
+      // FAR->MID->NEAR closing-the-gap tween, just faster, never a jump.
+      const stalkSpeed = e.type === 'adam' ? CLAW_STALK_SPEED * 2 : CLAW_STALK_SPEED;
       if (e.z > stalkFloor) {
-        e.z = Math.max(stalkFloor, e.z - CLAW_STALK_SPEED * dt);
+        e.z = Math.max(stalkFloor, e.z - stalkSpeed * dt);
       }
     } else if (state.gameMode === 'combat') {
       // 14TH ROUND (items 9-11): see ENEMY_IDLE_APPROACH_SPEED above — the
@@ -4658,6 +4755,11 @@ function updateEnemy(dt, now) {
         e.attackState = 'recovery';
         e.attackUntil = now + CLAW_RECOVERY_MS;
         e.clawApproachStartZ = e.z;
+        // NEXT-ROUND PART C (root-cause fix): zeroed fresh for this
+        // recovery window — see applyForwardDelta()'s own comment for why
+        // this accumulator exists (the fix for "PLAYER SOUTH DASH does
+        // nothing right after a GABRIEL/ADAM melee attack").
+        e.clawDistanceBonusZ = 0;
       }
     } else if (e.attackState === 'recovery') {
       // 10TH ROUND (items 19-24): eases back out to STALK_Z (not straight to
@@ -4665,7 +4767,17 @@ function updateEnemy(dt, now) {
       // closer" per this round's explicit approach/attack/recovery/re-
       // approach loop, rather than snapping straight back to the closest
       // normal-state distance with nothing left to visibly walk through.
-      const targetZ = e.type === 'gabriel' ? GABRIEL_STALK_Z : ADAM_STALK_Z;
+      // NEXT-ROUND PART C (root-cause fix): the recovery TARGET itself is
+      // now offset by e.clawDistanceBonusZ, which applyForwardDelta()
+      // accumulates every frame from the PLAYER's own forward/back movement
+      // while this state is active (see its own comment) — root cause of
+      // "SOUTH DASH does nothing after an attack" was that this whole
+      // window used to ignore player movement entirely (its own tween
+      // unconditionally overwrote e.z every frame with no player input
+      // factored in at all). Clamped to ENEMY_Z_MAX so a huge bonus can't
+      // push the target past the world's own far bound.
+      const baseTargetZ = e.type === 'gabriel' ? GABRIEL_STALK_Z : ADAM_STALK_Z;
+      const targetZ = clamp(baseTargetZ + e.clawDistanceBonusZ, 0, ENEMY_Z_MAX);
       const tNorm = clamp(1 - (e.attackUntil - now) / CLAW_RECOVERY_MS, 0, 1);
       const eased = 1 - Math.pow(1 - tNorm, 2);
       e.z = e.clawApproachStartZ + (targetZ - e.clawApproachStartZ) * eased;
@@ -4998,9 +5110,16 @@ function resolveBarrageImpact(m, now) {
 // parametrized over an { worldX, worldZ, height } record instead of
 // reading the single-missile fields directly off `e`, so multiple barrage
 // missiles can be in flight (and rendered) at once.
+// NEXT ROUND PART F: same root-cause fix as getMissileProjectileVisual()
+// above, applied to each barrage missile — the body approaches through
+// real world depth (not just a vertical height drop at a fixed Z), so it
+// visibly grows as it nears its own impact point instead of just falling
+// straight down onto it.
 function getBarrageProjectileVisual(m) {
+  const heightFrac = clamp(m.height / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
+  const bodyWorldZ = m.worldZ + MISSILE_APPROACH_Z_BONUS * heightFrac;
   const shadow = project(m.worldX, CORRIDOR_FLOOR_Y, m.worldZ);
-  const body = project(m.worldX, CORRIDOR_FLOOR_Y - m.height, m.worldZ);
+  const body = project(m.worldX, CORRIDOR_FLOOR_Y - m.height, bodyWorldZ);
   return {
     shadowX: shadow.x, shadowY: shadow.y,
     x: body.x, y: body.y, scale: body.scale,
@@ -6049,17 +6168,6 @@ function renderBarrels() {
 // 14TH ROUND (items 15-16): BODY ONLY — the shadow was already drawn once
 // by renderBarrels() before the player, and must never be redrawn here (see
 // drawBarrelShadow()'s comment above).
-function renderBarrelForeground() {
-  if (!isPlayerInCover()) return;
-  const playerScreenX = state.centerX + state.player.strafeOffset;
-  for (const b of barrels) {
-    if (b.z > BARREL_TOUCH_Z_MAX) continue;
-    const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
-    const radius = barrelCoverRadiusPx(proj);
-    if (Math.abs(proj.x - playerScreenX) < radius) drawBarrelBody(b, proj);
-  }
-}
-
 function drawSpriteCentered(img, cx, bottomY, scale, alpha, extraH) {
   if (!imgReady(img)) {
     // placeholder silhouette
@@ -6378,6 +6486,20 @@ function renderPlayer(theme) {
 // that case, so the real combat PLAYER sprite (ASSETS.player) can never
 // show up during ESCAPE and vice versa.
 // ---------------------------------------------------------------------
+// NEXT ROUND PART M: shared by the live render AND by afterimage capture
+// (updateEscapePlayer()) so a captured ghost is pixel-identical to how the
+// real sprite would have drawn at that moment — pure math, no ctx calls.
+function computeEscapePlayerDrawRect(cx, bottomY, frame, depthPos, dashScalePulse) {
+  const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST
+    * perspectiveScaleFromDepth(depthPos, ESCAPE_DEPTH_SCALE_RANGE) * dashScalePulse;
+  const bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
+  const drawW = frame.img.naturalWidth * bodyScale;
+  const drawH = frame.img.naturalHeight * bodyScale;
+  const dx = cx - frame.wheelCenterXFrac * drawW;
+  const dy = bottomY - frame.wheelBottomFrac * drawH;
+  return { dx, dy, drawW, drawH };
+}
+
 function renderEscapePlayer() {
   const p = state.player;
   const es = state.escape;
@@ -6418,25 +6540,33 @@ function renderEscapePlayer() {
   // 1 on its own (see updateEscapePlayer()), so a South/North DASH reads as
   // a brief +-2% snap layered on whatever depth scale was already in
   // effect, then a clean return to that same normal scale.
-  const targetBodyHeightPx = ASSETS.player.aim.naturalHeight * (state.cssH / 900) * PLAYER_SCALE_BOOST
-    * perspectiveScaleFromDepth(es.depthPos, ESCAPE_DEPTH_SCALE_RANGE) * es.dashScalePulse;
-  const bodyScale = computeBodyVisualScale(frame, targetBodyHeightPx);
   // 11TH ROUND (item 4): the old SOUTH_PULSE_AMPLITUDE (~3%) "breathing"
   // scale pulse is REMOVED for this new loop — it existed only because the
   // old SOUTH pose was a single static image with nothing else to convey
   // motion; the new 5-frame loop already conveys motion by cycling real
   // frames, and item 4 explicitly caps frame-to-frame size variation at
   // ±2%, which a further multiplicative pulse would blow through.
-  const drawW = frame.img.naturalWidth * bodyScale;
-  const drawH = frame.img.naturalHeight * bodyScale;
-
   // Stable anchor: this frame's own measured wheel-bottom/wheel-center-x
   // point (see escapeSpriteFrame()) is pinned to the SAME fixed screen
   // point (cx, bottomY) every frame, regardless of each source image's own
   // padding — so the bike neither grows/shrinks, bounces vertically, nor
   // drifts horizontally when the sprite switches (spec section 3).
-  const dx = cx - frame.wheelCenterXFrac * drawW;
-  const dy = bottomY - frame.wheelBottomFrac * drawH;
+  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
+
+  // NEXT ROUND PART M: draw any live lateral-DASH afterimages BEHIND the
+  // real sprite first — real captured PLAYER-sprite ghosts (see
+  // updateEscapePlayer()), fading out over ESCAPE_AFTERIMAGE_MS, never a
+  // white line/stick (PART O).
+  if (es.afterimages.length) {
+    es.afterimages = es.afterimages.filter((a) => now < a.until);
+    for (const a of es.afterimages) {
+      const spawnMs = a.until - now <= ESCAPE_AFTERIMAGE_MS ? ESCAPE_AFTERIMAGE_MS : ESCAPE_AFTERIMAGE_MS * 0.7;
+      const lifeFrac = Math.max(0, Math.min(1, (a.until - now) / spawnMs));
+      ctx.globalAlpha = lifeFrac * 0.45;
+      ctx.drawImage(a.img, a.dx, a.dy, a.drawW, a.drawH);
+    }
+    ctx.globalAlpha = 1;
+  }
 
   // 11TH ROUND (item 7) / 13TH ROUND (items 7-8): DASH blink — reuses
   // p.invincibleUntil, the SAME i-frame window updateEscapePlayer() sets on
@@ -6449,7 +6579,11 @@ function renderEscapePlayer() {
   // instant invincibility ends. Still never long enough to lose track of
   // the player's position, per item 7's original "操作位置が分からなくな
   // るほど長時間消さないでください".
-  const blinking = now < p.invincibleUntil;
+  // NEXT ROUND PART M: this strobe no longer runs for a lateral (WEST/EAST)
+  // DASH — es.lateralDashBlinkSuppressUntil covers exactly that window,
+  // during which the afterimages above are the DASH's visual tell instead.
+  // SOUTH DASH/NORTH BACKSTEP (out of PART M's scope) keep the blink.
+  const blinking = now < p.invincibleUntil && now >= es.lateralDashBlinkSuppressUntil;
   if (blinking) {
     const dashStartAt = p.invincibleUntil - ESCAPE_DASH_BLINK_MS;
     const elapsed = now - dashStartAt;
@@ -6457,7 +6591,15 @@ function renderEscapePlayer() {
     const phase = Math.floor(elapsed / cycleMs) % 2;
     if (phase === 1) return; // skip this frame's draw — the single "off" half of the blink
   }
-  ctx.drawImage(frame.img, dx, dy, drawW, drawH);
+  // NEXT ROUND PART N: whole sprite leans around the tire/ground-contact
+  // point (cx, bottomY) — pure Canvas transform, no new art — smoothly
+  // toward/away from 0 (see es.leanAngle's own update in updateEscapePlayer()).
+  ctx.save();
+  ctx.translate(cx, bottomY);
+  ctx.rotate(es.leanAngle);
+  ctx.translate(-cx, -bottomY);
+  ctx.drawImage(frame.img, rect.dx, rect.dy, rect.drawW, rect.drawH);
+  ctx.restore();
 }
 
 function renderEnemy(theme) {
@@ -7609,13 +7751,19 @@ function frame(ts) {
     // after the mask/blasts/bullets, so it's never darkened and always sits
     // on top of the tracer (matches the pre-16th-round "player redraws on
     // top of an active bullet" behavior, made unconditional now that there
-    // is no earlier pre-mask draw to leave stale underneath). renderPlayer()/
-    // renderBarrelForeground() are both pure (read state, mutate nothing), so
-    // calling them here only is safe; renderBarrelForeground() right after
-    // keeps COVER's "barrel in front of player" ordering (9TH ROUND, item
-    // 14) intact.
+    // is no earlier pre-mask draw to leave stale underneath).
+    // NEXT ROUND PART P: the old renderBarrelForeground() call that used to
+    // sit here (redrawing the covering BARREL body a second time, ON TOP of
+    // the just-drawn player, for a "barrel occludes player" COVER visual)
+    // is removed — real-device reports showed the PLAYER reading as
+    // sandwiched behind/between BARRELs. Draw order is now the simplified
+    // STAGE/FLOOR -> BARREL -> PLAYER the spec asks for (renderBarrels()
+    // already runs once, before renderPlayer(), earlier in this same
+    // function) — PLAYER always renders in front. COVER's own gameplay
+    // logic (isPlayerInCover()/damage-protection/FIRE-block) is completely
+    // untouched — it was always invisible hit-testing, never tied to this
+    // now-removed visual redraw.
     renderPlayer(theme);
-    renderBarrelForeground();
     // FOLLOWUP FIX: telegraphs (LOCK boxes/▲/target ellipse/bolts) render
     // AFTER the darkness mask so they stay legible as warnings no matter
     // where the flashlight is pointed — see renderEnemyTelegraphs()'s own

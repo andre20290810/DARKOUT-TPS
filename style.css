@@ -86,13 +86,32 @@ html, body {
   background: #05070a;
 }
 #loading-screen[hidden] { display: none; }
+/* NEXT ROUND PART Q: redesigned wordmark — was a wide, gentle classic
+   serif (Georgia, +0.14em spacing, no lean); real user feedback called it
+   generic/insufficiently "dark SF/horror". CSS-only per spec preference
+   (no new font file): font-stretch: condensed + a narrower system sans
+   (Arial Narrow/Helvetica Neue Condensed, with Impact as a bold-condensed
+   fallback where those are missing) covers "narrower", scaleY/scaleX
+   covers "taller", skewX covers "italic/forward-leaning", the tightened
+   negative letter-spacing plus heavier weight covers "sharp/hard-edged",
+   and a layered near-black + dark-red text-shadow (no soft blur radius
+   beyond a small crisp core) gives the dark SF/horror-film read — legible
+   at both this size and #mode-select-title's smaller one (item scoped to
+   BOTH titles equally, see that selector's own copy of this comment).
+   The literal Arabic numeral "2" already in the markup (never roman "II")
+   inherits every one of these properties automatically since it's plain
+   text within the same element — no separate styling, so it never reads
+   as a stylistically separate afterthought. */
 #loading-title {
-  font-family: Georgia, "Times New Roman", Times, serif;
+  font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
+  font-stretch: condensed;
   font-size: 34px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-weight: 900;
+  letter-spacing: -0.01em;
   color: #f2f0ea;
-  text-shadow: 0 2px 10px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.6);
+  transform: skewX(-9deg) scaleY(1.18) scaleX(0.82);
+  display: inline-block;
+  text-shadow: 0 0 2px rgba(0,0,0,0.9), 2px 3px 0 rgba(140,8,8,0.55), 0 4px 14px rgba(0,0,0,0.9);
 }
 
 /* 6TH ROUND PART 3, 7TH ROUND PART 1/2/3: LOADING-screen-only walk loop. A
@@ -187,13 +206,19 @@ html, body {
   color: #9fb0bd;
   border-radius: 4px;
 }
+/* NEXT ROUND PART Q: same redesigned wordmark treatment as #loading-title
+   above (its own comment has the full rationale) — kept in exact sync so
+   the title reads identically wherever it appears. */
 #mode-select-title {
-  font-family: Georgia, "Times New Roman", Times, serif;
+  font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
+  font-stretch: condensed;
   font-size: 30px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-weight: 900;
+  letter-spacing: -0.01em;
   color: #f2f0ea;
-  text-shadow: 0 2px 10px rgba(0,0,0,0.85);
+  transform: skewX(-9deg) scaleY(1.18) scaleX(0.82);
+  display: inline-block;
+  text-shadow: 0 0 2px rgba(0,0,0,0.9), 2px 3px 0 rgba(140,8,8,0.55), 0 4px 14px rgba(0,0,0,0.85);
 }
 #mode-select-subtitle {
   font-size: 12px;
