@@ -8183,18 +8183,40 @@ function renderEnemyTelegraphs(theme) {
     // large perspective relationship (the `scale` argument, untouched) is
     // preserved exactly; only the base radius grows, so at close range this
     // now reads clearly as "a shootable object."
-    const bodyR = 16.5 * scale;
+    // 25TH ROUND VISUAL QC: real screenshot review found that for most of
+    // the flight (mid-range Z-approach, scale ~0.15-0.3) the dart body was
+    // only 2-5px — small enough to visually disappear against ROID1/ROID2's
+    // own similarly-gray claws/limbs in the same screen area (confirmed via
+    // pixel sampling: the shape WAS drawing, but was indistinguishable by
+    // eye from the enemy's own metalwork). A floor keeps it readably-sized
+    // at any distance while the multiplicative scale still dominates once
+    // it grows past the floor (near impact) — "grows bigger as it nears"
+    // is preserved, but it no longer reads as invisible early/mid-flight.
+    const bodyR = Math.max(6, 16.5 * scale);
     if (bodyR < 0.6) return;
     ctx.save();
     ctx.translate(x, y);
     // soft ambient glow for visibility against dark backgrounds — a halo
     // behind the dart, never the dominant shape itself (that was the old
     // "glowing orb" bug this replaces).
-    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, bodyR * 2.1);
-    glow.addColorStop(0, 'rgba(255,160,70,' + (0.4 * hot) + ')');
+    // 25TH ROUND VISUAL QC (2nd pass): first bump (radius 2.1->2.8, alpha
+    // 0.4->0.6) measurably helped but real screenshot re-review still found
+    // it losing a figure-ground fight against ROID2's own bright claws in
+    // the same screen region — pushed further (radius ->3.4, alpha ->0.85)
+    // plus a small solid white-hot core (below) that a soft gradient alone
+    // can't provide, since a radial gradient's OWN center is necessarily
+    // its brightest point but still fades continuously, never giving a
+    // crisp bright dot to anchor on.
+    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, bodyR * 3.4);
+    glow.addColorStop(0, 'rgba(255,180,90,' + (0.85 * hot) + ')');
     glow.addColorStop(1, 'rgba(255,90,40,0)');
     ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(0, 0, bodyR * 2.1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, bodyR * 3.4, 0, Math.PI * 2); ctx.fill();
+    // crisp white-hot core dot — the actual "figure" a player's eye can
+    // latch onto, independent of how busy/similarly-toned the background
+    // behind it is.
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.9 * hot) + ')';
+    ctx.beginPath(); ctx.arc(0, 0, bodyR * 0.55, 0, Math.PI * 2); ctx.fill();
 
     // 25TH ROUND item 1: re-added — the missile is now explicitly THE
     // "approaching head-on, visibly spinning as it nears camera" object a
