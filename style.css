@@ -411,6 +411,128 @@ html, body {
   color: rgba(200,210,220,0.5);
 }
 
+/* RUN FLOW SYSTEM: persistent DISTANCE TO EXIT readout — top-center,
+   deliberately separate from #theme-label's own bottom-center spot so the
+   two never overlap. */
+#distance-readout {
+  position: absolute;
+  top: max(8px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #cfe8ff;
+  text-shadow: 0 0 8px rgba(120,180,255,0.5), 0 1px 2px rgba(0,0,0,0.8);
+  pointer-events: none;
+}
+
+/* RUN FLOW SYSTEM: shared transition banner (COMBAT_INTRO/EVACUATION_
+   WARNING/ESCAPE_COMPLETE/GAME_OVER short text beats). Sits above the HUD,
+   below the RESULT screen. */
+#run-flow-banner {
+  position: absolute;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+  text-align: center;
+  padding: 0 20px;
+}
+#run-flow-banner[hidden] { display: none; }
+#run-flow-banner-title {
+  font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
+  font-stretch: condensed;
+  font-size: clamp(22px, 6vw, 34px);
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: #ff5a5a;
+  text-shadow: 0 0 14px rgba(255,40,40,0.65), 0 2px 4px rgba(0,0,0,0.9);
+}
+#run-flow-banner-sub {
+  font-size: clamp(12px, 3.4vw, 16px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #f2f0ea;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
+
+/* RUN FLOW SYSTEM: RESULT screen — same full-screen DOM overlay pattern as
+   #mode-select-screen, layered above #run-flow-banner (z-index) so it
+   fully replaces the banner once shown. The ENDING scene keeps rendering
+   underneath via the canvas, which sits below both. */
+#result-screen {
+  position: absolute;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#result-screen[hidden] { display: none; }
+#result-overlay-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(3,5,8,0.62);
+}
+#result-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 20px;
+}
+#result-title {
+  font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
+  font-stretch: condensed;
+  font-size: clamp(28px, 8vw, 42px);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #f2f0ea;
+  text-shadow: 0 0 12px rgba(120,180,255,0.4), 0 2px 4px rgba(0,0,0,0.9);
+  margin-bottom: 4px;
+}
+.result-stat-row {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #cfe8ff;
+}
+#result-thanks {
+  margin: 10px 0 6px;
+  font-size: clamp(14px, 4vw, 20px);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #ffd60a;
+  text-shadow: 0 0 10px rgba(255,214,10,0.5), 0 2px 4px rgba(0,0,0,0.9);
+  text-align: center;
+}
+.result-btn {
+  width: min(280px, 78vw);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #f2f0ea;
+  border-radius: 6px;
+  text-decoration: none;
+  display: block;
+}
+.result-btn:active { background: rgba(255,255,255,0.22); }
+.result-btn.gamepad-focused {
+  background: rgba(127,255,212,0.18);
+  border-color: #7fffd4;
+  box-shadow: 0 0 0 2px rgba(127,255,212,0.4), 0 0 14px rgba(127,255,212,0.35);
+}
+
 /* 5TH ROUND PART 14: enemy/boss HP gauge moved from character-overlapping
    top-center to the screen's top-right corner (spec: "画面右上端へ表示",
    "キャラクターspriteには重ねないでください") — stacked directly below

@@ -98,6 +98,14 @@
        audio with sound may start. -->
   <audio id="bgm-audio" src="assets/audio/after_the_limits.mp3" loop preload="auto"></audio>
 
+  <!-- RUN FLOW SYSTEM: ENDING / RESULT BGM ("ENTER INTO ETERNITY Ver.2.0").
+       Deliberately a SEPARATE <audio> element from #bgm-audio above, never
+       looped (plays once through from GAME CLEAR onward) — beginEnding()
+       in game.js pauses #bgm-audio and plays this exactly once (guarded by
+       state.run.endingBgmStarted), and RESULT's own 60-second gate reads
+       this element's real currentTime, never a setTimeout. -->
+  <audio id="ending-bgm-audio" src="assets/audio/enter_into_eternity.mp3" preload="auto"></audio>
+
   <!-- 28TH ROUND item 7: visible guide for the case where the mode-select
        tap/press did NOT actually unlock audio (real-device autoplay-policy
        edge case) or, in CONTROLLER mode, no gamepad button press has been
@@ -150,6 +158,42 @@
     </div>
     <div id="hud-center-warning" hidden></div>
     <div id="theme-label" class="hud-bottom-center">LAB / EXPERIMENT AREA</div>
+    <!-- RUN FLOW SYSTEM: persistent "distance to the exit" readout (spec
+         section 12) — shown from game start through ESCAPE_COMPLETE,
+         updated by updateHud() in game.js. Deliberately NOT a "STAGE 1/5"
+         counter, per the explicit spec instruction. -->
+    <div id="distance-readout">EXIT <span id="distance-readout-value">15000</span>m</div>
+  </div>
+
+  <!-- RUN FLOW SYSTEM: shared short banner reused across every transition
+       phase (COMBAT_INTRO's enemy-name/BATTLE, EVACUATION_WARNING's
+       WARNING/EVACUATE text, ESCAPE_COMPLETE, GAME_OVER) — a single
+       reusable DOM overlay rather than one-off elements per message, shown/
+       hidden and re-texted from game.js (showRunBanner()/hideRunBanner()). -->
+  <div id="run-flow-banner" hidden>
+    <div id="run-flow-banner-title"></div>
+    <div id="run-flow-banner-sub"></div>
+  </div>
+
+  <!-- RUN FLOW SYSTEM: RESULT screen — shown as a UI layer on top of the
+       still-rendering/still-playing ENDING scene (canvas + ending BGM both
+       keep going underneath, per spec addendum section 5). Gamepad-
+       navigable via the SAME focus-index + up/down-edge +
+       .gamepad-focused pattern #mode-select-screen already uses (see
+       updateResultFocusUI()/pollGamepad()'s own RESULT branch in game.js)
+       — no second parallel input scheme invented. ARTIST PAGE is a real
+       <a> (href="#" placeholder, matching #controller-store-link's own
+       existing precedent) rather than a fabricated URL. -->
+  <div id="result-screen" hidden>
+    <div id="result-overlay-dim"></div>
+    <div id="result-panel">
+      <div id="result-title">RESULTS</div>
+      <div class="result-stat-row">SCORE <span id="result-score-value">0</span></div>
+      <div class="result-stat-row">RANK <span id="result-rank-value">D</span></div>
+      <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
+      <button type="button" tabindex="-1" id="result-quit-btn" class="result-btn">QUIT</button>
+      <a id="result-artist-btn" class="result-btn" href="#" target="_blank" rel="noopener">ARTIST PAGE</a>
+    </div>
   </div>
 
   <!-- 4th round: PAUSE button — deliberately OUTSIDE #touch-controls so it
