@@ -2298,6 +2298,21 @@ const ASSETS = {
     // exists; nothing was fabricated). dashN is kept for NORTH dash only.
     dashS: loadImg('assets/player/player_dash_south.png'),
     dashN: loadImg('assets/player/player_dash_north.png'),
+    // FOLLOWUP HOTFIX: SOUTH DASH used a raw, uncalibrated size/anchor
+    // (naturalHeight*scale, bounding-box-centered) while SOUTH WALK uses a
+    // measured body-frac calibration (computeBodyVisualScale + bodyCenterX/
+    // BottomFrac, targeting the AIM pose's own standing height) — two
+    // different padding amounts around the body in the two source photos
+    // meant DASH<->WALK visibly jumped in size/position on transition.
+    // Alpha-channel-measured the same way every other calibrated frame in
+    // this file was (see spriteFrame()'s own comment) via a canvas scan of
+    // the real player_dash_south.png: bodyTopFrac=0.0088, bodyBottom
+    // Frac=0.9853, bodyCenterXFrac=0.4630 (alpha-weighted centroid, exactly
+    // the same method that reproduces southWalkFrames[0]'s own stored
+    // 0.5067 to 4 decimal places). Reuses the SAME dashS image — no new
+    // asset — only its anchor metadata is new. See renderPlayer()'s
+    // usingSouthDashPose branch for where this gets used.
+    dashSouthFrame: coverSpriteFrame('assets/player/player_dash_south.png', 0.0088, 0.9853, 0.4630),
     // EAST/WEST DASH: real direction-specific ACTION-GAME art
     // (right_dash.png / left_dash.png), copied read-only — PART 1.
     dashE: loadImg('assets/player/player_dash_east.png'),
@@ -2637,6 +2652,13 @@ const state = {
     moveDirSouth: false,   // 9TH ROUND: true while the current WALK is a real south move (D-PAD/stick DOWN)
     walkFrame: 0,
     walkTimer: 0,
+    // FOLLOWUP HOTFIX: SOUTH WALK gets its OWN frame counter/timer, cycled
+    // at roughly 2x the shared walkFrame's cadence (see updatePlayer()'s
+    // walk-animation section) — the explicit ask was "SOUTH WALK's frame
+    // SWITCH SPEED only, not movement speed, and not NORTH/strafe" — reusing
+    // p.walkFrame would have doubled every other walk cycle too.
+    southWalkFrame: 0,
+    southWalkTimer: 0,
     dashUntil: 0,          // ms timestamp; screen-space strafe dash pulse
     dashDir: 0,            // -1 west, +1 east
     dashStrafeStart: 0,
@@ -2730,6 +2752,11 @@ const state = {
     // (same recompute-from-a-stored-start pattern the player's own DASH
     // uses) rather than a raw per-frame velocity step.
     clawApproachStartZ: 0,
+    // FOLLOWUP HOTFIX: locked-in screen-X of the player at the moment a
+    // CLAW attack actually commits (telegraph/counterApproach entry) — see
+    // computeEnemyDrawRect()'s own comment for why the attack sprite reads
+    // this instead of the enemy's own lane-based position.
+    attackTargetX: null,
     // 9TH ROUND (item 30-31): GABRIEL/ADAM's own continuous "walking toward
     // camera" loop while in NORMAL/STALKING (attackState==='idle'). GABRIEL
     // reuses a real, previously-unused 3-frame walk cycle already on disk
@@ -4190,8 +4217,37 @@ function togglePauseMenu() {
             gamepadSettleUntil: state.gamepadSettleUntil,
             settlingNow: performance.now() < state.gamepadSettleUntil,
             lastGamepadInputAt: state.lastGamepadInputAt,
+            // FOLLOWUP HOTFIX: Gamepad.timestamp is the browser's own
+            // "this snapshot was captured at DOMHighResTimeStamp X" stamp —
+            // on a real device, if this value is NOT advancing across the
+            // follow-up checks logged below (still-frame diagnostic, ~300/
+            // 1000ms later, tagged 'gamepad RESUME FOLLOWUP'), that is
+            // direct, concrete evidence the browser itself is returning a
+            // FROZEN snapshot post-resume (the WebKit/iOS staleness
+            // pattern this file's own touchGestureReceivedAt comment
+            // already documents for the pre-first-gesture case) rather
+            // than this game's own code failing to read/apply it.
+            gpTimestamp: gp.timestamp,
           }));
           if (DEBUG_MODE) r10DebugLog('GAMEPAD RESUME REARM: axes=' + rawAxes.join(',') + ' anyPressed=' + rawButtons.some(Boolean) + ' falseEdgeGuarded=' + wouldBeFalseEdge);
+          // Two follow-up snapshots (no tap in between) so a real-device
+          // session can see directly whether gp.timestamp/axes ever move on
+          // their own after resume, without needing to also tap to compare.
+          const gpIndexAtResume = state.gamepadIndex;
+          for (const delayMs of [300, 1000]) {
+            setTimeout(() => {
+              if (state.gamepadIndex !== gpIndexAtResume) return; // pad changed/disconnected meanwhile
+              const padsNow = navigator.getGamepads ? navigator.getGamepads() : [];
+              const gpNow = padsNow[gpIndexAtResume];
+              if (!gpNow) return;
+              console.log('[gamepad RESUME FOLLOWUP +' + delayMs + 'ms]', JSON.stringify({
+                at: performance.now(),
+                gpTimestamp: gpNow.timestamp,
+                rawAxes: Array.from(gpNow.axes).map((a) => Number(a.toFixed(3))),
+                anyButtonPressed: gpNow.buttons.some((b) => b && b.pressed),
+              }));
+            }, delayMs);
+          }
         } catch (err) { /* diagnostic-only, never let logging itself break resume */ }
       }
     }
@@ -4208,7 +4264,24 @@ function togglePauseMenu() {
   }
 }
 document.getElementById('pause-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
-document.getElementById('pause-resume-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); togglePauseMenu(); });
+// FOLLOWUP HOTFIX (PAUSE->RESUME gamepad, from-scratch re-investigation):
+// preventDefault() is deliberately NOT called on RESUME specifically (every
+// other button in this file does call it, to block double-tap-zoom/
+// scroll). This is a genuine, testable hypothesis, not a guess dressed up
+// as a fix: on WebKit/iOS, navigator.getGamepads() is documented to return
+// a frozen/stale snapshot until the page receives certain kinds of "real"
+// user activation, and this game's own OWN comment on state.
+// touchGestureReceivedAt (see window's first-pointerdown listener above)
+// already documents that exact platform restriction for gamepad discovery.
+// preventDefault() suppresses the browser's own default handling of the
+// pointer event; it is plausible (not confirmed without real hardware —
+// see the completion report's own honest caveat) that this also suppresses
+// whatever internal activation signal a real, unprevented tap elsewhere on
+// the page provides, matching the exact reported pattern (RESUME's own
+// button tap does not fix it; a SEPARATE tap anywhere else does). Removing
+// it here is low-risk: a single tap on a real <button> element does not
+// need scroll/zoom suppression the way a custom touch-joystick <div> does.
+document.getElementById('pause-resume-btn').addEventListener('pointerdown', () => { togglePauseMenu(); });
 touchToggleBtnEl.addEventListener('pointerdown', (e) => { e.preventDefault(); setTouchControlsVisible(!state.touchControlsVisible); });
 
 // 7TH ROUND PART 11: CONTROLLER AIM SENSITIVITY (LOW/NORMAL/HIGH) — takes
@@ -4519,6 +4592,19 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     p.walkTimer += dt;
     if (p.walkTimer > 0.14) { p.walkTimer = 0; p.walkFrame = (p.walkFrame + 1) % 3; }
     p.facing = 'walk';
+    // FOLLOWUP HOTFIX: SOUTH WALK's own frame cadence — real-device report
+    // was "SOUTH方向の歩行が遅すぎる" (the shared 0.14s-per-frame cadence
+    // above read as a very slow shuffle specifically for SOUTH). Advances
+    // an independent southWalkFrame/southWalkTimer at half the interval
+    // (~2x the flip rate) ONLY while genuinely moving south — movement
+    // speed itself (moveY's effect on forwardDelta/depthPos elsewhere) is
+    // completely untouched, and this never touches p.walkTimer/p.walkFrame
+    // above, so NORTH walk and strafe-only walk keep their exact original
+    // cadence.
+    if (moveY > 0.05) {
+      p.southWalkTimer += dt;
+      if (p.southWalkTimer > 0.07) { p.southWalkTimer = 0; p.southWalkFrame = (p.southWalkFrame + 1) % 3; }
+    }
     // 9TH ROUND (items 7-8): track REAL south movement (D-PAD DOWN/LEFT
     // STICK DOWN, moveY>0 per the same sign convention applyForwardDelta()
     // uses) separately from the pose-state `p.facing` above — this is
@@ -4534,6 +4620,25 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     p.moveDirNorth = moveY < -0.05;
   } else {
     p.facing = 'idle';
+    // FOLLOWUP HOTFIX: root cause of "COVER中に静止しているのに北向き射撃
+    // 姿勢が表示される" — p.moveDirSouth/p.moveDirNorth were only ever
+    // WRITTEN inside the `if (moving)` branch above and never reset back to
+    // false here, so after the player moved south/north and then simply
+    // released the stick while still standing inside a barrel's COVER
+    // radius, the stale true flag alone kept renderPlayer()'s
+    // `usingCoverPose = ... && !p.moveDirNorth && !p.moveDirSouth` gate
+    // permanently false — even though isPlayerInCover() was genuinely true
+    // and FIRE was correctly blocked at the gameplay-logic level. With no
+    // cover pose and p.facing now 'idle' (not 'walk'), img selection fell
+    // all the way through to the default `else img = ASSETS.player.aim` —
+    // the north-facing AIM/FIRE pose — exactly the reported mismatch
+    // between real COVER state and displayed sprite. Resetting both flags
+    // the instant movement input stops fixes this at the root: COVER's own
+    // crouch pose can immediately reclaim the sprite once idle, and a fresh
+    // NORTH/SOUTH press still breaks out of it exactly as before (that
+    // branch is untouched).
+    p.moveDirSouth = false;
+    p.moveDirNorth = false;
   }
 
   // COVER ACTION: facing tracker (NEW) — monitors the SAME moveX/moveY
@@ -4650,20 +4755,17 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     const oldCx = state.centerX + p.strafeOffset;
     const bottomYNow = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
     const frameNow = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
-    // 29TH ROUND (item 8): real-play feedback said 3 simultaneous ghosts
-    // (start/mid/end) read as clutter rather than a single motion streak,
-    // and the start-position ghost specifically looked like it was
-    // overlapping/duplicating the player's own pre-dash pose. Rebuilt to
-    // spawn exactly ONE afterimage per dash, placed 65% of the way from
-    // start to end — clearly past the start point (never overlapping it)
-    // and clearly offset toward the landing position, without sitting
-    // exactly on top of the final resting pose either. newStrafeOffset is
-    // computed FIRST (same clamp math the player's own final position uses
-    // below) so the single snapshot's placement is derived from the true
-    // post-dash landing spot, not a guess.
+    // FOLLOWUP HOTFIX: re-spec'd to the literal "A ----- GHOST ----- B"
+    // midpoint requested — was 65% (skewed toward B), moved to 50% exactly.
+    // Still clearly past the start point (never overlapping A) and clearly
+    // short of the landing pose (never overlapping B) — the middle ground
+    // between the two is what actually sells DASH distance visually.
+    // newStrafeOffset is computed FIRST (same clamp math the player's own
+    // final position uses below) so the single snapshot's placement is
+    // derived from the true post-dash landing spot, not a guess.
     const newStrafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     if (imgReady(frameNow.img)) {
-      const ghostCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.65;
+      const ghostCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
       const ghostRect = computeEscapePlayerDrawRect(ghostCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
       es.afterimages.push({
         img: frameNow.img, dx: ghostRect.dx, dy: ghostRect.dy, drawW: ghostRect.drawW, drawH: ghostRect.drawH,
@@ -6442,6 +6544,7 @@ function spawnEnemy(type) {
   e.roidFireDir = 1;
   e.roidFireFrameElapsedMs = 0;
   e.adamAttackVariantIndex = 0; // 7TH ROUND PART 21 — re-rolled each time a new ADAM attack begins, see updateEnemy()
+  e.attackTargetX = null;
   e.lastShotFiredAt = -Infinity;
   e.lockX = 0; e.lockY = 0;
   e.fireFromX = 0; e.fireFromY = 0; e.fireToX = 0; e.fireToY = 0;
@@ -6917,6 +7020,13 @@ function updateEnemyCore(dt, now) {
         e.z = zMin; // land exactly on the max-approach position, no overshoot/undershoot
         e.attackState = 'telegraph'; // reuses the existing windup-art render state
         e.attackUntil = now + CLAW_WINDUP_MS;
+        // FOLLOWUP HOTFIX: captured ONCE, right as the attack actually
+        // commits — see computeEnemyDrawRect()'s own comment for why this
+        // must be a locked-in snapshot (not re-read every frame): the whole
+        // point is that a player who dodges AFTER this moment visibly beats
+        // an attack sprite still aimed at where they USED to be, not an
+        // attack that always tracks wherever they currently stand.
+        e.attackTargetX = state.centerX + state.player.strafeOffset;
       }
     } else if (e.attackState === 'telegraph') {
       // Second, SHORT reaction window — the real "point of no return" tell
@@ -7543,12 +7653,12 @@ function computeEnemyDrawRect() {
     // 1.10 (neither is "approaching to strike" or "the strike itself", and
     // this round's spec doesn't name them).
     const ADAM_CLAW_APPROACH_SIZE_MULT = 1.10 * 0.90; // item 8: current pre-claw size x0.90
-    // EMERGENCY HOTFIX: the actual CLAW-release/impact pose (not the
-    // approach/windup pose above) gets an additional x1.20 on top of the
-    // existing attack-pose size, per explicit real-device request — this is
-    // the ONLY change to ADAM's sizing in this hotfix; approach/idle/defense
-    // sizes above and below are untouched.
-    const ADAM_CLAW_RELEASE_SIZE_MULT = 1.10 * 1.07 * 1.20;
+    // FOLLOWUP HOTFIX: additional x1.5 on top of the CURRENT (already
+    // x1.20-boosted, see the EMERGENCY HOTFIX comment this replaces) attack-
+    // connecting size, per explicit new real-device request ("現在比 約1.5
+    // 倍"). Strictly the release/impact pose only — approach/windup above is
+    // completely untouched, per the same explicit instruction.
+    const ADAM_CLAW_RELEASE_SIZE_MULT = 1.10 * 1.07 * 1.20 * 1.5;
     const ADAM_ATTACK_POSE_SIZE_MULT = {
       blink: 1.10,
       telegraph: ADAM_CLAW_APPROACH_SIZE_MULT,
@@ -7559,13 +7669,35 @@ function computeEnemyDrawRect() {
     };
     const adamMeleeSizeBoost = (!isGabriel && BOSS_ATTACK_ACTIVE_STATES[e.attackState])
       ? (ADAM_ATTACK_POSE_SIZE_MULT[e.attackState] || 1.10) : 1;
-    const drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost;
+    // FOLLOWUP HOTFIX: GABRIEL had NO windup-specific size adjustment at all
+    // (the ADAM table above is explicitly `!isGabriel`-gated) — real-device
+    // report was its windup/telegraph pose reading too large (and, combined
+    // with the south-boundary/label clamp above, too low). A modest, windup-
+    // only reduction; GABRIEL's release/impact pose and idle/walk size are
+    // completely untouched (this round's spec names the windup specifically).
+    const gabrielWindupSizeMult = (isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach')) ? 0.82 : 1;
+    const drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost * gabrielWindupSizeMult;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
     const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));
     const anchorFrac = 1.0 - closeT * 0.45;
     let drawBottomY = proj.y + (1 - anchorFrac) * drawH;
-    const drawX = proj.x - drawW / 2;
+    // FOLLOWUP HOTFIX: root cause of "BOSSの攻撃spriteが常に画面中央固定" —
+    // drawX was always derived from proj.x, which tracks the enemy's own
+    // WORLD lane (e.lane), not the player's screen position — since GABRIEL/
+    // ADAM only have a single forward-facing sprite (no real left/right art
+    // to fabricate), the ONLY correct way to show "this attack targets your
+    // side" is to move the drawn sprite's X to the target's own X. Uses the
+    // locked-in e.attackTargetX snapshot (captured once, the instant the
+    // attack actually commits — see its own comment at the telegraph/
+    // counterApproach entry points) rather than the player's LIVE position,
+    // so a player who dodges after the attack starts visibly beats an
+    // attack sprite still aimed at their old spot — never an attack that
+    // magically re-tracks onto a dodge. idle/approach/blink/defense keep
+    // the original world-lane position (e.lane already drifts toward the
+    // player ambiently during those — see updateEnemyFacing()).
+    const anchorX = (BOSS_ATTACK_X_TRACK_STATES[e.attackState] && e.attackTargetX != null) ? e.attackTargetX : proj.x;
+    const drawX = anchorX - drawW / 2;
     // 29TH ROUND item 5: root cause of "GABRIEL/ADAMが主人公を追い越して南
     // へ出る" — the CLAW attack's 'approach' sub-state closes e.z to a FIXED
     // world constant (GABRIEL_Z_MIN/ADAM_Z_MIN), tuned for COMBAT mode's
@@ -7577,13 +7709,32 @@ function computeEnemyDrawRect() {
     // hit-test), so the boss can still close in for real (size/pose/effects
     // keep doing the work per spec: "近接攻撃の迫力はサイズ・攻撃ポーズ・
     // エフェクトで表現") but its drawn body can never cross the player's own
-    // shoe-bottom line. COMBAT mode is untouched (state.gameMode check).
+    // shoe-bottom line.
+    // FOLLOWUP HOTFIX: this clamp used to be ESCAPE-only ("COMBAT mode is
+    // untouched"), but the same "GABRIEL physically passes the player" issue
+    // is exactly as possible in COMBAT — real-device report explicitly named
+    // it. COMBAT's own player south edge is the SAME fixed bottomY constant
+    // renderPlayer() itself anchors the standing/AIM pose to (state.cssH *
+    // 1.02) — reused here rather than re-measuring, so this can never drift
+    // out of sync with wherever the player actually stands.
     if (state.gameMode === 'escape') {
       const footY = escapePlayerFootY();
       if (drawBottomY > footY) drawBottomY = footY;
+    } else if (state.gameMode === 'combat') {
+      // FOLLOWUP HOTFIX: the player's own bottomY (state.cssH*1.02) can sit
+      // BELOW the live stage-name label position on some screen sizes —
+      // exactly why renderPlayer() itself clamps against the label's real
+      // getBoundingClientRect(), not just this fixed constant (see its own
+      // EMERGENCY HOTFIX comment). Reusing that same live measurement +
+      // margin here so GABRIEL/ADAM's own south edge honors both bounds at
+      // once ("PLAYERの許容最前面ラインを越えない" AND "stage labelへ重なら
+      // ない" are the same underlying player-standing-line constraint).
+      const labelTopY = themeLabelEl.getBoundingClientRect().top;
+      const footY = Math.min(state.cssH * 1.02, labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX);
+      if (drawBottomY > footY) drawBottomY = footY;
     }
     const drawTopY = drawBottomY - drawH;
-    return { img, proj, x: drawX, y: drawTopY, w: drawW, h: drawH, cx: proj.x, cy: drawTopY + drawH * 0.42 };
+    return { img, proj, x: drawX, y: drawTopY, w: drawW, h: drawH, cx: anchorX, cy: drawTopY + drawH * 0.42 };
   }
 
   // PART 2/3: ROID1/ROID2 — real direction-specific SEARCH art selected by
@@ -8021,8 +8172,18 @@ function updateBullets(now) {
       // GABRIEL/ADAM's own distinct blocked-hit feedback and re-arm
       // bookkeeping instead). ROID1/ROID2 never reach here (isClawBoss is
       // false for them) — item 42.
+      // FOLLOWUP HOTFIX: real-device report — GABRIEL's DEFENSE state made
+      // it "nearly impossible to defeat" because it fully nullified
+      // damage. Per explicit new spec, DEFENSE is now VISUAL ONLY: the
+      // pose/animation stays exactly as-is (still selected the same way
+      // below), but a hit connecting during 'defense' now deals real
+      // damage like any other state — 'defense' removed from this gate.
+      // counterApproach/counterAttack (a distinct mechanic — the punish-
+      // window after repeatedly shooting the same spot, see
+      // updateGabrielAdamReaim()) are untouched and still block, since the
+      // user's spec named DEFENSE specifically, not COUNTER.
       const isClawBoss = e.type === 'gabriel' || e.type === 'adam';
-      if (isClawBoss && (e.attackState === 'defense' || e.attackState === 'counterApproach' || e.attackState === 'counterAttack')) {
+      if (isClawBoss && (e.attackState === 'counterApproach' || e.attackState === 'counterAttack')) {
         // item 25-26: visually distinct 0-damage block — a small blue-white
         // spark burst (reuses the existing 'spark' particle type, just at a
         // cool tint via a dedicated color, never the plain player-impact
@@ -8145,6 +8306,9 @@ function updateBullets(now) {
             e.clawApproachStartZ = e.z;
             e.invulnerable = true;
             e.hitInCurrentDefenseCycle = 0;
+            // FOLLOWUP HOTFIX: same locked-in target-X snapshot as the
+            // normal telegraph entry above — see computeEnemyDrawRect().
+            e.attackTargetX = state.centerX + state.player.strafeOffset;
             if (DEBUG_MODE) r10DebugLog('COUNTER TRIGGERED (' + (ENEMY_LABEL[e.type] || e.type) + ' @' + e.defenseHitsTotal + ' total hits)');
           } else if (e.hitInCurrentDefenseCycle >= GABRIEL_ADAM_DEFENSE_HIT_CYCLE) {
             e.attackState = 'defense';
@@ -8583,6 +8747,51 @@ function renderStructure(s, theme) {
   }
 }
 
+// FOLLOWUP HOTFIX: real-device re-report — existing stage lights (this
+// theme's warningLight lamps) must stay visibly glowing/blinking even
+// OUTSIDE the player's own SPOTLIGHT circle, since they're meant to read as
+// self-lit fixtures, not passive geometry the flashlight has to reveal. The
+// EMERGENCY HOTFIX above intentionally removed the old post-mask second
+// pass entirely because it redrew full corridor/ceiling/wall STRUCTURE
+// (including literal line/bar shapes like 'ceilingLight') after
+// renderFlashlightMask() but before the boss's own only other draw call,
+// which is what caused corridor lines to paint over GABRIEL/ADAM. This is
+// a deliberately much narrower fix: ONLY warningLight's own already-pure-
+// emissive glow (a soft radial arc + small bright core — no line/bar
+// geometry at all, see the 'warningLight' case above) is redrawn, in its
+// own dedicated function, never through the generic renderStructure()/
+// renderCorridor() pass machinery — so no other structure kind (corridor/
+// ceiling/wall lines, or any kind added later) can ever accidentally be
+// swept into this post-mask pass again. 'ceilingLight' is deliberately
+// EXCLUDED here: it is implemented as a literal stroked line/bar (see its
+// own case above), so redrawing it post-mask would be exactly the banned
+// "line redrawn after the mask" pattern — it stays pre-mask-only, dimming
+// with the flashlight like normal passive geometry, same as before this
+// round. No new light object/color/shape is introduced — this is the
+// EXACT SAME warningLight draw code as the pre-mask case, called a second
+// time for visibility only.
+function renderWarningLightsEmissive(theme) {
+  const half = CORRIDOR_HALF_WIDTH;
+  for (const s of structures) {
+    if (s.kind !== 'warningLight') continue;
+    const side = s.phase > Math.PI ? 1 : -1;
+    const pt = project(side * half * 0.96, CORRIDOR_CEIL_Y * 0.55, s.z);
+    const blink = Math.sin(state.timeSec * 6 + s.phase) > 0.4;
+    if (!blink) continue;
+    ctx.save();
+    ctx.fillStyle = theme.warn;
+    ctx.globalAlpha = Math.min(0.35, pt.scale * 0.5);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, Math.max(4, 14 * pt.scale), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = Math.min(1, pt.scale * 1.6);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, Math.max(1.5, 4 * pt.scale), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 // EMERGENCY HOTFIX (pre-launch): the 30TH ROUND post-mask 'selfLit' second
 // pass (drawing ceilingLight/warningLight/labCeilingLight AFTER
 // renderFlashlightMask()) is removed. Root cause it introduced: in the
@@ -8843,6 +9052,12 @@ function drawColorTintedSprite(img, dx, dy, w, h, rgb, tintAlpha) {
 // PLAYER ordering; renderEnemyHitFlash() right after still layers its own
 // red damage tint on top when both happen to be active on the same frame.
 const BOSS_ATTACK_ACTIVE_STATES = { blink: true, telegraph: true, impact: true, counterApproach: true, counterAttack: true, defense: true };
+// FOLLOWUP HOTFIX: subset of the above that also gets X-position tracking
+// toward the locked-in attack target — see computeEnemyDrawRect()'s own
+// comment. Narrower than BOSS_ATTACK_ACTIVE_STATES (which also drives the
+// size boost) since 'blink'/'defense' are guard/reaction poses, not a
+// directional lunge toward a side.
+const BOSS_ATTACK_X_TRACK_STATES = { telegraph: true, counterApproach: true, impact: true, counterAttack: true };
 function renderBossAttackFullBody() {
   const e = state.enemy;
   if (e.kind !== 'claw' || e.deathState !== 'alive') return;
@@ -9028,7 +9243,7 @@ function renderPlayer(theme) {
   // down reassigns img — excluding dashActive here instead keeps the same
   // net behavior: DASH always wins, exactly like before).
   const usingSouthWalkPose = !usingCoverPose && !dashActive && !p.reloading && !firing && p.facing === 'walk' && p.moveDirSouth;
-  const southWalkFrame = usingSouthWalkPose ? ASSETS.player.southWalkFrames[p.walkFrame] : null;
+  const southWalkFrame = usingSouthWalkPose ? ASSETS.player.southWalkFrames[p.southWalkFrame] : null;
 
   let img;
   if (usingCoverPose) img = coverFrame.img; // readiness checked below before this is ever flipped/drawn
@@ -9056,8 +9271,14 @@ function renderPlayer(theme) {
   // stay untouched) — gated strictly on `nowTs < p.dashUntil` (the
   // east/west-only timer), never `p.fwdDashUntil` (north/south).
   let dashSideScale = 1;
+  // FOLLOWUP HOTFIX: tracked separately from the raw `img` assignment below
+  // so the drawW/drawH/dx/dy section further down can apply the SAME
+  // calibrated body-frac anchoring SOUTH WALK uses (see ASSETS.player.
+  // dashSouthFrame's own comment) instead of the generic bounding-box
+  // sizing every other DASH pose still correctly uses.
+  const usingSouthDashPose = nowTs < p.fwdDashUntil && p.fwdDashSign < 0;
   if (nowTs < p.fwdDashUntil) {
-    img = p.fwdDashSign > 0 ? ASSETS.player.dashN : ASSETS.player.dashS;
+    img = p.fwdDashSign > 0 ? ASSETS.player.dashN : ASSETS.player.dashSouthFrame.img;
     fireScaleBoost = 1;
   } else if (nowTs < p.dashUntil) {
     img = p.dashDir > 0 ? ASSETS.player.dashE : ASSETS.player.dashW;
@@ -9123,6 +9344,20 @@ function renderPlayer(theme) {
     drawH = southWalkFrame.img.naturalHeight * bodyScale;
     dx = cx - southWalkFrame.bodyCenterXFrac * drawW;
     dy = bottomY - southWalkFrame.bodyBottomFrac * drawH;
+  } else if (usingSouthDashPose) {
+    // FOLLOWUP HOTFIX: identical calibrated-anchor treatment to the SOUTH
+    // WALK branch above (same standingBodyHeightPx target, same
+    // computeBodyVisualScale/bodyCenterXFrac/bodyBottomFrac pattern) using
+    // ASSETS.player.dashSouthFrame's measured metadata — this is what
+    // makes SOUTH DASH<->SOUTH WALK read as the same on-screen body size
+    // and foot position instead of jumping on transition.
+    const standingBodyHeightPx = ASSETS.player.aim.naturalHeight * baseScale * p.scale;
+    const frame = ASSETS.player.dashSouthFrame;
+    const bodyScale = computeBodyVisualScale(frame, standingBodyHeightPx);
+    drawW = frame.img.naturalWidth * bodyScale;
+    drawH = frame.img.naturalHeight * bodyScale;
+    dx = cx - frame.bodyCenterXFrac * drawW;
+    dy = bottomY - frame.bodyBottomFrac * drawH;
   } else {
     drawH = img.naturalHeight * baseScale * p.scale * dashSideScale;
     drawW = img.naturalWidth * baseScale * p.scale * dashSideScale;
@@ -9772,17 +10007,29 @@ function renderMissileProjectiles(zFilter) {
 function renderEscapeDecoy() {
   const d = state.escape.decoy;
   if (!d.active) return;
+  // FOLLOWUP HOTFIX: complete redesign per explicit spec — the old yellow
+  // rotated-square "UI diamond" marker is gone entirely (no LOCK-marker
+  // symbol, no diamond, no yellow anything). A DECOY must read as the
+  // PLAYER'S OWN semi-transparent shadow/double — reuses the exact same
+  // real run-frame image and tire-contact anchor math the real player's
+  // own renderEscapePlayer() uses (computeEscapePlayerDrawRect(), same
+  // wheelCenterXFrac/wheelBottomFrac calibration), just offset to one side
+  // and drawn translucent. This is a static double (no DASH tilt/rotation
+  // — the player's body did not move), never more than one on screen (d
+  // itself is a single-slot field, a new throw overwrites it — see
+  // updateEscapeDecoy()), and fades out naturally over its last 400ms.
+  const es = state.escape;
+  const p = state.player;
   const now = performance.now();
-  const pulse = 0.55 + 0.45 * Math.sin(now * 0.012);
+  const frame = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
+  if (!imgReady(frame.img)) return;
+  const cx = state.centerX + p.strafeOffset + d.side * DECOY_SCREEN_OFFSET_PX;
+  const bottomY = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
+  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, 1);
+  const fadeAlpha = clamp((d.until - now) / 400, 0, 1);
   ctx.save();
-  ctx.translate(d.x, d.y);
-  ctx.rotate(Math.PI / 4);
-  ctx.fillStyle = 'rgba(255,176,60,' + (0.55 + 0.3 * pulse) + ')';
-  ctx.strokeStyle = 'rgba(255,220,140,0.9)';
-  ctx.lineWidth = 2;
-  const s = 12;
-  ctx.fillRect(-s, -s, s * 2, s * 2);
-  ctx.strokeRect(-s, -s, s * 2, s * 2);
+  ctx.globalAlpha = 0.45 * fadeAlpha;
+  ctx.drawImage(frame.img, rect.dx, rect.dy, rect.drawW, rect.drawH);
   ctx.restore();
 }
 
@@ -10198,8 +10445,14 @@ function isAimOnEffectiveHit() {
   // check), so neither path can ever "see through" DEFENSE. Scoped to
   // GABRIEL/ADAM only — ROID1/ROID2's own counter-phase is untouched
   // (item 42; it never checked e.invulnerable here before this round either).
+  // FOLLOWUP HOTFIX: DEFENSE is now visual-only (see updateBullets()'s own
+  // isClawBoss gate) — a real hit during 'defense' deals real damage, so
+  // the RED "effective hit" indicator must now show during DEFENSE too
+  // (never let the crosshair lie about whether firing would actually deal
+  // damage). counterApproach/counterAttack still block real damage, so
+  // they still suppress RED here, unchanged.
   if ((e.type === 'gabriel' || e.type === 'adam') &&
-      (e.attackState === 'defense' || e.attackState === 'counterApproach' || e.attackState === 'counterAttack')) {
+      (e.attackState === 'counterApproach' || e.attackState === 'counterAttack')) {
     return false;
   }
   // 12TH ROUND (items 60-75, item f): the live falling PROJECTILE is its
@@ -10789,6 +11042,11 @@ function frame(ts) {
     // "behind the drum can" redraw moves with it (was previously paired
     // with this now-removed early draw).
     renderFlashlightMask();
+    // FOLLOWUP HOTFIX: warningLight's own pure-emissive glow redraw — see
+    // renderWarningLightsEmissive()'s own comment for exactly why this is
+    // safe (no line/bar geometry, never the generic corridor pass) where
+    // the earlier full post-mask pass was not.
+    renderWarningLightsEmissive(theme);
     // 27TH ROUND item 2: renderBarrels() no longer runs here — see the
     // single call site right after renderCorridor() above (background ->
     // STAGE OBJECTS -> enemy), which fixes barrels drawing on top of the
