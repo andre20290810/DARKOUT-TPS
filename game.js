@@ -5769,6 +5769,7 @@ function getMissileProjectileVisual(e) {
     shadowX: shadow.x, shadowY: shadow.y,
     x: body.x, y: body.y, scale: body.scale,
     hitRadius: MISSILE_PROJECTILE_HIT_RADIUS_PX * body.scale,
+    bodyWorldZ, // 30TH ROUND item 18: exposed so renderMissileProjectiles() can compare against the PLAYER's own live world Z for depth-aware draw order
   };
 }
 
@@ -7142,6 +7143,7 @@ function getBarrageProjectileVisual(m) {
   return {
     shadowX: shadow.x, shadowY: shadow.y,
     x: body.x, y: body.y, scale: body.scale,
+    bodyWorldZ, // 30TH ROUND item 18: see getMissileProjectileVisual()'s own comment
   };
 }
 
@@ -9346,11 +9348,32 @@ function renderMissileLaunchFlash(flashUntil) {
 // while the real damage hit-test (updateBullets()'s own missile-interception
 // logic) is completely untouched — only the VISUAL draw order moved, never
 // the collision timing.
-function renderMissileProjectiles() {
+// 30TH ROUND item 18: PLAYER-vs-PROJECTILE depth-aware draw order. Root
+// cause of "ミサイルが常に主人公の前/後ろに固定" — the 26TH ROUND fix above
+// only solved missiles always drawing OVER the player; it made them always
+// draw UNDER the player instead (a single fixed call site, always before
+// renderPlayer()/renderEscapePlayer()), which is just as wrong once the dart
+// closes in near/past the player's own depth — the same "which one is
+// actually nearer the camera" comparison renderCollapseObstacles() already
+// solves for boss-vs-debris (see its own zFilter comment). zFilter here
+// mirrors that pattern exactly: undefined draws everything (used by callers
+// that don't yet split, kept for safety/back-compat), 'behindPlayer' draws
+// only bodies whose bodyWorldZ is still farther than the PLAYER's own live
+// world Z (so the player correctly occludes them), 'frontOfPlayer' draws
+// only bodies that have now closed to or past the player's depth (so THEY
+// correctly occlude the player for that final closing-in/impact moment).
+// The floor-anchored, non-competing telegraphs (LOCK ▲, target-area glow,
+// launch flash) stay in the 'behindPlayer' pass only — they're floor decals
+// at the player's own feet, not depth-competing flying bodies.
+function renderMissileProjectiles(zFilter) {
   const e = state.enemy;
   const now = performance.now();
+  const playerWorldZ = MISSILE_TARGET_BASE_WORLD_Z - state.player.depthPos * MISSILE_TARGET_WORLD_Z_RANGE;
+  const drawBehind = !zFilter || zFilter === 'behindPlayer';
+  const drawFront = !zFilter || zFilter === 'frontOfPlayer';
   if (e.kind === 'missile') {
     if (e.attackState === 'lockon') {
+      if (!drawBehind) return;
       const m = playerMarkerPos();
       const blink = Math.sin(now * 0.02) > 0;
       if (blink) {
@@ -9365,35 +9388,40 @@ function renderMissileProjectiles() {
         ctx.restore();
       }
     } else if (e.attackState === 'target') {
-      const progress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
-      const sc = e.missileTargetScale || 1;
-      const rx = (24 + progress * 10) * sc, ry = (9 + progress * 4) * sc;
-      const brighten = 0.4 + 0.3 * progress; // brief, understated -- never flickers
-      ctx.save();
-      ctx.fillStyle = 'rgba(230,230,236,' + (0.28 * brighten) + ')';
-      ctx.beginPath();
-      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(240,240,245,' + (0.3 + 0.25 * brighten) + ')';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+      if (drawBehind) {
+        const progress = clamp(1 - (e.attackUntil - now) / MISSILE_TARGET_MS, 0, 1);
+        const sc = e.missileTargetScale || 1;
+        const rx = (24 + progress * 10) * sc, ry = (9 + progress * 4) * sc;
+        const brighten = 0.4 + 0.3 * progress; // brief, understated -- never flickers
+        ctx.save();
+        ctx.fillStyle = 'rgba(230,230,236,' + (0.28 * brighten) + ')';
+        ctx.beginPath();
+        ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(240,240,245,' + (0.3 + 0.25 * brighten) + ')';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(e.missileTargetX, e.missileTargetY, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        renderMissileLaunchFlash(e.missileLaunchFlashUntil);
+      }
 
       if (!e.missileDestroyed && e.missileHeight > 0.5) {
         const pv = getMissileProjectileVisual(e);
-        const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
-        ctx.save();
-        const shadowRx = 16 * pv.scale, shadowRy = 6 * pv.scale;
-        ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
-        ctx.beginPath();
-        ctx.ellipse(pv.shadowX, pv.shadowY, shadowRx, shadowRy, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-        drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
+        const bodyIsBehind = pv.bodyWorldZ > playerWorldZ;
+        if ((bodyIsBehind && drawBehind) || (!bodyIsBehind && drawFront)) {
+          const heightFrac = clamp(e.missileHeight / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
+          ctx.save();
+          const shadowRx = 16 * pv.scale, shadowRy = 6 * pv.scale;
+          ctx.fillStyle = 'rgba(0,0,0,' + (0.55 - 0.15 * heightFrac) + ')';
+          ctx.beginPath();
+          ctx.ellipse(pv.shadowX, pv.shadowY, shadowRx, shadowRy, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+          drawMissileDartBody(pv.x, pv.y, pv.scale, 0.6 + 0.4 * (1 - heightFrac));
+        }
       }
-      renderMissileLaunchFlash(e.missileLaunchFlashUntil);
     }
     return;
   }
@@ -9402,6 +9430,8 @@ function renderMissileProjectiles() {
     for (const m of e.barrage) {
       if (m.impacted || m.height <= 0.5) continue;
       const pv = getBarrageProjectileVisual(m);
+      const bodyIsBehind = pv.bodyWorldZ > playerWorldZ;
+      if (!((bodyIsBehind && drawBehind) || (!bodyIsBehind && drawFront))) continue;
       const heightFrac = clamp(m.height / MISSILE_PROJECTILE_START_HEIGHT, 0, 1);
       const brighten = 0.4 + 0.3 * (1 - heightFrac);
       ctx.save();
@@ -10375,8 +10405,14 @@ function frame(ts) {
     // now (was previously drawn via renderEnemyTelegraphs() AFTER the
     // player further below, which let it visibly overlay the player sprite
     // mid-flight/at impact — spec explicitly bans that).
-    renderMissileProjectiles();
+    // 30TH ROUND item 18: that single always-before fix over-corrected — a
+    // dart that has closed to/past the PLAYER's own depth (about to hit, or
+    // already flying past) needs to draw OVER the player for that instant,
+    // same real depth-compare split renderCollapseObstacles() already uses
+    // for boss-vs-debris. See renderMissileProjectiles()'s own comment.
+    renderMissileProjectiles('behindPlayer');
     renderEscapePlayer();
+    renderMissileProjectiles('frontOfPlayer');
     // 9TH ROUND (item 20): ESCAPE MODE has no LIGHT at all — it is a
     // survive-until-TIME-LIMIT mode, not explore-in-darkness, so the
     // darkness mask/flashlight is never drawn here (was previously called
@@ -10433,7 +10469,11 @@ function frame(ts) {
     // renderBlasts() just above) but BEFORE renderPlayer() below, so the
     // player sprite always renders in front of an approaching/impacting
     // missile instead of the missile overlaying it.
-    renderMissileProjectiles();
+    // 30TH ROUND item 18: only the BEHIND-player half draws here now — see
+    // renderMissileProjectiles()'s own comment for the depth-compare split.
+    // The FRONT-of-player half is called again right after renderPlayer()
+    // below.
+    renderMissileProjectiles('behindPlayer');
     // PART 8 (3rd round): renderBullets() (the player's own tracer) must run
     // AFTER the darkness mask, same bug class as renderEnemyTelegraphs()
     // below — otherwise any tracer segment landing outside the lit circle
@@ -10458,6 +10498,10 @@ function frame(ts) {
     // untouched — it was always invisible hit-testing, never tied to this
     // now-removed visual redraw.
     renderPlayer(theme);
+    // 30TH ROUND item 18: the half of any missile/barrage dart that has now
+    // closed to/past the PLAYER's own depth draws here, on top of the just-
+    // drawn player sprite — see renderMissileProjectiles()'s own comment.
+    renderMissileProjectiles('frontOfPlayer');
     // FOLLOWUP FIX: telegraphs (LOCK boxes/▲/target ellipse/bolts) render
     // AFTER the darkness mask so they stay legible as warnings no matter
     // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
@@ -10588,7 +10632,7 @@ window.__darkoutTps = {
   // effective-hit/FOCUS/LIGHT unification — exposed for automated testing
   // only.
   project, perspectiveScaleFromDepth, getEffectiveHitPoint,
-  getMissileProjectileVisual, currentPlayerFloorScreenPos,
+  getMissileProjectileVisual, currentPlayerFloorScreenPos, renderMissileProjectiles,
   refreshMissileTargetScreenPos, setDebugPanelVisible,
   MAG_SIZE, RESERVE_MAX, PLAYER_MAX_HP,
   MISSILE_TARGET_BASE_WORLD_Z, MISSILE_TARGET_WORLD_Z_RANGE,
