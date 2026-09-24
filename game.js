@@ -6806,7 +6806,29 @@ function computeEnemyDrawRect() {
     // states specifically, so idle/stalking size is completely unaffected —
     // this stacks with, not replaces, the 27TH ROUND item 3 close-range
     // closeBoost above.
-    const adamMeleeSizeBoost = (!isGabriel && BOSS_ATTACK_ACTIVE_STATES[e.attackState]) ? 1.10 : 1;
+    // 30TH ROUND items 7-8: the flat 1.10 above no longer distinguishes the
+    // pre-CLAW windup/approach pose from the actual CLAW release/impact —
+    // spec asks for a deliberate contrast between them (approach: slightly
+    // MODEST, release: bigger than the old flat 1.10), each expressed as a
+    // multiplier on that SAME existing 1.10 baseline. telegraph/
+    // counterApproach are the "most-approached, about to strike" poses
+    // (windup art); impact/counterAttack are the actual strike-connecting
+    // poses (release art) — see the img-selection logic above for exactly
+    // which state uses which art. defense/blink are left at the original
+    // 1.10 (neither is "approaching to strike" or "the strike itself", and
+    // this round's spec doesn't name them).
+    const ADAM_CLAW_APPROACH_SIZE_MULT = 1.10 * 0.90; // item 8: current pre-claw size x0.90
+    const ADAM_CLAW_RELEASE_SIZE_MULT = 1.10 * 1.07;  // item 7: current attack size x1.07
+    const ADAM_ATTACK_POSE_SIZE_MULT = {
+      blink: 1.10,
+      telegraph: ADAM_CLAW_APPROACH_SIZE_MULT,
+      counterApproach: ADAM_CLAW_APPROACH_SIZE_MULT,
+      impact: ADAM_CLAW_RELEASE_SIZE_MULT,
+      counterAttack: ADAM_CLAW_RELEASE_SIZE_MULT,
+      defense: 1.10,
+    };
+    const adamMeleeSizeBoost = (!isGabriel && BOSS_ATTACK_ACTIVE_STATES[e.attackState])
+      ? (ADAM_ATTACK_POSE_SIZE_MULT[e.attackState] || 1.10) : 1;
     const drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
