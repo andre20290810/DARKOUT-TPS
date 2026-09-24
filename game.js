@@ -157,6 +157,10 @@ const ESCAPE_DEPTH_DASH_NUDGE = 0.35; // brief depthPos push on NORTH/SOUTH inst
 // dashScalePulse (a separate, brief size-only effect) stays unclamped, per
 // spec's explicit allowance.
 const ESCAPE_DEPTH_SOUTH_LIMIT = -0.3;
+// 30TH ROUND item 10: small safety margin (px) for the NEW live-measured
+// stage-label clamp in renderEscapePlayer() — see its own comment for why
+// this replaced relying on ESCAPE_DEPTH_SOUTH_LIMIT alone.
+const ESCAPE_LABEL_CLAMP_MARGIN_PX = 6;
 // 13TH ROUND (item 1): decay rate for the NORTH/SOUTH DASH scale pulse
 // (1/rate ~= the time constant) — ~120ms, short enough to read as a snap,
 // never a residual offset from the normal depth-based perspective scale.
@@ -8499,7 +8503,38 @@ function renderEscapePlayer() {
   // point (cx, bottomY) every frame, regardless of each source image's own
   // padding — so the bike neither grows/shrinks, bounces vertically, nor
   // drifts horizontally when the sprite switches (spec section 3).
-  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
+  let rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
+
+  // 30TH ROUND item 10: root cause of "real device でもまだテキストに重なる"
+  // — the previous fix (29TH ROUND item 7) only clamped the DEPTHPOS INPUT
+  // (ESCAPE_DEPTH_SOUTH_LIMIT), calibrated once against ONE tested viewport's
+  // measured getBoundingClientRect().top for the label. That margin is a
+  // hardcoded pixel/depthPos relationship — it does not account for a
+  // different real-device viewport height/aspect, a different safe-area-
+  // inset (notch) shifting the label's actual position, OR (explicitly
+  // named in this round's report) the SOUTH DASH's dashScalePulse, which
+  // grows drawH independent of depthPos/bottomY — the anchor point itself
+  // never moves, but any sprite pixels below the anchor (wheelBottomFrac)
+  // extend further down as the pulse scales the sprite up, unclamped by the
+  // old depthPos-only limit. Fixed generally (any theme, since
+  // #theme-label is the SAME shared DOM element/position for every theme,
+  // never LAB-specific markup) by measuring the label's REAL, LIVE
+  // getBoundingClientRect().top every frame and clamping the ACTUAL
+  // rendered sprite's bottom edge (rect.dy + rect.drawH, already including
+  // the DASH scale pulse) to stay above it — a genuine measured-vs-real
+  // check, not a pre-computed magic constant. The old ESCAPE_DEPTH_SOUTH_
+  // LIMIT input clamp is left in place (harmless, reduces how far this new
+  // clamp ever needs to push), but this is now the authoritative guarantee.
+  const labelTopY = themeLabelEl.getBoundingClientRect().top;
+  const spriteBottomY = rect.dy + rect.drawH;
+  const overflowPx = spriteBottomY - (labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX);
+  if (overflowPx > 0) {
+    rect = computeEscapePlayerDrawRect(cx, bottomY - overflowPx, frame, es.depthPos, es.dashScalePulse);
+  }
+  // DEBUG-only trace fields (also useful for the DEBUG panel) — never read
+  // by any gameplay logic.
+  es.debugLabelTopY = labelTopY;
+  es.debugSpriteBottomY = rect.dy + rect.drawH;
 
   // NEXT ROUND PART M: draw any live lateral-DASH afterimages BEHIND the
   // real sprite first — real captured PLAYER-sprite ghosts (see
