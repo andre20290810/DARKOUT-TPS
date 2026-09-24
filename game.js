@@ -281,6 +281,22 @@ const COLLAPSE_MAX_INTERVAL_MS = 15000;
 // without returning to the original discomfort.
 const COLLAPSE_SHAKE_PEAK_PX = 5.5;        // camera shake jitter amplitude at its strongest (quake start) — was 7, then 4
 const COLLAPSE_TILT_MAX_RAD = 1.6 * Math.PI / 180; // whole-scene rotation during quake — was 2.4deg, then 1.1deg — "消失点が左右へ動く" via one cheap canvas transform, never touches project()/world math
+// 30TH ROUND item 12: real-play feedback said ESCAPE's own quake still read
+// as too weak/ambiguous ("ステージ全体が横揺れしていることが明確に伝わる
+// ように"). Root cause: c.shakeX/shakeY (ESCAPE's own collapse shake, below)
+// used the SAME symmetric amplitude on both axes, which reads as generic
+// unfocused camera noise rather than a clear side-to-side quake. Split into
+// a stronger HORIZONTAL-only amplitude and a reduced VERTICAL one — the
+// horizontal read is now unambiguous while total on-screen motion energy
+// stays well short of the original "eye-hurting" 7px/2.4deg combination
+// (that discomfort came from ALL THREE axes — X, Y, and tilt — being large
+// together; tilt here is untouched, still the small COLLAPSE_TILT_MAX_RAD
+// "secondary/supporting" role per spec). COLLAPSE_QUAKE_MS/COLLAPSE_
+// OBSTACLES_MS (duration) are explicitly untouched. ESCAPE-only — COMBAT's
+// own separate updateCombatQuake() still reads the original symmetric
+// COLLAPSE_SHAKE_PEAK_PX, unaffected by this round's ESCAPE-scoped ask.
+const ESCAPE_QUAKE_SHAKE_PEAK_X_PX = 9;
+const ESCAPE_QUAKE_SHAKE_PEAK_Y_PX = 2.5;
 // 24TH ROUND (items 10-14): rolling-rebar/steel/concrete debris — replaces
 // the old fixed-lane "obstacles" (which only ever scrolled straight toward
 // the camera on a locked screen-X lane, never fell/bounced/rolled) with a
@@ -4687,8 +4703,10 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
     shakeEnvelope = 0.55 * clamp(1 - Math.max(0, elapsed - (COLLAPSE_OBSTACLES_MS - 300)) / 300, 0, 1);
   }
   if (shakeEnvelope > 0) {
-    c.shakeX = (Math.random() * 2 - 1) * COLLAPSE_SHAKE_PEAK_PX * shakeEnvelope;
-    c.shakeY = (Math.random() * 2 - 1) * COLLAPSE_SHAKE_PEAK_PX * shakeEnvelope;
+    // 30TH ROUND item 12: horizontal-emphasized shake — see ESCAPE_QUAKE_
+    // SHAKE_PEAK_X_PX/Y_PX's own comment.
+    c.shakeX = (Math.random() * 2 - 1) * ESCAPE_QUAKE_SHAKE_PEAK_X_PX * shakeEnvelope;
+    c.shakeY = (Math.random() * 2 - 1) * ESCAPE_QUAKE_SHAKE_PEAK_Y_PX * shakeEnvelope;
     c.tiltAngle = Math.sin(now * 0.006) * COLLAPSE_TILT_MAX_RAD * shakeEnvelope;
   } else {
     c.shakeX = 0; c.shakeY = 0; c.tiltAngle = 0;
