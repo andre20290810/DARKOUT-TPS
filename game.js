@@ -315,7 +315,15 @@ const COLLAPSE_DEBRIS_STAGGER_MS = 550;       // real gap between each of the 3 
 // real ground-level hazard the player must actually notice and dodge.
 const COLLAPSE_DEBRIS_DROP_Z_MIN = 60;
 const COLLAPSE_DEBRIS_DROP_Z_SPREAD = 110;
-const COLLAPSE_DEBRIS_DROP_X_SPREAD = 170;    // world-x spread for left-leaning/center/right-leaning starts
+// 30TH ROUND item 16: replaces the old fixed lean-bucket X spread (this was
+// the only reader of that constant) — the world-unit half-width of the
+// "danger lane" randomly offset around the player's CURRENT position at
+// spawn time (see spawnCollapseObstacles()). At this system's typical
+// landing-z perspective scale (~0.6-0.81), this maps to a roughly 90-120px
+// on-screen spread — a real, deliberate move required to dodge, well inside
+// the player's own full strafe range (state.cssW * STRAFE_MAX_OFFSET on
+// each side), never a token few-pixel nudge.
+const COLLAPSE_DEBRIS_DANGER_LANE_HALF_WIDTH = 170;
 const COLLAPSE_DEBRIS_DROP_HEIGHT = 130;      // world units above the floor it starts falling from
 // 24TH ROUND tuning: ESCAPE's own ESCAPE_AUTO_SCROLL_SPEED (680 world-units/
 // sec, always-on regardless of player input) already recedes every world-Z
@@ -4577,6 +4585,12 @@ function advanceCollapseWorldZ(forwardDelta, dt, now) {
       ob.rotationAngle += ob.rotationSpeed * dt;
       if (ob.fallHeight <= 0) {
         ob.fallHeight = 0;
+        // 30TH ROUND item 13: the REAL first ground touch — flips ob.landed
+        // exactly once, the instant it actually happens, so the ground
+        // warning marker (renderCollapseObstacles()) disappears in perfect
+        // sync with the real landing, independent of the kinematic estimate
+        // used only to decide when the marker STARTS showing.
+        if (ob.bounceCount === 0) ob.landed = true;
         ob.bounceCount++;
         if (ob.bounceCount >= COLLAPSE_DEBRIS_MIN_BOUNCES) {
           ob.state = 'rolling';
@@ -4634,28 +4648,48 @@ function advanceCollapseWorldZ(forwardDelta, dt, now) {
 // Stages COLLAPSE_DEBRIS_COUNT independent rolling-debris events with a real
 // stagger between each one's start (item 13: DEBRIS1 -> interval -> DEBRIS2
 // -> interval -> DEBRIS3, never simultaneous), each with its own randomized
-// start lean (left/center/right), roll direction, rotation direction, and
-// bounce damping (item 13's "never three identical repeated trajectories").
+// landing lane offset, roll direction, rotation direction, and bounce
+// damping (item 13's "never three identical repeated trajectories").
 // Called once, right as the 'quake' phase ends (see updateEscapeCollapse()),
 // so debris is ALWAYS preceded by a quake, never spawned standalone.
-// Deliberately never reads state.player — see advanceCollapseWorldZ()'s own
-// comment on why that guarantees non-homing (item 11).
+// 30TH ROUND item 16: NOW reads state.player once, at spawn time only, to
+// center the danger lane on the player's CURRENT position — see the loop
+// body's own comment for why this is still non-homing (read once, never
+// updated afterward) despite reversing the previous round's "never reads
+// state.player" design.
 function spawnCollapseObstacles(now) {
   const debris = state.escape.collapse.obstacles;
-  const leanBuckets = [-1, 0, 1]; // left-leaning / center / right-leaning
-  for (let i = leanBuckets.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [leanBuckets[i], leanBuckets[j]] = [leanBuckets[j], leanBuckets[i]];
-  }
+  // 30TH ROUND item 16: the old left/right/center "lean bucket" shuffle
+  // (guaranteeing one piece per lane regardless of the player) is removed —
+  // superseded by the player-relative danger-lane offset computed per
+  // piece below.
   for (let idx = 0; idx < COLLAPSE_DEBRIS_COUNT; idx++) {
-    const lean = leanBuckets[idx % leanBuckets.length];
-    const rollDirSign = Math.random() < 0.5 ? -1 : 1; // independent of lean — a left-leaning drop can still roll either way
+    const rollDirSign = Math.random() < 0.5 ? -1 : 1; // independent of landing lane — a piece can still roll either way once it lands
+    const z = COLLAPSE_DEBRIS_DROP_Z_MIN + Math.random() * COLLAPSE_DEBRIS_DROP_Z_SPREAD;
+    // 30TH ROUND item 16: root design change (explicitly reversing the old
+    // "never reads state.player" non-homing guarantee for WHERE debris
+    // spawns — the OLD design's own comment above this function is now
+    // stale and left only as history). Spec requires a genuine "danger
+    // lane" centered on the player's CURRENT X — never guaranteed
+    // unreachable, but never a hard homing lock either. playerWorldXAtZ
+    // converts the player's CURRENT screen-space strafeOffset into the
+    // equivalent world-X at THIS piece's own landing depth (project()'s own
+    // screenX = centerX + worldX*scale, inverted) — the same scale-aware
+    // relationship advanceCollapseWorldZ()'s own hit-test already uses in
+    // the other direction. A random lane offset (never zero-width, so it's
+    // never an exact lock onto the player) is added on top — read ONCE at
+    // spawn time, never updated afterward, so the piece's trajectory is
+    // fixed the instant it spawns and can never actively track the player
+    // as they keep moving (still non-homing in that sense).
+    const scaleAtZ = FOCAL / (FOCAL + z);
+    const playerWorldXAtZ = state.player.strafeOffset / scaleAtZ;
+    const laneOffset = (Math.random() * 2 - 1) * COLLAPSE_DEBRIS_DANGER_LANE_HALF_WIDTH;
     debris.push({
       seed: Math.random() * 1000,
       state: 'pending',
       spawnAt: now + idx * COLLAPSE_DEBRIS_STAGGER_MS,
-      z: COLLAPSE_DEBRIS_DROP_Z_MIN + Math.random() * COLLAPSE_DEBRIS_DROP_Z_SPREAD,
-      worldX: lean * COLLAPSE_DEBRIS_DROP_X_SPREAD * (0.4 + Math.random() * 0.6) + (Math.random() * 2 - 1) * 30,
+      z,
+      worldX: playerWorldXAtZ + laneOffset,
       fallHeight: COLLAPSE_DEBRIS_DROP_HEIGHT * (0.85 + Math.random() * 0.3),
       fallVel: 0,
       bounceCount: 0,
@@ -4665,7 +4699,23 @@ function spawnCollapseObstacles(now) {
       rotationAngle: Math.random() * Math.PI * 2,
       rotationSpeed: rollDirSign * (COLLAPSE_DEBRIS_ROTATION_SPEED_MIN + Math.random() * (COLLAPSE_DEBRIS_ROTATION_SPEED_MAX - COLLAPSE_DEBRIS_ROTATION_SPEED_MIN)),
       resolved: false, hit: false,
+      landed: false, // 30TH ROUND item 13: set true on the real first ground touch, see advanceCollapseWorldZ()
     });
+  }
+  // 30TH ROUND item 13: ground warning telegraph timing — computed once per
+  // piece, right after spawning all of them, from each piece's own real
+  // fallHeight/gravity (kinematic estimate: t=sqrt(2h/g), the exact
+  // closed-form time-to-first-impact for a body dropped from rest under
+  // constant acceleration — matches the discrete-dt simulation in
+  // advanceCollapseWorldZ() closely enough that "disappear exactly at
+  // landing" is instead guaranteed by gating the render on the REAL
+  // ob.landed flag, not this estimate — this only decides when the marker
+  // starts appearing).
+  for (const ob of debris) {
+    const fallTimeS = Math.sqrt(2 * ob.fallHeight / COLLAPSE_DEBRIS_GRAVITY_WU);
+    ob.landingEstimateAt = ob.spawnAt + fallTimeS * 1000;
+    const warningLeadMs = 400 + Math.random() * 300; // 400-700ms per spec
+    ob.warningStartAt = ob.landingEstimateAt - warningLeadMs;
   }
 }
 
@@ -4853,9 +4903,36 @@ function renderCollapseObstacles(zFilter) {
   const debris = state.escape.collapse.obstacles;
   const now = performance.now();
   for (const ob of debris) {
-    if (ob.state === 'pending') continue; // not fallen yet — nothing to draw
     if (zFilter === 'behindBoss' && !(ob.z > state.enemy.z)) continue;
     if (zFilter === 'frontOfBoss' && !(ob.z <= state.enemy.z)) continue;
+    // 30TH ROUND item 13: pale ground warning telegraph — shown from
+    // ob.warningStartAt (400-700ms before the piece's real first ground
+    // touch, see spawnCollapseObstacles()) until ob.landed flips true (the
+    // REAL first touch, see advanceCollapseWorldZ() — never the estimate,
+    // so "disappears exactly as it lands" holds even if the estimate drifts
+    // slightly). Drawn for 'pending' pieces too (the estimate window
+    // commonly starts before the piece even begins actually falling, given
+    // its short ~420ms fall time) — this is why the marker check runs
+    // BEFORE the 'pending' skip below, not after.
+    if (!ob.landed && now >= ob.warningStartAt) {
+      const warnProj = project(ob.worldX, CORRIDOR_FLOOR_Y, ob.z);
+      const warnScale = FOCAL / (FOCAL + ob.z);
+      if (warnScale > 0.02) {
+        const warnW = 64 * warnScale, warnH = 64 * warnScale * 0.34;
+        // fade in quickly over the first ~120ms, then a gentle pulse — never
+        // a harsh strobe — and explicitly pale gray/cold-white, never yellow.
+        const fadeIn = clamp((now - ob.warningStartAt) / 120, 0, 1);
+        const pulse = 0.65 + 0.35 * Math.sin(now * 0.011);
+        ctx.save();
+        ctx.globalAlpha = 0.45 * fadeIn * pulse;
+        ctx.fillStyle = 'rgba(222,228,233,0.95)';
+        ctx.beginPath();
+        ctx.ellipse(warnProj.x, warnProj.y, warnW / 2, warnH / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    if (ob.state === 'pending') continue; // not fallen yet — nothing else to draw
     const proj = project(ob.worldX, CORRIDOR_FLOOR_Y - ob.fallHeight, ob.z);
     const h = 62 * proj.scale;
     if (h < 2) continue;
@@ -10184,7 +10261,7 @@ window.__darkoutTps = {
   screenSpaceEnemyChestAnchor, getRoidMuzzlePoint, ROID_MUZZLE_FRAC,
   updateEnemyFacing, resolveSniperImpact, SNIPER_HIT_RADIUS_PX,
   updateCombatQuake, COMBAT_QUAKE_MIN_INTERVAL_MS, COMBAT_QUAKE_MAX_INTERVAL_MS,
-  updateEscapeCollapse, renderCollapseObstacles, spawnCollapseObstacles,
+  updateEscapeCollapse, renderCollapseObstacles, spawnCollapseObstacles, advanceCollapseWorldZ,
   triggerClearSequence, renderClearSequence, updateClearSequence,
   // 30TH ROUND: sustained-FIRE move-lock, dynamic AIM/SPOTLIGHT range —
   // exposed for automated testing only.
