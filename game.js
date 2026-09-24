@@ -7287,8 +7287,28 @@ function updateBullets(now) {
         spawnPlayerImpact(b.x2, b.y2, now);
         if (DEBUG_MODE) r10DebugLog('DAMAGE BLOCKED: INVULNERABLE (' + (ENEMY_LABEL[e.type] || e.type) + (headHit ? ' HEAD HIT' : '') + ')');
       } else {
+        // 30TH ROUND item 6: distance-based damage falloff, applied here as
+        // the ONE common COMBAT MODE damage-application point every enemy
+        // type funnels through (roid head-shots, GABRIEL/ADAM claw-boss
+        // hits alike) — see distanceDamageMultiplier()'s own comment for the
+        // full root-cause story. isAimOnEffectiveHit() already keeps the
+        // crosshair from reading YELLOW whenever this would be 0, so this
+        // OUT-OF-RANGE branch is expected to be rare in practice (a manual-
+        // aim shot fired despite WHITE, or the enemy stepping out of range
+        // mid-flight during BULLET_TRAVEL_MS) — still handled explicitly so
+        // "yellow was showing a moment ago" can never silently deal damage
+        // the player wasn't shown.
+        const distMult = distanceDamageMultiplier(e.z);
+        if (distMult <= 0) {
+          spawnPlayerImpact(b.x2, b.y2, now);
+          if (DEBUG_MODE) r10DebugLog('DAMAGE BLOCKED: OUT OF EFFECTIVE RANGE (' + (ENEMY_LABEL[e.type] || e.type) + ' z=' + e.z.toFixed(0) + ')');
+          continue;
+        }
         const hpBefore = e.hp;
-        e.hp = Math.max(0, e.hp - BULLET_DAMAGE);
+        // At/inside DAMAGE_FALLOFF_FULL_Z this is exactly BULLET_DAMAGE
+        // (distMult=1) — every existing near-range balance is unchanged.
+        const scaledDamage = Math.round(BULLET_DAMAGE * distMult);
+        e.hp = Math.max(0, e.hp - scaledDamage);
         // 29TH ROUND item 15: real damage hits now pulse via
         // isEnemyDamageFlashing()/e.lastDamageHitAt (a fresh short window
         // per hit) instead of extending e.hitFlashUntil — see that
@@ -7298,10 +7318,10 @@ function updateBullets(now) {
         if (DEBUG_MODE) {
           r10DebugState.hitCount++;
           r10DebugState.lastHitTestResult = (headHit ? 'HIT HEAD ' : 'HIT ') + 'dist=' + dist.toFixed(1) + '/r=' + hitRadius.toFixed(1);
-          r10DebugState.lastDamage = BULLET_DAMAGE;
+          r10DebugState.lastDamage = scaledDamage;
           r10DebugState.lastDamageAt = now;
           r10DebugLog((headHit ? 'HIT HEAD ' : 'HIT ') + (ENEMY_LABEL[e.type] || e.type) + ' dist=' + dist.toFixed(1) + ' r=' + hitRadius.toFixed(1));
-          r10DebugLog('DAMAGE ' + BULLET_DAMAGE + ' HP ' + hpBefore + '->' + e.hp);
+          r10DebugLog('DAMAGE ' + scaledDamage + ' (falloff x' + distMult.toFixed(2) + ') HP ' + hpBefore + '->' + e.hp);
         }
         // 10TH ROUND (items 41-48): ROID1/ROID2 20%-threshold counter phase.
         // Checked high-to-low so a single large/overlapping hit that crosses
@@ -9206,6 +9226,35 @@ function renderFlashlightMask() {
   ctx.drawImage(darkCanvas, 0, 0, state.cssW, state.cssH);
 }
 
+// 30TH ROUND item 6: distance-based damage falloff, applied via world-z
+// (state.enemy.z, the same depth value every enemy type already carries —
+// never a type-specific formula) so this naturally becomes the common
+// COMBAT MODE shooting-judgment rule for every enemy, not a GABRIEL-only
+// special case, per the spec's own "共通ルールにすべきか検討" instruction.
+// Root cause of the reported "GABRIELの弱点にFOCUSでYELLOWが出るのに撃っても
+// 無傷" (investigated before implementing, per this round's own "根本原因を
+// 確認してから実装" instruction): before this, the ENTIRE bullet-damage path
+// (updateBullets()) was completely distance-independent — BULLET_DAMAGE
+// applied flat regardless of e.z — while isAimOnEffectiveHit() only ever
+// checked screen-space geometry. Nothing anywhere tied "YELLOW is showing"
+// to "the target is actually within a range real damage can reach", so a
+// geometrically-aligned-but-very-far shot could read YELLOW and legitimately
+// land 0 real-world consequence even though the crosshair promised a hit —
+// exactly the inconsistency this round's spec calls out. Fixed by making
+// range part of the SAME single source of truth isAimOnEffectiveHit() every
+// other consumer (crosshair, FOCUS re-arm, DEBUG) already reads.
+const DAMAGE_FALLOFF_FULL_Z = 400;          // at or below this world-z: 100% damage
+const DAMAGE_FALLOFF_MAX_EFFECTIVE_Z = 1300; // at this world-z: damage has smoothly fallen to 50%; beyond it: 0% (and YELLOW is prohibited)
+function distanceDamageMultiplier(z) {
+  if (z <= DAMAGE_FALLOFF_FULL_Z) return 1;
+  if (z > DAMAGE_FALLOFF_MAX_EFFECTIVE_Z) return 0;
+  const t = (z - DAMAGE_FALLOFF_FULL_Z) / (DAMAGE_FALLOFF_MAX_EFFECTIVE_Z - DAMAGE_FALLOFF_FULL_Z);
+  return 1 - 0.5 * t; // smooth, continuous 1.0 -> 0.5 across the falloff band
+}
+function isWithinEffectiveDamageRange(z) {
+  return z <= DAMAGE_FALLOFF_MAX_EFFECTIVE_Z;
+}
+
 // PART 2: simple, high-visibility "+" crosshair — no circle, no gap.
 // PART 7 (2nd round): "+" is now smaller, and turns white->red whenever it
 // sits over a spot that would register as a real hit — reusing the EXACT
@@ -9259,6 +9308,15 @@ function isAimOnEffectiveHit() {
   // function's own promise ("matches an ACTUAL registered hit") true under
   // the new head-weak-point damage rule. Every other enemy type (no
   // rect.headX) is completely unchanged.
+  // 30TH ROUND item 6: the enemy's own BODY (as opposed to the falling
+  // PROJECTILE branch above, which is a separately-positioned target with
+  // its own close-range dynamics and is deliberately left out of this gate)
+  // must also be within effective damage range — see
+  // isWithinEffectiveDamageRange()'s own comment. Checked here, in the one
+  // shared geometry function every consumer (crosshair, FOCUS re-arm,
+  // DEBUG) already reads, so YELLOW can never again promise a hit that
+  // updateBullets()'s own distance-scaled damage would actually zero out.
+  if (!isWithinEffectiveDamageRange(e.z)) return false;
   if ((e.type === 'roid1' || e.type === 'roid2') && rect.headX != null) {
     return Math.hypot(aim.x - rect.headX, aim.y - rect.headY) <= rect.headR;
   }
@@ -10017,4 +10075,6 @@ window.__darkoutTps = {
   get AIM_RANGE() { return AIM_RANGE; },
   get LIGHT_RANGE() { return LIGHT_RANGE; },
   get AIM_MOVE_SPEED_PX_S() { return AIM_MOVE_SPEED_PX_S; },
+  distanceDamageMultiplier, isWithinEffectiveDamageRange,
+  DAMAGE_FALLOFF_FULL_Z, DAMAGE_FALLOFF_MAX_EFFECTIVE_Z, BULLET_DAMAGE,
 };
