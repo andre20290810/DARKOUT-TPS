@@ -4393,14 +4393,24 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   // renderEscapePlayer() for how these are drawn and faded out.
   if (actions.westDash || actions.eastDash) {
     const dashDirSign = actions.westDash ? -1 : 1;
-    // 26TH ROUND item 4: the afterimage ghosts now render visibly TILTED in
-    // the dash direction (WEST ~15deg, EAST ~25deg — spec's own asymmetric
-    // values, kept exactly as given rather than mirrored/averaged) instead
-    // of duplicating the plain upright running pose — see renderEscapePlayer()
-    // for where afterimageAngleRad is applied as a Canvas rotate() around
-    // each ghost's own center. The live PLAYER body itself is untouched
-    // (still the normal upright run-frame image, no rotation).
-    const afterimageAngleRad = (actions.westDash ? -15 : 25) * Math.PI / 180;
+    // 30TH ROUND item 11: root cause of "EAST DASHの残像がWESTに出る" — the
+    // ghost's MATH-computed anchor (ghostCx below) was always correctly
+    // offset toward the dash direction, but renderEscapePlayer() rotated
+    // the ghost image around its BOUNDING-BOX CENTER (acx/acy), not the
+    // tire/ground-contact point (the same wheelCenterXFrac/wheelBottomFrac
+    // anchor computeEscapePlayerDrawRect() itself positions the rect
+    // against). Since the wheel sits well below (and often off-center
+    // from) the box's geometric center, rotating around the wrong pivot
+    // visibly dragged the rendered tire position sideways by enough to
+    // cross to the WRONG side of the intended anchor — exactly the
+    // reported symptom. Fixed by storing the real anchor point
+    // (anchorX/anchorY, the same ghostCx/bottomYNow used to position the
+    // rect) alongside the ghost and pivoting the rotation around THAT in
+    // renderEscapePlayer(), per spec's own explicit instruction. 26TH ROUND
+    // item 4's old asymmetric WEST -15deg/EAST +25deg is also normalized to
+    // a natural, symmetric ~15deg for both directions per this round's
+    // explicit request.
+    const afterimageAngleRad = (actions.westDash ? -15 : 15) * Math.PI / 180;
     const oldCx = state.centerX + p.strafeOffset;
     const bottomYNow = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
     const frameNow = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
@@ -4419,7 +4429,11 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     if (imgReady(frameNow.img)) {
       const ghostCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.65;
       const ghostRect = computeEscapePlayerDrawRect(ghostCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
-      es.afterimages.push({ img: frameNow.img, dx: ghostRect.dx, dy: ghostRect.dy, drawW: ghostRect.drawW, drawH: ghostRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad });
+      es.afterimages.push({
+        img: frameNow.img, dx: ghostRect.dx, dy: ghostRect.dy, drawW: ghostRect.drawW, drawH: ghostRect.drawH,
+        until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad,
+        anchorX: ghostCx, anchorY: bottomYNow, // 30TH ROUND item 11: real tire/ground-contact pivot point
+      });
     }
     p.strafeOffset = newStrafeOffset;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
@@ -8550,11 +8564,17 @@ function renderEscapePlayer() {
       // as a ghost trail rather than a solid duplicate sprite.
       ctx.globalAlpha = lifeFrac * 0.28;
       if (a.angleRad) {
-        const acx = a.dx + a.drawW / 2, acy = a.dy + a.drawH / 2;
+        // 30TH ROUND item 11: pivot on the real tire/ground-contact anchor
+        // (anchorX/anchorY, stamped at spawn time in updateEscapePlayer())
+        // instead of the bounding-box center — see that spawn site's own
+        // comment for why the old box-center pivot visibly dragged the
+        // rendered tire to the wrong side of the intended dash direction.
+        const acx = a.anchorX != null ? a.anchorX : a.dx + a.drawW / 2;
+        const acy = a.anchorY != null ? a.anchorY : a.dy + a.drawH / 2;
         ctx.save();
         ctx.translate(acx, acy);
         ctx.rotate(a.angleRad);
-        ctx.drawImage(a.img, -a.drawW / 2, -a.drawH / 2, a.drawW, a.drawH);
+        ctx.drawImage(a.img, a.dx - acx, a.dy - acy, a.drawW, a.drawH);
         ctx.restore();
       } else {
         ctx.drawImage(a.img, a.dx, a.dy, a.drawW, a.drawH);
