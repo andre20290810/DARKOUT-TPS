@@ -3083,12 +3083,12 @@ const STRUCTURE_KINDS = [
   // visibly lined up down the corridor at once, per item 8.
   { kind: 'labTank', spacing: 240 },     // LAB only: cylindrical culture tank along the wall
   { kind: 'labConsole', spacing: 260 },  // LAB only: wall-mounted monitor/console glow
-  // 30TH ROUND items 23-26: LAB-only self-illuminating ceiling light,
-  // mirrored left/right (see MIRRORED_STRUCTURE_KINDS below) and receding
-  // at these Z intervals — see renderStructure()'s own 'labCeilingLight'
-  // case and renderCorridor()'s new selfLit pass for the "independent of
-  // SPOTLIGHT mask" half of the spec.
-  { kind: 'labCeilingLight', spacing: 260 },
+  // EMERGENCY HOTFIX (pre-launch): the 30TH ROUND 'labCeilingLight' kind
+  // (a large round self-lit ceiling bulb) and its post-mask always-bright
+  // draw pass were reported on a real device as an unwanted extra light
+  // that was never part of the original request ("左右対称" meant arranging
+  // the EXISTING lighting left-right, not adding a new light) — removed
+  // entirely. See MIRRORED_STRUCTURE_KINDS / SELF_LIT_STRUCTURE_KINDS below.
   // 10TH ROUND items 10-12: the old 'armorPlate' (a horizontal bar spanning
   // the full corridor width at every spacing — the "bridge cross-bar"
   // clutter from item 11) and 'armorHatch' (a square-with-an-X badge — the
@@ -3117,19 +3117,31 @@ const structures = [];
 // every time, no reliance on how the random draw happened to fall. Every
 // other structure kind (gantry/pipe/panel/etc.) keeps its original
 // single-random-phase behavior unchanged.
-// 30TH ROUND item 23: 'warningLight' (shared across every theme, incl.
-// ARMORED's own red warning lamps) and the new 'labCeilingLight' below join
-// this guaranteed-mirrored-pair list too — same root cause as labTank/
-// labConsole originally had ("完全な鏡写しで構いません"): a single random-
-// phase-per-slot draw can land lopsided across a whole session by pure
-// chance, and for a LIGHT specifically that reads as a genuinely uneven,
-// unintentional-looking stage rather than a stylistic choice.
-const MIRRORED_STRUCTURE_KINDS = { labTank: true, labConsole: true, warningLight: true, labCeilingLight: true };
+// EMERGENCY HOTFIX (pre-launch): 'warningLight' was briefly added to this
+// mirrored-pair list (30TH ROUND item 23) but that guaranteed a red lamp at
+// EVERY z slot on BOTH sides at once, which read as an unwanted extra light
+// on a real device — reverted to its original single-random-phase-per-slot
+// behavior (still used by every theme, incl. ARMORED's red warning lamps).
+// labTank/labConsole keep their guaranteed-mirrored-pair placement.
+//
+// EMERGENCY HOTFIX: a mirrored pair's two instances previously got
+// DIFFERENT phase values (0 vs PI+0.01) so they could be told apart for
+// left/right placement — but every renderStructure() case also reuses that
+// same phase value to drive its blink timing (Math.sin(timeSec*rate+phase)),
+// so the two instances of one pair necessarily blinked OUT OF SYNC
+// (alternating flicker) purely as a side effect of how side was encoded.
+// Fixed by giving each pair an explicit `side` field (left/right placement)
+// separate from `phase`, and having both instances of a pair share the SAME
+// phase value — so a left/right pair now blinks perfectly in sync, as
+// intended, without changing which physical side either kind renders on
+// (see the 'labTank'/'labConsole' cases below, which read s.side directly).
+const MIRRORED_STRUCTURE_KINDS = { labTank: true, labConsole: true };
 for (const def of STRUCTURE_KINDS) {
   for (let z = Z_NEAR + def.spacing * 0.5; z < Z_FAR; z += def.spacing) {
     if (MIRRORED_STRUCTURE_KINDS[def.kind]) {
-      structures.push({ kind: def.kind, z, phase: 0 });                 // forced left (phase <= PI)
-      structures.push({ kind: def.kind, z, phase: Math.PI + 0.01 });    // forced right (phase > PI)
+      const blinkPhase = Math.random() * Math.PI * 2; // shared so the pair blinks in sync
+      structures.push({ kind: def.kind, z, phase: blinkPhase, side: -1 });
+      structures.push({ kind: def.kind, z, phase: blinkPhase, side: 1 });
     } else {
       structures.push({ kind: def.kind, z, phase: Math.random() * Math.PI * 2 });
     }
@@ -4131,20 +4143,56 @@ function togglePauseMenu() {
     // called before the `if (!state.gameStarted) return` gate near the top
     // of frame(), and state.paused is only consulted much further down when
     // deciding whether to APPLY the resulting actions to gameplay) — so no
-    // code path stops polling or requires a touch to resume it. As
-    // defense-in-depth for the one real edge case the spec calls out (a
-    // button held continuously THROUGH the pause window), re-baseline
-    // prevButtons to the CURRENT raw state and apply a short settle window
-    // here too — the same pattern GAMEPAD_SETTLE_MS already uses on first
-    // adoption/game-start, just much shorter since this isn't a fresh
-    // device, purely to guarantee a held button can never read as a fresh
-    // edge the instant RESUME happens.
+    // code path stops polling or requires a touch to resume it.
+    //
+    // EMERGENCY HOTFIX (PAUSE->RESUME gamepad re-investigation, fresh from
+    // real-device evidence): the previous fix here set gamepadSettleUntil,
+    // reusing the SAME settle window pollGamepad() uses for a freshly
+    // ADOPTED pad. That path's early return (see pollGamepad()'s own
+    // `settling` branch) zeroes out EVERYTHING — including LEFT STICK/
+    // RIGHT STICK AXES, not just buttons — for the whole settle window. A
+    // fresh adoption legitimately wants that (a newly-connected pad can
+    // report noisy axes before it calibrates), but on RESUME the pad was
+    // already adopted and calibrated well before PAUSE ever opened, so
+    // there is no reason to also blank the sticks — doing so is a real,
+    // concrete violation of the explicit requirement that stick axes must
+    // return to gameplay IMMEDIATELY on resume, with only buttons needing a
+    // release-before-rearm debounce. Root-caused and fixed: RESUME no
+    // longer sets gamepadSettleUntil at all — re-baselining prevButtons to
+    // the CURRENT raw pressed-state below is already, on its own, a
+    // complete guard against a button held continuously through the pause
+    // window reading as a fresh edge (pressed(i) && !prev[i] is false for
+    // anything still held the instant prev[i] is resynced to true) — no
+    // separate axes-blanking window is needed or wanted.
     if (state.gamepadIndex !== null) {
       const pads = navigator.getGamepads ? navigator.getGamepads() : [];
       const gp = pads[state.gamepadIndex];
       if (gp) {
+        const prevButtonsBeforeResync = state.prevButtons;
         state.prevButtons = gp.buttons.map((b) => !!(b && b.pressed));
-        state.gamepadSettleUntil = performance.now() + 120;
+        // Explicit instrumented log, exactly the fields requested for the
+        // PAUSE->RESUME gamepad investigation — every RESUME, not gated
+        // behind DEBUG_MODE, so a real-device session can pull this from
+        // devtools console regardless of ?debug=1. Never read by any
+        // control-flow logic (diagnostic-only).
+        try {
+          const rawAxes = Array.from(gp.axes).map((a) => Number(a.toFixed(3)));
+          const rawButtons = gp.buttons.map((b) => !!(b && b.pressed));
+          const wouldBeFalseEdge = rawButtons.some((p, i) => p && !prevButtonsBeforeResync[i]);
+          console.log('[gamepad RESUME]', JSON.stringify({
+            at: performance.now(),
+            gamepadIndex: state.gamepadIndex,
+            rawAxes, rawButtons,
+            prevButtonsBeforeResync,
+            prevButtonsAfterResync: state.prevButtons,
+            wouldHaveBeenFalseEdgeIfNotResynced: wouldBeFalseEdge,
+            gameplayInputEnabled: !state.paused && state.gameStarted,
+            gamepadSettleUntil: state.gamepadSettleUntil,
+            settlingNow: performance.now() < state.gamepadSettleUntil,
+            lastGamepadInputAt: state.lastGamepadInputAt,
+          }));
+          if (DEBUG_MODE) r10DebugLog('GAMEPAD RESUME REARM: axes=' + rawAxes.join(',') + ' anyPressed=' + rawButtons.some(Boolean) + ' falseEdgeGuarded=' + wouldBeFalseEdge);
+        } catch (err) { /* diagnostic-only, never let logging itself break resume */ }
       }
     }
     if (bgmStarted) {
@@ -4973,29 +5021,34 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
       c.phase = 'quake';
       c.phaseStartedAt = now;
       c.obstacles.length = 0;
-      // 30TH ROUND items 14-15: earthquake-start auto-backshift — see
-      // PLAYER_BACKSHIFT_TRIGGER_DEPTH's own comment for the explicit
-      // spec-reversal story. PLAYER: if leaning too close to SOUTH (near-
-      // camera), smoothly drift back toward a more neutral/NORTH depthPos
-      // over PLAYER_BACKSHIFT_MS so the falling-debris telegraph has real
-      // room to read clearly. Never an instant snap — see the tween applied
-      // below, every frame, while c.playerBackshift is set.
-      if (es.depthPos < PLAYER_BACKSHIFT_TRIGGER_DEPTH) {
+      // EMERGENCY HOTFIX: the backshift tween below was already correct on
+      // its own (500ms eased, always finishes well before the 700ms quake
+      // phase ends and debris can spawn — see updateEscapeCollapse()'s own
+      // phase machine), but it was gated behind narrow trigger conditions
+      // (PLAYER: only if already leaning noticeably south past
+      // PLAYER_BACKSHIFT_TRIGGER_DEPTH; BOSS: only if already within
+      // BOSS_BACKSHIFT_TRIGGER_MARGIN_Z of its pursuit floor) that, in most
+      // real play states, are simply false — so on a real device the
+      // backshift silently never ran on most quakes, and the sequence
+      // looked like "debris drops right after the quake starts" with no
+      // visible northward ease at all, exactly the reported regression.
+      // Spec asks for PLAYER+BOSS to both ease north on every quake, so the
+      // gates are widened to fire whenever there is genuine room left to
+      // ease toward (never a backward/south move, never re-triggered once
+      // already at the target — this stays a real "ease if needed", not an
+      // unconditional teleport-free tween).
+      if (es.depthPos < PLAYER_BACKSHIFT_TARGET_DEPTH) {
         c.playerBackshift = { fromDepth: es.depthPos, toDepth: PLAYER_BACKSHIFT_TARGET_DEPTH, startedAt: now, durationMs: PLAYER_BACKSHIFT_MS };
       }
       // BOSS: only when genuinely idle (never interrupts an attack — "絶対
-      // に攻撃中に不自然に瞬間移動させない") and only when within
-      // BOSS_BACKSHIFT_TRIGGER_MARGIN_Z of its own ESCAPE pursuit-min floor
-      // (the closest it's normally allowed to approach), so the debris-
-      // dodge minigame has genuine spacing to function in. Drives e.z
-      // directly here (see below) — updateEscapeEnemyPursuit() has its own
-      // matching guard so its per-frame sinusoidal recompute can never
-      // immediately overwrite this smooth tween mid-drift.
+      // に攻撃中に不自然に瞬間移動させない"). Drives e.z directly here (see
+      // below) — updateEscapeEnemyPursuit() has its own matching guard so
+      // its per-frame sinusoidal recompute can never immediately overwrite
+      // this smooth tween mid-drift.
       const e = state.enemy;
       if (e.attackState === 'idle' && e.deathState === 'alive') {
-        const bossMinZ = (e.type === 'gabriel' || e.type === 'adam') ? ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z : ESCAPE_ENEMY_PURSUIT_MIN_Z;
-        if (e.z < bossMinZ + BOSS_BACKSHIFT_TRIGGER_MARGIN_Z) {
-          const targetZ = Math.min(ESCAPE_ENEMY_PURSUIT_MAX_Z, e.z + BOSS_BACKSHIFT_DISTANCE_Z);
+        const targetZ = Math.min(ESCAPE_ENEMY_PURSUIT_MAX_Z, e.z + BOSS_BACKSHIFT_DISTANCE_Z);
+        if (targetZ > e.z) {
           c.bossBackshift = { fromZ: e.z, toZ: targetZ, startedAt: now, durationMs: BOSS_BACKSHIFT_MS };
         }
       }
@@ -7452,7 +7505,12 @@ function computeEnemyDrawRect() {
     // 1.10 (neither is "approaching to strike" or "the strike itself", and
     // this round's spec doesn't name them).
     const ADAM_CLAW_APPROACH_SIZE_MULT = 1.10 * 0.90; // item 8: current pre-claw size x0.90
-    const ADAM_CLAW_RELEASE_SIZE_MULT = 1.10 * 1.07;  // item 7: current attack size x1.07
+    // EMERGENCY HOTFIX: the actual CLAW-release/impact pose (not the
+    // approach/windup pose above) gets an additional x1.20 on top of the
+    // existing attack-pose size, per explicit real-device request — this is
+    // the ONLY change to ADAM's sizing in this hotfix; approach/idle/defense
+    // sizes above and below are untouched.
+    const ADAM_CLAW_RELEASE_SIZE_MULT = 1.10 * 1.07 * 1.20;
     const ADAM_ATTACK_POSE_SIZE_MULT = {
       blink: 1.10,
       telegraph: ADAM_CLAW_APPROACH_SIZE_MULT,
@@ -8311,7 +8369,7 @@ function renderStructure(s, theme) {
       // share the same world z, so they project to the same x/scale —
       // this is a true vertical column, not an ellipse.
       if (state.theme !== 'lab') break;
-      const side = s.phase > Math.PI ? 1 : -1;
+      const side = s.side;
       const top = project(side * half * 0.88, CORRIDOR_CEIL_Y * 0.62, s.z);
       const bot = project(side * half * 0.88, CORRIDOR_FLOOR_Y * 0.92, s.z);
       const scale = top.scale;
@@ -8393,7 +8451,7 @@ function renderStructure(s, theme) {
     }
     case 'labConsole': {
       if (state.theme !== 'lab') break;
-      const side = s.phase > Math.PI ? -1 : 1;
+      const side = -s.side; // preserves labConsole's original inverted L/R mapping vs labTank
       const pt = project(side * half * 0.98, CORRIDOR_CEIL_Y * 0.15, s.z);
       const w = Math.max(2, 22 * pt.scale), h = Math.max(2, 14 * pt.scale);
       ctx.save();
@@ -8404,37 +8462,6 @@ function renderStructure(s, theme) {
         ctx.globalAlpha = 0.85 * Math.min(1, pt.scale * 1.6);
         ctx.fillRect(pt.x - w * 0.35, pt.y + h * 0.25, w * 0.7, h * 0.3);
       }
-      ctx.restore();
-      break;
-    }
-    case 'labCeilingLight': {
-      // 30TH ROUND items 24-25: a self-illuminating fixture near the LAB
-      // ceiling's own left/right edges (distinct from the generic, already-
-      // centered 'ceilingLight' bar every theme shares), mirrored via
-      // MIRRORED_STRUCTURE_KINDS so every Z slot gets exactly one left +
-      // one right instance — receding at STRUCTURE_KINDS' own spacing
-      // interval like every other structure. Drawn as its own separate
-      // 'selfLit' renderCorridor() pass, called AFTER renderFlashlightMask()
-      // in frame()'s COMBAT branch specifically so it reads as a genuine
-      // light SOURCE (always at full brightness) rather than a passive
-      // surface the mask darkens like the corridor geometry around it —
-      // same reasoning renderBlasts()/renderEnemyTelegraphs() already use
-      // for their own post-mask passes. Blink is "gentle" (a continuous
-      // sine pulse, never a hard on/off flash) and inherently async between
-      // the left/right pair since they carry two different s.phase values.
-      if (state.theme !== 'lab') break;
-      const side = s.phase > Math.PI ? 1 : -1;
-      const pt = project(side * half * 0.92, CORRIDOR_CEIL_Y * 0.98, s.z);
-      const pulse = 0.65 + 0.35 * Math.sin(state.timeSec * 1.6 + s.phase);
-      const r = Math.max(2, 9 * pt.scale);
-      ctx.save();
-      const g = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, r * 2.4);
-      g.addColorStop(0, 'rgba(210,235,255,' + (0.9 * pulse) + ')');
-      g.addColorStop(1, 'rgba(210,235,255,0)');
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, r * 2.4, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(240,250,255,' + Math.min(1, pt.scale * 1.8) + ')';
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, r * 0.4, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
       break;
     }
@@ -8518,38 +8545,35 @@ function renderStructure(s, theme) {
   }
 }
 
-// 30TH ROUND item 25: kinds that are genuine light SOURCES rather than
-// passive geometry — real root cause of "LABの照明がFLASHLIGHTの外だと暗く
-// なる" was the same bug class renderBlasts()/renderEnemyTelegraphs() had
-// before their own post-mask moves: renderCorridor() (and therefore every
-// structure, lights included) always ran BEFORE renderFlashlightMask() in
-// COMBAT, so the darkness overlay dimmed a light fixture exactly like any
-// other pre-mask wall/floor geometry. ESCAPE never draws a mask at all (see
-// its own render branch), so this split is a COMBAT-only concern.
-const SELF_LIT_STRUCTURE_KINDS = { ceilingLight: true, warningLight: true, labCeilingLight: true };
-function renderCorridor(theme, pass) {
-  if (!pass || pass === 'passive') {
-    ctx.fillStyle = theme.fog;
-    ctx.fillRect(0, 0, state.cssW, state.cssH);
+// EMERGENCY HOTFIX (pre-launch): the 30TH ROUND post-mask 'selfLit' second
+// pass (drawing ceilingLight/warningLight/labCeilingLight AFTER
+// renderFlashlightMask()) is removed. Root cause it introduced: in the
+// COMBAT branch, renderEnemy(theme) (the boss's only real draw call outside
+// an active CLAW attack) runs BEFORE renderFlashlightMask(), so anything
+// drawn in a pass placed AFTER the mask unconditionally painted over the
+// boss/enemy whenever a self-lit light's screen position overlapped it —
+// exactly the reported "corridor lines drawn over GABRIEL" regression.
+// Reverted to the single, always-pre-mask renderCorridor() call every other
+// round relied on; a light fixture reading slightly dimmer outside the
+// flashlight is the correct, original behavior, not a bug.
+function renderCorridor(theme) {
+  ctx.fillStyle = theme.fog;
+  ctx.fillRect(0, 0, state.cssW, state.cssH);
 
-    // floor / ceiling wedge (ground plane readability even without structures)
-    const flFar = project(0, CORRIDOR_FLOOR_Y, Z_FAR);
-    const flNearL = project(-CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
-    const flNearR = project(CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
-    ctx.fillStyle = theme.floor;
-    ctx.beginPath();
-    ctx.moveTo(flFar.x, flFar.y);
-    ctx.lineTo(flNearL.x, flNearL.y);
-    ctx.lineTo(flNearR.x, flNearR.y);
-    ctx.closePath();
-    ctx.fill();
-  }
+  // floor / ceiling wedge (ground plane readability even without structures)
+  const flFar = project(0, CORRIDOR_FLOOR_Y, Z_FAR);
+  const flNearL = project(-CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
+  const flNearR = project(CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
+  ctx.fillStyle = theme.floor;
+  ctx.beginPath();
+  ctx.moveTo(flFar.x, flFar.y);
+  ctx.lineTo(flNearL.x, flNearL.y);
+  ctx.lineTo(flNearR.x, flNearR.y);
+  ctx.closePath();
+  ctx.fill();
 
   const sorted = structures.slice().sort((a, b) => b.z - a.z); // far to near
   for (const s of sorted) {
-    const isSelfLit = SELF_LIT_STRUCTURE_KINDS[s.kind];
-    if (pass === 'passive' && isSelfLit) continue;
-    if (pass === 'selfLit' && !isSelfLit) continue;
     renderStructure(s, theme);
   }
 }
@@ -9035,6 +9059,26 @@ function renderPlayer(theme) {
     drawW = img.naturalWidth * baseScale * p.scale * dashSideScale;
     dx = cx - drawW / 2;
     dy = bottomY - drawH;
+  }
+  // EMERGENCY HOTFIX: COMBAT MODE never had the same stage-name label-
+  // overlap clamp ESCAPE already has (see renderEscapePlayer()'s own
+  // comment) — real-device report was the PLAYER sprite crossing into the
+  // "LAB / EXPERIMENT AREA"-style label area during regular MOVE SOUTH and
+  // SOUTH DASH alike. Same fix, ported: measure the label's real, live
+  // position every frame and, if the sprite's actual rendered bottom edge
+  // (already including any DASH scale pulse baked into drawH above) would
+  // cross it, shift the sprite straight up by exactly that overflow — never
+  // touches drawW/drawH/scale, so the DASH scale pulse itself is untouched,
+  // only the final screen position.
+  {
+    const labelTopY = themeLabelEl.getBoundingClientRect().top;
+    const spriteBottomY = dy + drawH;
+    const overflowPx = spriteBottomY - (labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX);
+    if (overflowPx > 0) dy -= overflowPx;
+    // DEBUG-only trace fields, mirrors es.debugLabelTopY/debugSpriteBottomY —
+    // never read by any gameplay logic.
+    p.debugLabelTopY = labelTopY;
+    p.debugSpriteBottomY = dy + drawH;
   }
   // 5TH ROUND PART 12: short damage-blink — a brief brightness flash on the
   // player sprite the instant real damage lands (see PLAYER_HIT_FLASH_MS /
@@ -10581,11 +10625,10 @@ function frame(ts) {
   }
 
   const theme = THEMES[state.theme];
-  // 30TH ROUND item 25: ESCAPE has no darkness mask at all (unchanged,
-  // single unfiltered pass); COMBAT defers its self-illuminating structures
-  // (ceilingLight/warningLight/labCeilingLight) to a second post-mask pass
-  // below — see SELF_LIT_STRUCTURE_KINDS' own comment.
-  renderCorridor(theme, state.gameMode === 'escape' ? undefined : 'passive');
+  // EMERGENCY HOTFIX: single unconditional pass, both modes — see
+  // renderCorridor()'s own comment for why the post-mask second pass was
+  // removed.
+  renderCorridor(theme);
   // 27TH ROUND item 2 (regression fix): the 26th round moved renderBarrels()
   // to AFTER renderFlashlightMask() to fix barrels reading dim/washed-out
   // outside the lit circle — but renderEnemy() (drawn further below, still
@@ -10677,12 +10720,6 @@ function frame(ts) {
     // "behind the drum can" redraw moves with it (was previously paired
     // with this now-removed early draw).
     renderFlashlightMask();
-    // 30TH ROUND item 25: self-illuminating structures (ceilingLight/
-    // warningLight/labCeilingLight) draw here, AFTER the mask, so they stay
-    // at full brightness regardless of where the flashlight currently
-    // points — same bug class/fix as renderBlasts()/renderEnemyTelegraphs()
-    // below. See SELF_LIT_STRUCTURE_KINDS' own comment for the root cause.
-    renderCorridor(theme, 'selfLit');
     // 27TH ROUND item 2: renderBarrels() no longer runs here — see the
     // single call site right after renderCorridor() above (background ->
     // STAGE OBJECTS -> enemy), which fixes barrels drawing on top of the
@@ -10931,9 +10968,9 @@ window.__darkoutTps = {
   // 30TH ROUND items 19-22: DECOY — exposed for automated testing only.
   updateEscapeDecoy, renderEscapeDecoy, playerOrDecoyMarkerPos,
   DECOY_DURATION_MS, DECOY_SCREEN_OFFSET_PX, COLLAPSE_JUMP_COMBO_WINDOW_MS,
-  // 30TH ROUND items 23-26: lighting symmetry — exposed for automated
-  // testing only.
+  // 30TH ROUND items 23-26 / EMERGENCY HOTFIX: lighting — exposed for
+  // automated testing only.
   renderCorridor, renderStructure, structures, MIRRORED_STRUCTURE_KINDS,
-  SELF_LIT_STRUCTURE_KINDS, STRUCTURE_KINDS,
+  STRUCTURE_KINDS,
   CORRIDOR_HALF_WIDTH, CORRIDOR_CEIL_Y, CORRIDOR_FLOOR_Y,
 };
