@@ -1457,6 +1457,10 @@ const r10DbgAmmoEl = document.getElementById('r10-dbg-ammo');
 const r10DbgFireEl = document.getElementById('r10-dbg-fire');
 const r10DbgShotEl = document.getElementById('r10-dbg-shot');
 const r10DbgEnemyEl = document.getElementById('r10-dbg-enemy');
+// 30TH ROUND item 29: FOCUS/ESCAPE DECOY/DRONE WAVE — all new this round.
+const r10DbgFocusEl = document.getElementById('r10-dbg-focus');
+const r10DbgDecoyEl = document.getElementById('r10-dbg-decoy');
+const r10DbgDroneWaveEl = document.getElementById('r10-dbg-dronewave');
 const r10DbgInputEl = document.getElementById('r10-dbg-input');
 const r10DbgLogEl = document.getElementById('r10-dbg-log');
 // ADDENDUM (COPY DEBUG): the button + its transient success/failure label.
@@ -1581,6 +1585,36 @@ function r10CollectSnapshot(ts) {
       nextAttackInMs: e.nextIdleCheckAt ? Math.max(0, Math.round(e.nextIdleCheckAt - ts)) : 0,
       lastAttackAt: Math.round(state.enemyLastAttackAt || 0),
       lockCancelledReason: state.enemyLockCancelledReason || '-' },
+    // 30TH ROUND item 29: FOCUS — the same isEffectiveDamageNow()/
+    // getEffectiveHitPoint() the real crosshair/damage path uses, surfaced
+    // as its own always-visible on-screen group (previously only reachable
+    // via COPY DEBUG's r12.focus, never shown live in the panel itself).
+    focus: (() => {
+      const rect = computeEnemyDrawRect();
+      const hitPt = getEffectiveHitPoint(rect);
+      const hot = isEffectiveDamageNow();
+      return { effectiveHit: hot, aimColor: hot ? 'yellow' : 'white',
+        targetX: Math.round(hitPt.x), targetY: Math.round(hitPt.y),
+        distMult: Number(distanceDamageMultiplier(e.z).toFixed(2)) };
+    })(),
+    // 30TH ROUND items 19-22/29: ESCAPE DECOY — no-op/'-' outside ESCAPE or
+    // while inactive, so this reads as clean "not applicable" rather than
+    // stale numbers left over from a previous ESCAPE session.
+    decoy: (() => {
+      const dc = es.decoy;
+      const applicable = state.gameMode === 'escape';
+      return { applicable, active: applicable && dc.active,
+        side: applicable && dc.active ? (dc.side > 0 ? 'east' : 'west') : '-',
+        remainMs: applicable && dc.active ? Math.max(0, Math.round(dc.until - ts)) : 0 };
+    })(),
+    // 30TH ROUND item 17/29: DRONE WAVE — per-extra HP/state, and whether
+    // the wave itself is currently in progress.
+    droneWave: (() => {
+      const dw = state.droneWave;
+      return { active: dw.active, wave2Triggered: dw.wave2Triggered,
+        extraCount: dw.extra.length,
+        extras: dw.extra.map((x) => x.state + ':' + Math.round(x.hp) + '/' + x.maxHp).join(' ') || '-' };
+    })(),
     // 29TH ROUND (item 18): INPUT field-group additions — raw stick/button
     // state read fresh from navigator.getGamepads() (mirrors the existing
     // `gamepad:` group's own pattern below), the X-resume consume/rearm
@@ -1716,6 +1750,14 @@ function r10UpdateDebugPanel(ts) {
     '\n attackState=' + s.enemy.attackState + ' nextAttackInMs=' + s.enemy.nextAttackInMs +
     ' lastAttackAt=' + s.enemy.lastAttackAt + ' lockCancelledReason=' + s.enemy.lockCancelledReason;
 
+  // 30TH ROUND item 29: FOCUS/ESCAPE DECOY/DRONE WAVE — all new this round.
+  r10DbgFocusEl.textContent = 'FOCUS effectiveHit=' + s.focus.effectiveHit + ' aimColor=' + s.focus.aimColor +
+    ' target=' + s.focus.targetX + ',' + s.focus.targetY + ' distMult=' + s.focus.distMult;
+  r10DbgDecoyEl.textContent = 'ESCAPE DECOY applicable=' + s.decoy.applicable + ' active=' + s.decoy.active +
+    ' side=' + s.decoy.side + ' remainMs=' + s.decoy.remainMs;
+  r10DbgDroneWaveEl.textContent = 'DRONE WAVE active=' + s.droneWave.active + ' wave2Triggered=' + s.droneWave.wave2Triggered +
+    ' extraCount=' + s.droneWave.extraCount + '\n extras=' + s.droneWave.extras;
+
   r10DbgInputEl.textContent = 'INPUT mode=' + s.input.mode + ' fireBtn=' + s.input.fireBtn +
     '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim +
     // 29TH ROUND item 18: raw stick/button state + X consume/rearm + RB held
@@ -1807,6 +1849,25 @@ function r10FormatDebugText(s) {
   lines.push('nextAttackInMs: ' + s.enemy.nextAttackInMs);
   lines.push('lastAttackAt: ' + s.enemy.lastAttackAt);
   lines.push('lockCancelledReason: ' + s.enemy.lockCancelledReason);
+  lines.push('');
+  // 30TH ROUND item 29: FOCUS/ESCAPE DECOY/DRONE WAVE — all new this round.
+  lines.push('FOCUS');
+  lines.push('effectiveHit: ' + s.focus.effectiveHit);
+  lines.push('aimColor: ' + s.focus.aimColor);
+  lines.push('target: ' + s.focus.targetX + ',' + s.focus.targetY);
+  lines.push('distMult: ' + s.focus.distMult);
+  lines.push('');
+  lines.push('ESCAPE DECOY');
+  lines.push('applicable: ' + s.decoy.applicable);
+  lines.push('active: ' + s.decoy.active);
+  lines.push('side: ' + s.decoy.side);
+  lines.push('remainMs: ' + s.decoy.remainMs);
+  lines.push('');
+  lines.push('DRONE WAVE');
+  lines.push('active: ' + s.droneWave.active);
+  lines.push('wave2Triggered: ' + s.droneWave.wave2Triggered);
+  lines.push('extraCount: ' + s.droneWave.extraCount);
+  lines.push('extras: ' + s.droneWave.extras);
   lines.push('');
   lines.push('INPUT');
   lines.push('mode: ' + s.input.mode);
