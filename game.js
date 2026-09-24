@@ -642,8 +642,21 @@ const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
 // this circle (see getAimPoint()) so the crosshair can never leave the lit
 // area at all, not just visually — see item 52's own comment there.
 const FLASHLIGHT_BASE_RADIUS = 47.25;
-const LIGHT_RANGE = 152; // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
-const AIM_RANGE = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
+// 30TH ROUND item 5: LIGHT_RANGE/AIM_RANGE used to be fixed at 152px no
+// matter the viewport, so on a real landscape canvas (e.g. 844px wide) the
+// reticle/spotlight could only ever reach ~152px from its resting point —
+// a small fraction of the screen, matching the reported "AIM+SPOTLIGHTの可動
+// 範囲が画面の半分ほどしかない". Both are now `let`, recomputed in resize()
+// as a genuine function of the actual canvas size (see resize() below) so
+// they scale with whatever viewport the game is actually running in. The
+// two baseline constants below are kept only as the reference ratio
+// AIM_MOVE_SPEED_PX_S is rescaled against, so a full sweep still takes
+// about the same real-world time it always has instead of suddenly
+// becoming a slow crawl on a wide screen.
+const AIM_RANGE_BASELINE_PX = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
+const AIM_MOVE_SPEED_BASELINE_PX_S = 620;
+let LIGHT_RANGE = AIM_RANGE_BASELINE_PX;
+let AIM_RANGE = AIM_RANGE_BASELINE_PX;
 
 // PART 4 (3rd round): deadzone is intentionally the SAME as MOVE's on BOTH
 // sticks (never shrunk — a smaller deadzone invites stick drift). What's
@@ -858,7 +871,11 @@ const FOCUS_R3_HOLD_MS = 500;
 // addressing "遅れてついてくる感覚" for BOTH gamepad and touch AIM (touch's
 // own raw -1..1 drag feeds this exact same velocity integration — see
 // updatePlayer()'s AIM section).
-const AIM_MOVE_SPEED_PX_S = 620;
+// 30TH ROUND item 5: `let` now, rescaled in resize() against
+// AIM_MOVE_SPEED_BASELINE_PX_S/AIM_RANGE_BASELINE_PX whenever AIM_RANGE
+// changes, so the ~1/3s full-sweep feel described above is preserved at any
+// canvas size instead of getting slower as AIM_RANGE grows.
+let AIM_MOVE_SPEED_PX_S = AIM_MOVE_SPEED_BASELINE_PX_S;
 // 13TH ROUND (items 9-19): LIGHT's own persistent-position move speed —
 // same role as AIM_MOVE_SPEED_PX_S, deliberately a bit slower since
 // sweeping the flashlight is a broader gesture than fine AIM adjustment.
@@ -3044,6 +3061,19 @@ function resize() {
   state.centerX = w / 2;
   state.horizonY = h * HORIZON_Y_RATIO;
   dbgDprEl.textContent = dpr.toFixed(2);
+  // 30TH ROUND item 5: AIM_RANGE/LIGHT_RANGE recomputed as a genuine
+  // function of the actual canvas size — Math.max(w, h) comfortably covers
+  // the worst-case single-axis distance from the AIM/SPOTLIGHT resting
+  // point (near screen center, offset by strafeOffset) to any one edge, so
+  // at full stick deflection the reticle/spotlight can reach every edge —
+  // the real edge-safety clamp already in getAimPoint()/getFlashlightCenter()
+  // (AIM_SCREEN_SAFE_MARGIN_PX) is what stops it exactly at the true edge
+  // minus a small margin, so overshooting this range slightly is harmless.
+  // AIM_MOVE_SPEED_PX_S is rescaled by the same ratio so the ~1/3s full-
+  // sweep feel is preserved instead of becoming sluggish on a big canvas.
+  AIM_RANGE = Math.max(w, h);
+  LIGHT_RANGE = AIM_RANGE;
+  AIM_MOVE_SPEED_PX_S = AIM_MOVE_SPEED_BASELINE_PX_S * (AIM_RANGE / AIM_RANGE_BASELINE_PX);
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', resize);
@@ -3955,9 +3985,31 @@ function consumeEscapeActions() {
   return out;
 }
 
-function updatePlayer(dt, now, moveX, moveY, actions) {
+// 30TH ROUND item 4: "genuinely continuous firing" gate for the sustained-
+// FIRE move-lock — mirrors fireWeapon()'s own COVER/RELOADING/NO-AMMO guards
+// exactly (the same three cases the spec explicitly says must NOT lock
+// movement) but deliberately excludes the COOLDOWN gate: the brief gap
+// between individual shots during a held RB press is normal weapon cycling,
+// not an interruption of the "sustained fire" session, so movement must stay
+// locked through it rather than flickering unlocked every cooldown tick.
+function isPlayerActivelyFiring() {
+  const p = state.player;
+  return state.input.fireHeld && !isPlayerInCover() && !p.reloading && p.ammo > 0;
+}
+
+function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
   const p = state.player;
   const strafeOffsetAtFrameStart = p.strafeOffset;
+
+  // 30TH ROUND item 4: while genuinely continuous-firing (isPlayerActively
+  // Firing(), computed once in frame() before this call — reads only state
+  // already settled before this frame's own fireWeapon() runs, so it can
+  // never see stale mid-frame data), LEFT STICK/D-PAD MOVE (both strafe
+  // below and the forward/back walk further down) is locked — RIGHT STICK
+  // AIM+SPOTLIGHT is untouched (computed separately in frame(), never routed
+  // through moveX/moveY), and DASH actions are also untouched (evasive tech,
+  // not the "running while firing" case the spec targets).
+  if (moveLocked) { moveX = 0; moveY = 0; }
 
   // WEST/EAST strafe (continuous, D-PAD/touch)
   p.strafeOffset += moveX * STRAFE_SPEED * dt;
@@ -5243,7 +5295,7 @@ const MISSILE_APPROACH_Z_BONUS = 1450;
 // projectile's own body/telegraph, marking the instant of launch. Shared by
 // both the single-missile system (DRONE/ADAM SPHERE) and each individual
 // BARRAGE missile (ROID1/ROID2).
-const MISSILE_LAUNCH_FLASH_MS = 160;
+const MISSILE_LAUNCH_FLASH_MS = 90; // 30TH ROUND item 2: was 160, tightened into the spec's 60-100ms window
 // NEXT ROUND (spec sections 2-3): the projectile's own tumble — a
 // continuous spin so the dart-shaped body (see getMissile/BarrageProjectileVisual()'s
 // render sites) reads as "回転しながら接近してくる", never a static orb.
@@ -6807,7 +6859,22 @@ function computeEnemyDrawRect() {
   // zone==='center', where it's already correct. ADAM SPHERE is untouched
   // (it has no directional search art at all, always uses its own
   // continuously-rotating fire[] frame, as before).
-  const activelyFiringRoid = e.type !== 'adamSphere' && (isRoidActivelyFiring(performance.now()) || isRoidInAttackSequence(e, performance.now()));
+  // 30TH ROUND item 1: root cause of "FIRE画像が表示され続ける" — isRoidInAttack
+  // Sequence() (27TH ROUND item 4) deliberately widened this to the WHOLE
+  // attack window (e.g. sniper's lock_red->lock_yellow->fire->impact) so the
+  // FIRE pose would read as "genuinely mid-attack", but this is exactly what
+  // the current spec explicitly prohibits: "攻撃シーケンス中ずっとFIRE画像固定
+  // は禁止". Per this round's instruction that new spec overrides prior spec
+  // where they conflict, isRoidInAttackSequence() is no longer part of this
+  // decision — only isRoidActivelyFiring() (the real per-shot pose-hold
+  // window, ROID_ATTACK_POSE_HOLD_MS=440ms from e.lastShotFiredAt, stamped at
+  // each actual shot/missile-launch instant) drives the FIRE sprite now, so
+  // SNIPER/SWEEP/BARRAGE all genuinely cycle FIRE->NORMAL/SEARCH->FIRE in
+  // sync with real shots rather than holding FIRE for the whole sequence.
+  // isRoidInAttackSequence() itself is untouched and still drives the
+  // separate attack-sway motion above (updateEnemyFacing()) — this function
+  // is not deleted, only removed from THIS specific OR-clause.
+  const activelyFiringRoid = e.type !== 'adamSphere' && isRoidActivelyFiring(performance.now());
   const useFirePose = activelyFiringRoid && e.zone === 'center';
   const frame = e.type === 'adamSphere'
     ? sprites.fire[e.roidFireFrame]
@@ -7901,6 +7968,14 @@ const redTintCtx = redTintCanvas.getContext('2d');
 // existing caller) — see renderEnemyHitFlash()'s own comment for why
 // GABRIEL/ADAM pass a much lower value here instead.
 function drawRedTintedSprite(img, dx, dy, w, h, tintAlpha) {
+  drawColorTintedSprite(img, dx, dy, w, h, '255,40,40', tintAlpha != null ? tintAlpha : 0.65);
+}
+// 30TH ROUND item 2: shared silhouette-clipped tint helper — same offscreen-
+// canvas source-atop technique as drawRedTintedSprite() above (so a white
+// flash, like the red hit-flash, can only ever paint pixels the sprite
+// itself already painted — never a free-floating glow/fog beyond the
+// sprite's own silhouette), generalized to take any 'r,g,b' string.
+function drawColorTintedSprite(img, dx, dy, w, h, rgb, tintAlpha) {
   const cw = Math.max(1, Math.round(w));
   const ch = Math.max(1, Math.round(h));
   if (redTintCanvas.width !== cw || redTintCanvas.height !== ch) {
@@ -7911,7 +7986,7 @@ function drawRedTintedSprite(img, dx, dy, w, h, tintAlpha) {
   redTintCtx.globalCompositeOperation = 'source-over';
   redTintCtx.drawImage(img, 0, 0, cw, ch);
   redTintCtx.globalCompositeOperation = 'source-atop';
-  redTintCtx.fillStyle = 'rgba(255,40,40,' + (tintAlpha != null ? tintAlpha : 0.65) + ')';
+  redTintCtx.fillStyle = 'rgba(' + rgb + ',' + tintAlpha + ')';
   redTintCtx.fillRect(0, 0, cw, ch);
   ctx.drawImage(redTintCanvas, dx, dy, w, h);
 }
@@ -8677,24 +8752,23 @@ function drawMissileDartBody(x, y, scale, hot) {
   ctx.beginPath(); ctx.arc(0, -bodyR * 0.95, bodyR * 0.22, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
-// NEXT ROUND (spec section 1): brief white flash at the ENEMY's own body
-// center at the instant of launch — separate from the projectile's own
-// body above.
+// 30TH ROUND item 2: root cause of "白いモヤ/白い霧" — this used to paint a
+// free-floating 46px-radius radial gradient near the enemy's chest, entirely
+// independent of the sprite's own silhouette (a soft white cloud hovering
+// over/around the body, not a body reaction). Per spec, replaced with the
+// SAME silhouette-clipped tint technique the red hit-flash already uses
+// (drawColorTintedSprite()) — the enemy's own already-drawn sprite gets a
+// brief white overlay restricted to its own opaque pixels, so this reads as
+// "the enemy flashed white" rather than "a cloud appeared near the enemy".
+// No separate glow/fog shape is drawn at all. Duration tightened from 160ms
+// to 90ms to land inside the spec's 60-100ms guideline.
 function renderMissileLaunchFlash(flashUntil) {
   const now = performance.now();
   if (!flashUntil || now >= flashUntil) return;
   const t = clamp((flashUntil - now) / MISSILE_LAUNCH_FLASH_MS, 0, 1);
-  // NEXT ROUND (spec section 5): screenSpaceEnemyAnchor() is floor-level
-  // (the enemy's feet), which read as "発射位置が低すぎる" — chest-height
-  // anchor instead, for both ROID1 and ROID2.
-  const anchor = screenSpaceEnemyChestAnchor();
-  ctx.save();
-  const g = ctx.createRadialGradient(anchor.x, anchor.y, 0, anchor.x, anchor.y, 46);
-  g.addColorStop(0, 'rgba(255,255,255,' + (0.85 * t) + ')');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 46, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
+  const rect = computeEnemyDrawRect();
+  if (!imgReady(rect.img)) return;
+  drawColorTintedSprite(rect.img, rect.x, rect.y, rect.w, rect.h, '255,255,255', 0.8 * t);
 }
 
 // 26TH ROUND item 9: the missile/barrage PROJECTILE itself (the flying dart
@@ -9594,7 +9668,7 @@ function frame(ts) {
         if (state.escape.timeLeftSec <= 0) triggerClearSequence(ts, 'escape');
       }
     } else {
-      const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions);
+      const forwardDelta = updatePlayer(dt, ts, state.input.moveX, state.input.moveY, actions, isPlayerActivelyFiring());
       applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
       updateCombatQuake(dt, ts); // NEXT ROUND (spec section 7): COMBAT's own lightweight quake+debris atmosphere
       updateEnemy(dt, ts);
@@ -9937,4 +10011,10 @@ window.__darkoutTps = {
   updateCombatQuake, COMBAT_QUAKE_MIN_INTERVAL_MS, COMBAT_QUAKE_MAX_INTERVAL_MS,
   updateEscapeCollapse, renderCollapseObstacles, spawnCollapseObstacles,
   triggerClearSequence, renderClearSequence, updateClearSequence,
+  // 30TH ROUND: sustained-FIRE move-lock, dynamic AIM/SPOTLIGHT range —
+  // exposed for automated testing only.
+  isPlayerActivelyFiring,
+  get AIM_RANGE() { return AIM_RANGE; },
+  get LIGHT_RANGE() { return LIGHT_RANGE; },
+  get AIM_MOVE_SPEED_PX_S() { return AIM_MOVE_SPEED_PX_S; },
 };
