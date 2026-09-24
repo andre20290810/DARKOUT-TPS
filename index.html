@@ -8,6 +8,26 @@
 </head>
 <body>
 
+<!-- 29TH ROUND (item 10): every <button> in this file carries tabindex="-1".
+     Root-cause investigation (fresh, not reusing the prior round's blur()-
+     after-the-fact hypothesis) for "PAUSE→RESUME後、タップしないとGamepadが
+     効かない" found that ALL input here is already driven by this game's own
+     poll-based reading of navigator.getGamepads() (pollGamepad()) and
+     pointerdown listeners — never by native browser focus+Enter/click
+     activation. But gamepad-capable WebViews independently run their own
+     native "D-PAD moves focus between focusable elements" accessibility
+     bridge, entirely outside this game's control, which can silently steal
+     the controller's D-PAD/stick input as native focus-navigation attempts
+     instead of relaying it to the Gamepad API at all — exactly the
+     "stuck until a touch resets focus" symptom reported, and NOT fixed
+     reliably by blurring a specific element after a specific event (the
+     prior round's togglePauseMenu() fix), since that only clears focus
+     AFTER the fact and only at one call site. tabindex="-1" removes every
+     button from the browser's own focus order everywhere on the page (not
+     just PAUSE), so that native bridge has nothing to move focus TO in the
+     first place — prevention at the root, layered on top of (not replacing)
+     the existing blur() defense-in-depth calls. Pointer/touch/click
+     activation is completely unaffected by tabindex. -->
 <div id="rotate-notice">
   <div class="rotate-icon">&#8635;</div>
   <div>スマートフォンを横向きにしてください</div>
@@ -59,11 +79,11 @@
        second confirmation step. The store link and language toggle are
        deliberately separate controls that do neither of those things. -->
   <div id="mode-select-screen" hidden>
-    <button type="button" id="lang-toggle-btn" data-en="日本語へ切り替え" data-ja="SWITCH TO ENGLISH">日本語へ切り替え</button>
+    <button type="button" tabindex="-1" id="lang-toggle-btn" data-en="日本語へ切り替え" data-ja="SWITCH TO ENGLISH">日本語へ切り替え</button>
     <div id="mode-select-title">DARK OUT 2</div>
     <div id="mode-select-subtitle" data-en="CHOOSE HOW TO PLAY" data-ja="操作方法を選んでください">CHOOSE HOW TO PLAY</div>
-    <button type="button" id="mode-btn-controller" class="mode-btn" data-en="PLAY WITH WIRELESS CONTROLLER" data-ja="ワイヤレスコントローラーで遊ぶ">PLAY WITH WIRELESS CONTROLLER</button>
-    <button type="button" id="mode-btn-touch" class="mode-btn" data-en="PLAY WITH TOUCH CONTROLS" data-ja="タッチ操作で遊ぶ">PLAY WITH TOUCH CONTROLS</button>
+    <button type="button" tabindex="-1" id="mode-btn-controller" class="mode-btn" data-en="PLAY WITH WIRELESS CONTROLLER" data-ja="ワイヤレスコントローラーで遊ぶ">PLAY WITH WIRELESS CONTROLLER</button>
+    <button type="button" tabindex="-1" id="mode-btn-touch" class="mode-btn" data-en="PLAY WITH TOUCH CONTROLS" data-ja="タッチ操作で遊ぶ">PLAY WITH TOUCH CONTROLS</button>
     <div id="controller-store-row">
       <div id="controller-store-question" data-en="DON'T HAVE A WIRELESS CONTROLLER?" data-ja="ワイヤレスコントローラーをお持ちでないですか?">DON'T HAVE A WIRELESS CONTROLLER?</div>
       <a id="controller-store-link" href="#" target="_blank" rel="noopener" data-en="GET A WIRELESS CONTROLLER" data-ja="ワイヤレスコントローラーを購入する">GET A WIRELESS CONTROLLER</a>
@@ -135,7 +155,7 @@
   <!-- 4th round: PAUSE button — deliberately OUTSIDE #touch-controls so it
        stays visible/usable even while touch controls are hidden (spec:
        "PAUSEボタン等、ゲーム進行上必要な最低限のUIまで消さないよう"). -->
-  <button type="button" id="pause-btn">PAUSE</button>
+  <button type="button" tabindex="-1" id="pause-btn">PAUSE</button>
 
   <!-- 4th round PART 6/7: PAUSE menu overlay — TOUCH CONTROLS ON/OFF toggle.
        7TH ROUND PART 11: CONTROLLER AIM SENSITIVITY (LOW/NORMAL/HIGH) added
@@ -152,46 +172,46 @@
   <div id="pause-menu" hidden>
     <div id="pause-panel">
       <div id="pause-title">PAUSE</div>
-      <button type="button" id="touch-controls-toggle" class="pause-menu-btn">TOUCH CONTROLS : OFF</button>
+      <button type="button" tabindex="-1" id="touch-controls-toggle" class="pause-menu-btn">TOUCH CONTROLS : OFF</button>
       <div id="aim-sens-label" class="pause-menu-label">CONTROLLER AIM SENSITIVITY</div>
       <div id="aim-sens-row">
-        <button type="button" data-sens="slow" class="pause-menu-btn aim-sens-btn">SLOW</button>
-        <button type="button" data-sens="standard" class="pause-menu-btn aim-sens-btn active">STANDARD</button>
-        <button type="button" data-sens="fast" class="pause-menu-btn aim-sens-btn">FAST</button>
+        <button type="button" tabindex="-1" data-sens="slow" class="pause-menu-btn aim-sens-btn">SLOW</button>
+        <button type="button" tabindex="-1" data-sens="standard" class="pause-menu-btn aim-sens-btn active">STANDARD</button>
+        <button type="button" tabindex="-1" data-sens="fast" class="pause-menu-btn aim-sens-btn">FAST</button>
       </div>
 
       <div class="pause-menu-label">STAGE TYPE</div>
       <div id="theme-switch">
-        <button type="button" data-theme="lab" class="theme-btn active">LAB</button>
-        <button type="button" data-theme="armored" class="theme-btn">ARMORED</button>
-        <button type="button" data-theme="escape" class="theme-btn">ESCAPE</button>
+        <button type="button" tabindex="-1" data-theme="lab" class="theme-btn active">LAB</button>
+        <button type="button" tabindex="-1" data-theme="armored" class="theme-btn">ARMORED</button>
+        <button type="button" tabindex="-1" data-theme="escape" class="theme-btn">ESCAPE</button>
       </div>
 
       <div class="pause-menu-label">GAME MODE</div>
       <div id="gamemode-switch">
-        <button type="button" data-gamemode="combat" class="gamemode-btn active">COMBAT MODE</button>
-        <button type="button" data-gamemode="escape" class="gamemode-btn">ESCAPE MODE</button>
+        <button type="button" tabindex="-1" data-gamemode="combat" class="gamemode-btn active">COMBAT MODE</button>
+        <button type="button" tabindex="-1" data-gamemode="escape" class="gamemode-btn">ESCAPE MODE</button>
       </div>
 
       <div class="pause-menu-label">ENEMY SELECT / AUTO MODE</div>
       <div id="enemy-switch">
-        <button type="button" data-enemy="auto" class="enemy-btn active">AUTO</button>
-        <button type="button" data-enemy="drone" class="enemy-btn">DRONE</button>
-        <button type="button" data-enemy="roid1" class="enemy-btn">ROID 1</button>
-        <button type="button" data-enemy="roid2" class="enemy-btn">ROID 2</button>
-        <button type="button" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
-        <button type="button" data-enemy="adamSphere" class="enemy-btn">ADAM SPHERE</button>
-        <button type="button" data-enemy="adam" class="enemy-btn">ADAM</button>
+        <button type="button" tabindex="-1" data-enemy="auto" class="enemy-btn active">AUTO</button>
+        <button type="button" tabindex="-1" data-enemy="drone" class="enemy-btn">DRONE</button>
+        <button type="button" tabindex="-1" data-enemy="roid1" class="enemy-btn">ROID 1</button>
+        <button type="button" tabindex="-1" data-enemy="roid2" class="enemy-btn">ROID 2</button>
+        <button type="button" tabindex="-1" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
+        <button type="button" tabindex="-1" data-enemy="adamSphere" class="enemy-btn">ADAM SPHERE</button>
+        <button type="button" tabindex="-1" data-enemy="adam" class="enemy-btn">ADAM</button>
       </div>
 
       <div class="pause-menu-label">DEBUG</div>
-      <button type="button" id="pause-debug-toggle" class="pause-menu-btn">DEBUG DISPLAY : OFF</button>
+      <button type="button" tabindex="-1" id="pause-debug-toggle" class="pause-menu-btn">DEBUG DISPLAY : OFF</button>
       <div id="r10-dbg-copy-row">
-        <button type="button" id="r10-dbg-copy-btn" class="pause-menu-btn">COPY DEBUG</button>
+        <button type="button" tabindex="-1" id="r10-dbg-copy-btn" class="pause-menu-btn">COPY DEBUG</button>
         <span id="r10-dbg-copy-status"></span>
       </div>
 
-      <button type="button" id="pause-resume-btn" class="pause-menu-btn">RESUME</button>
+      <button type="button" tabindex="-1" id="pause-resume-btn" class="pause-menu-btn">RESUME</button>
     </div>
   </div>
 
@@ -247,24 +267,24 @@
       <div class="touch-stick"></div>
     </div>
     <div id="touch-buttons">
-      <button type="button" id="touch-fire" class="touch-btn">FIRE</button>
-      <button type="button" id="touch-reload" class="touch-btn">RELOAD</button>
-      <button type="button" id="touch-stealth" class="touch-btn">STEALTH</button>
+      <button type="button" tabindex="-1" id="touch-fire" class="touch-btn">FIRE</button>
+      <button type="button" tabindex="-1" id="touch-reload" class="touch-btn">RELOAD</button>
+      <button type="button" tabindex="-1" id="touch-stealth" class="touch-btn">STEALTH</button>
       <!-- 4th round: FLASH retired, this slot now hosts FOCUS/AUTO AIM (held, same as FIRE). -->
-      <button type="button" id="touch-focus" class="touch-btn">FOCUS</button>
-      <button type="button" id="touch-dash-n" class="touch-btn">N-DASH</button>
-      <button type="button" id="touch-dash-s" class="touch-btn">S-STEP</button>
+      <button type="button" tabindex="-1" id="touch-focus" class="touch-btn">FOCUS</button>
+      <button type="button" tabindex="-1" id="touch-dash-n" class="touch-btn">N-DASH</button>
+      <button type="button" tabindex="-1" id="touch-dash-s" class="touch-btn">S-STEP</button>
       <!-- ESCAPE-exclusive: LB/X WEST DASH, RB/B EAST DASH have no LAB
            touch equivalent at all — these two buttons only exist so ESCAPE
            has real touch parity for them, hidden unless body.escape-mode
            (see style.css / game.js's theme-btn click handler). -->
-      <button type="button" id="touch-dash-w" class="touch-btn touch-escape-only">W-DASH</button>
-      <button type="button" id="touch-dash-e" class="touch-btn touch-escape-only">E-DASH</button>
+      <button type="button" tabindex="-1" id="touch-dash-w" class="touch-btn touch-escape-only">W-DASH</button>
+      <button type="button" tabindex="-1" id="touch-dash-e" class="touch-btn touch-escape-only">E-DASH</button>
       <!-- NEW FEATURE: METROPOLIS COLLAPSE — touch equivalent of the
            gamepad's LB+RB JUMP combo (see game.js's touch-dash-jump wiring
            and pollGamepad()'s ESCAPE branch). ESCAPE-exclusive, same as
            W-DASH/E-DASH above. -->
-      <button type="button" id="touch-dash-jump" class="touch-btn touch-escape-only">JUMP</button>
+      <button type="button" tabindex="-1" id="touch-dash-jump" class="touch-btn touch-escape-only">JUMP</button>
     </div>
   </div>
 

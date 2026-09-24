@@ -142,6 +142,21 @@ const ESCAPE_DEPTH_SPEED = 0.9; // depthPos units/sec at full stick deflection
 const ESCAPE_DEPTH_SCALE_RANGE = 0.18;
 const ESCAPE_DEPTH_SCREEN_RANGE_PX = 46;
 const ESCAPE_DEPTH_DASH_NUDGE = 0.35; // brief depthPos push on NORTH/SOUTH instant DASH, on top of the world-z burst
+// 29TH ROUND (item 7): SOUTH used to be allowed all the way to depthPos=-1,
+// which (per computeEscapePlayerDrawRect()'s bottomY/scale formulas) drops
+// the player's own screen anchor low enough, and grows the sprite large
+// enough, that the bike's front tire visually crosses below the
+// "LAB / EXPERIMENT AREA" HUD text (#theme-label, CSS-pinned near the
+// screen bottom). Measured empirically via Playwright screenshots at a
+// range of depthPos values with a pixel reference line at the label's real
+// getBoundingClientRect().top: the tire stays clearly above the label
+// through depthPos=-0.25, is borderline at -0.30, and visibly overlaps by
+// -0.35+. -0.3 keeps a small safety margin. Applied to BOTH the continuous
+// SOUTH input clamp below AND the SOUTH DASH depthPos nudge (see
+// updateEscapePlayer()'s southDash branch) — only the DASH's own
+// dashScalePulse (a separate, brief size-only effect) stays unclamped, per
+// spec's explicit allowance.
+const ESCAPE_DEPTH_SOUTH_LIMIT = -0.3;
 // 13TH ROUND (item 1): decay rate for the NORTH/SOUTH DASH scale pulse
 // (1/rate ~= the time constant) — ~120ms, short enough to read as a snap,
 // never a residual offset from the normal depth-based perspective scale.
@@ -254,8 +269,14 @@ const COLLAPSE_JUMP_MS = 620;              // airborne arc duration
 const COLLAPSE_RECOVER_MS = 500;           // STEP10: brief settle before returning to normal ESCAPE
 const COLLAPSE_MIN_INTERVAL_MS = 9000;     // how soon after one cycle ends the next can begin
 const COLLAPSE_MAX_INTERVAL_MS = 15000;
-const COLLAPSE_SHAKE_PEAK_PX = 4;          // camera shake jitter amplitude at its strongest (quake start) — was 7
-const COLLAPSE_TILT_MAX_RAD = 1.1 * Math.PI / 180; // whole-scene rotation during quake — was 2.4deg — "消失点が左右へ動く" via one cheap canvas transform, never touches project()/world math
+// 29TH ROUND (item 6): 4px/1.1deg (this round's own prior halving, from the
+// original 7px/2.4deg "eye-hurting" values) read as too weak to tell an
+// earthquake actually happened — the 地震→崩落 causal link got lost. Bumped
+// partway back up (NOT to the original 7px/2.4deg, NOT a duration change —
+// COLLAPSE_QUAKE_MS stays 700ms) so the shake is clearly noticeable again
+// without returning to the original discomfort.
+const COLLAPSE_SHAKE_PEAK_PX = 5.5;        // camera shake jitter amplitude at its strongest (quake start) — was 7, then 4
+const COLLAPSE_TILT_MAX_RAD = 1.6 * Math.PI / 180; // whole-scene rotation during quake — was 2.4deg, then 1.1deg — "消失点が左右へ動く" via one cheap canvas transform, never touches project()/world math
 // 24TH ROUND (items 10-14): rolling-rebar/steel/concrete debris — replaces
 // the old fixed-lane "obstacles" (which only ever scrolled straight toward
 // the camera on a locked screen-X lane, never fell/bounced/rolled) with a
@@ -1459,10 +1480,42 @@ function r10CollectSnapshot(ts) {
       // applied to this enemy's idle-recheck wait window (see
       // ENEMY_ATTACK_FREQ_MULT/enemyAttackFreqMult()) — lower = more
       // frequent attacks; 1 = unchanged from pre-Round-11 baseline.
-      freqMult: enemyAttackFreqMult(e.type) },
-    input: { mode: d.inputMode, fireBtn: state.input.fireHeld,
-      stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
-      aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0) },
+      freqMult: enemyAttackFreqMult(e.type),
+      // 29TH ROUND (item 18): ENEMY field-group additions — attackState
+      // itself (previously only under enemy12 below), remaining time until
+      // the next idle-check re-roll, the real timestamp of the most recent
+      // idle->attack transition (see updateEnemy()'s wrapper), and why the
+      // last lock-on cancel happened (or '-' if none is currently pending/
+      // recent) — lets a real device log distinguish "AI genuinely stalled"
+      // from "AI correctly staying idle because of COVER".
+      attackState: e.attackState,
+      nextAttackInMs: e.nextIdleCheckAt ? Math.max(0, Math.round(e.nextIdleCheckAt - ts)) : 0,
+      lastAttackAt: Math.round(state.enemyLastAttackAt || 0),
+      lockCancelledReason: state.enemyLockCancelledReason || '-' },
+    // 29TH ROUND (item 18): INPUT field-group additions — raw stick/button
+    // state read fresh from navigator.getGamepads() (mirrors the existing
+    // `gamepad:` group's own pattern below), the X-resume consume/rearm
+    // state (see xResumeGuardUntilRelease's own comment, item 11), whether
+    // RB is currently held, and PAUSE/COVER/lastResumeAt — so a real-device
+    // log can tell "input not arriving at all" (raw values stay at rest)
+    // apart from "input arriving but correctly gated" (paused/cover true).
+    input: (() => {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const gp = state.gamepadIndex !== null ? pads[state.gamepadIndex] : null;
+      const btn = (i) => !!(gp && gp.buttons[i] && gp.buttons[i].pressed);
+      return {
+        mode: d.inputMode, fireBtn: state.input.fireHeld,
+        stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
+        aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0),
+        rawLeftStick: gp ? (gp.axes[0] || 0).toFixed(2) + ',' + (gp.axes[1] || 0).toFixed(2) : '-',
+        rawRightStick: gp ? (gp.axes[2] || 0).toFixed(2) + ',' + (gp.axes[3] || 0).toFixed(2) : '-',
+        rawButtons: gp ? gp.buttons.map((b, i) => (b && b.pressed ? i : null)).filter((i) => i !== null).join(',') : '-',
+        xEdge: btn(2), xConsumed: !!state.xResumeGuardUntilRelease,
+        rbHeld: btn(5),
+        gameplayInputEnabled: state.gameStarted, paused: state.paused,
+        cover: isPlayerInCover(), lastResumeAt: Math.round(state.lastResumeAt || 0),
+      };
+    })(),
     // 12TH ROUND (item 76): new field groups for the always-on background
     // DEBUG collection — PLAYER/AIM/FOCUS/ENEMY/ATTACK/PROJECTILE. Built
     // from the SAME functions the real gameplay logic already calls
@@ -1569,10 +1622,19 @@ function r10UpdateDebugPanel(ts) {
     ' hits=' + s.enemy.hits + ' miss=' + s.enemy.miss +
     '\n invuln=' + s.enemy.invulnerable + ' counterRemain=' + s.enemy.counterPhaseRemainMs +
     ' thresholds=' + (s.enemy.triggeredThresholds || '-') +
-    '\n z=' + s.enemy.z + ' approach=' + s.enemy.approachState + ' freqMult=' + s.enemy.freqMult;
+    '\n z=' + s.enemy.z + ' approach=' + s.enemy.approachState + ' freqMult=' + s.enemy.freqMult +
+    // 29TH ROUND item 18: attackState/nextAttackInMs/lastAttackAt/lockCancelledReason
+    '\n attackState=' + s.enemy.attackState + ' nextAttackInMs=' + s.enemy.nextAttackInMs +
+    ' lastAttackAt=' + s.enemy.lastAttackAt + ' lockCancelledReason=' + s.enemy.lockCancelledReason;
 
   r10DbgInputEl.textContent = 'INPUT mode=' + s.input.mode + ' fireBtn=' + s.input.fireBtn +
     '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim +
+    // 29TH ROUND item 18: raw stick/button state + X consume/rearm + RB held
+    // + paused/cover/lastResumeAt — lets a real device distinguish "input
+    // not arriving" from "input arriving but blocked".
+    '\n rawL=' + s.input.rawLeftStick + ' rawR=' + s.input.rawRightStick + ' rawButtons=[' + s.input.rawButtons + ']' +
+    '\n xEdge=' + s.input.xEdge + ' xConsumed=' + s.input.xConsumed + ' rbHeld=' + s.input.rbHeld +
+    '\n playIn2=' + s.input.gameplayInputEnabled + ' paused=' + s.input.paused + ' cover=' + s.input.cover + ' lastResumeAt=' + s.input.lastResumeAt +
     '\nGAMEPAD conn=' + s.gamepad.connected + ' idx=' + s.gamepad.index + ' id=' + s.gamepad.id +
     '\n poll=' + s.gamepad.pollingActive + ' uiIn=' + s.gamepad.uiInputEnabled + ' playIn=' + s.gamepad.gameplayInputEnabled +
     ' settle=' + s.gamepad.settleActive +
@@ -1651,12 +1713,28 @@ function r10FormatDebugText(s) {
   lines.push('z: ' + s.enemy.z);
   lines.push('approachState: ' + s.enemy.approachState);
   lines.push('attackFreqMult: ' + s.enemy.freqMult);
+  // 29TH ROUND item 18
+  lines.push('attackState: ' + s.enemy.attackState);
+  lines.push('nextAttackInMs: ' + s.enemy.nextAttackInMs);
+  lines.push('lastAttackAt: ' + s.enemy.lastAttackAt);
+  lines.push('lockCancelledReason: ' + s.enemy.lockCancelledReason);
   lines.push('');
   lines.push('INPUT');
   lines.push('mode: ' + s.input.mode);
   lines.push('fireButton: ' + s.input.fireBtn);
   lines.push('rightStick: ' + s.input.stickR);
   lines.push('aim: ' + s.input.aim);
+  // 29TH ROUND item 18
+  lines.push('rawLeftStick: ' + s.input.rawLeftStick);
+  lines.push('rawRightStick: ' + s.input.rawRightStick);
+  lines.push('rawButtons: [' + s.input.rawButtons + ']');
+  lines.push('xEdge: ' + s.input.xEdge);
+  lines.push('xConsumed: ' + s.input.xConsumed);
+  lines.push('rbHeld: ' + s.input.rbHeld);
+  lines.push('gameplayInputEnabled: ' + s.input.gameplayInputEnabled);
+  lines.push('paused: ' + s.input.paused);
+  lines.push('cover: ' + s.input.cover);
+  lines.push('lastResumeAt: ' + s.input.lastResumeAt);
   lines.push('');
   lines.push('GAMEPAD');
   lines.push('connected: ' + s.gamepad.connected);
@@ -2617,7 +2695,6 @@ const state = {
       nextEventAt: 6000, // real elapsed ms before the FIRST cycle can fire (real interval is re-rolled every cycle after — see updateEscapeCollapse())
       shakeX: 0, shakeY: 0, tiltAngle: 0,
       obstacles: [],         // [{ z, worldX, screenXAtHit, resolved, hit }]
-      debrisVariant: 0,      // 28TH ROUND item 2: 0=A concrete+short rebar, 1=B thin rebar+small fragments, 2=C wall fragments+bent rebar
     },
     // 9TH ROUND (item 36): counts down from ESCAPE_TIME_LIMIT_SEC in real
     // elapsed seconds (see frame()'s ESCAPE branch); reset by setGameMode()
@@ -2648,6 +2725,10 @@ const state = {
   // returns neutral input but keeps re-syncing prevButtons so no stale/
   // noisy pre-settle state can leak in as a real input once settle ends.
   gamepadSettleUntil: 0,
+  // 29TH ROUND item 11: true from the instant X closes PAUSE until button 2
+  // is physically released — see pollGamepad()'s own comment for the full
+  // same-frame stale-action root cause this guards against.
+  xResumeGuardUntilRelease: false,
   // 15TH ROUND (items 29-34): R3 (right-stick click)-HOLD FOCUS. Timestamp
   // of R3's own most recent rising edge (button 11), or null while R3 is
   // not held — pollGamepad() compares `now - r3HoldStartAt` against
@@ -2668,6 +2749,15 @@ const state = {
   lastGamepadInputAt: 0,
   touchGestureReceivedAt: 0,
   audioUnlockedAt: 0,
+  // 29TH ROUND (item 18): DEBUG MODE INPUT/ENEMY field-group additions —
+  // lastResumeAt (stamped in togglePauseMenu()'s resume branch), and
+  // enemyLastAttackAt/enemyLockCancelledReason (stamped by updateEnemy()'s
+  // wrapper and the two COVER lock-cancel sites respectively) — so the
+  // panel can distinguish "input not arriving" from "input arriving but
+  // blocked" per the spec's own framing.
+  lastResumeAt: 0,
+  enemyLastAttackAt: 0,
+  enemyLockCancelledReason: '-',
   // 24TH ROUND item 8: real diagnostic evidence for BGM-silent-until-tap —
   // tryStartBgm()'s .catch() used to swallow the actual rejection reason
   // entirely (`.catch(() => {})`), so a real device's DEBUG panel could
@@ -3093,6 +3183,14 @@ function pollGamepad(now) {
     const prev = state.prevButtons;
     const pressed = (i) => !!(b[i] && b[i].pressed);
     const edge = (i) => pressed(i) && !prev[i];
+    // 29TH ROUND item 11: X RESUME consume/re-arm — once X (button 2) closes
+    // PAUSE, this clears itself only once button 2 is physically released
+    // (never on a timer), so a single X press can never ALSO register as a
+    // fresh WEST DASH edge no matter how long it's held past the resume
+    // instant. See the two `xResumeGuardUntilRelease = true` set-sites
+    // (ESCAPE and LAB/COMBAT branches below) and their own comments for the
+    // full root-cause story.
+    if (state.xResumeGuardUntilRelease && !pressed(2)) state.xResumeGuardUntilRelease = false;
     // 9TH ROUND (item 39-43): cheap diagnostic-only field writes (no
     // console/log spam) — records the most recent raw button edge for the
     // DEBUG panel, regardless of gameStarted/mode. Never read by any
@@ -3137,6 +3235,25 @@ function pollGamepad(now) {
     // against the next frame too, then this frame returns neutral input,
     // never reaching the gpFire/DASH lines below.
     if (!state.gameStarted && state.assetsReady) {
+      // 29TH ROUND item 9: root cause of "最初はGamepadで操作できるが、途中で
+      // 効かなくなる" on the INPUT MODE SELECT screen — #mode-btn-controller
+      // and #mode-btn-touch are real <button> elements. The SAME DOM-focus
+      // class of bug togglePauseMenu() already root-caused and fixed for
+      // PAUSE→RESUME (a focused, now-inert button can keep intercepting
+      // D-PAD/stick input as native focus-navigation on gamepad-capable
+      // WebViews, even though it never receives a visible :focus ring) can
+      // also happen HERE: any real pointer/touch interaction with the
+      // screen before a gamepad confirm (e.g. an accidental/exploratory tap,
+      // or a screen-reader/accessibility pass some WebViews perform) leaves
+      // one of these buttons focused, after which D-PAD input silently stops
+      // reaching this polling-based nav logic. Defensively blurring any
+      // focused element on every poll while this screen is showing is cheap
+      // (a no-op when nothing is focused) and can only ever unstick input,
+      // never break it — this game's own input reading here is 100%
+      // poll-based, never focus-dependent.
+      if (document.activeElement && typeof document.activeElement.blur === 'function' && document.activeElement !== document.body) {
+        document.activeElement.blur();
+      }
       // 24TH ROUND item 4: D-PAD UP/DOWN (12/13) or LEFT STICK Y move the
       // highlighted mode-select option (0=CONTROLLER, 1=TOUCH) without
       // confirming anything — updateModeSelectFocusUI() reflects this
@@ -3199,14 +3316,31 @@ function pollGamepad(now) {
       else depthAxis = applyEscapeMoveCurve(gp.axes[1] || 0);
       gpMove.y = depthAxis;
 
-      // 24TH ROUND item 7: while PAUSE is open, X closes it instantly — checked
-      // FIRST and gated strictly on state.paused, so it can never also land as
-      // WEST DASH (the westDash edge(2) line right below still runs every
-      // frame regardless, but consumeActions()/the ESCAPE update path never
-      // apply it while state.paused is true — see togglePauseMenu()'s own
-      // comment — so this exact press is fully safe either way).
-      if (state.paused && edge(2)) state.actions.pauseToggle = true;      // X = CLOSE PAUSE (paused only)
-      if (edge(2)) state.escape.actions.westDash = true;                  // X = WEST DASH
+      // 24TH ROUND item 7 (root-caused + fixed 29TH ROUND item 11): the old
+      // comment here claimed the unconditional westDash edge(2) line below
+      // was "safe either way" because state.paused would already be true
+      // when consumeActions()/the ESCAPE update path looked at it — but
+      // pollGamepad() runs BEFORE consumeActions()/togglePauseMenu() in the
+      // SAME frame() call (see frame()'s own call order), so on the exact
+      // frame X closes PAUSE: this line sets state.escape.actions.westDash
+      // = true FIRST (state.paused is still true at this exact instant),
+      // THEN consumeActions() reads that already-true flag out, THEN
+      // actions.pauseToggle flips state.paused to false, and ONLY THEN does
+      // the `if (!state.paused)` gameplay gate open — letting the
+      // already-captured stale westDash=true sail straight through and fire
+      // a real dash on the very frame RESUME happens. Confirmed via a
+      // Playwright gamepad-mock repro (p.strafeOffset moved a full
+      // WEST-DASH distance from a single X press used only to close PAUSE).
+      // Fixed two ways: (1) westDash is now gated on !state.paused, checked
+      // at the SAME instant it would be set — so while paused, X can only
+      // ever produce pauseToggle, never westDash — and (2) an explicit
+      // "consumed until release" guard (xResumeGuardUntilRelease, cleared
+      // only once button 2 is physically released — see its own comment
+      // just above the pressed()/edge() helpers) makes X unable to fire a
+      // fresh WEST DASH even on the frame(s) immediately after resume if the
+      // physical button is still being held down at that instant.
+      if (state.paused && edge(2)) { state.actions.pauseToggle = true; state.xResumeGuardUntilRelease = true; } // X = CLOSE PAUSE (paused only) — consumed
+      if (edge(2) && !state.paused && !state.xResumeGuardUntilRelease) state.escape.actions.westDash = true; // X = WEST DASH
       if (edge(1)) state.escape.actions.eastDash = true;                  // B = EAST DASH
       if (edge(3)) state.escape.actions.northBackstep = true;             // Y = NORTH BACKSTEP
       if (edge(0)) state.escape.actions.southDash = true;                 // A = SOUTH DASH
@@ -3341,13 +3475,12 @@ function pollGamepad(now) {
     if (r3Pressed && state.r3HoldStartAt == null) state.r3HoldStartAt = now || 0;
     else if (!r3Pressed) state.r3HoldStartAt = null;
     const gpFocusHeldLocal = r3Pressed && state.r3HoldStartAt != null && (now || 0) - state.r3HoldStartAt >= FOCUS_R3_HOLD_MS;
-    // 24TH ROUND item 7: same PAUSE-only X=CLOSE as the ESCAPE branch above —
-    // gated strictly on state.paused, never fires alongside the normal
-    // WEST DASH meaning of X below (that press is dropped harmlessly while
-    // state.paused is true either way — see togglePauseMenu()'s comment).
-    if (state.paused && edge(2)) state.actions.pauseToggle = true; // X = CLOSE PAUSE (paused only)
+    // 24TH ROUND item 7 (root-caused + fixed 29TH ROUND item 11): same
+    // same-frame stale-flag bug and same two-part fix as the ESCAPE branch
+    // above — see its own comment for the full root-cause explanation.
+    if (state.paused && edge(2)) { state.actions.pauseToggle = true; state.xResumeGuardUntilRelease = true; } // X = CLOSE PAUSE (paused only) — consumed
     if (edge(3)) state.actions.northDash = true;      // Y = NORTH DASH
-    if (edge(2)) state.actions.westDash = true;       // X = WEST DASH
+    if (edge(2) && !state.paused && !state.xResumeGuardUntilRelease) state.actions.westDash = true; // X = WEST DASH
     if (edge(1)) state.actions.eastDash = true;       // B = EAST DASH
     if (edge(0)) state.actions.southDash = true;      // A = SOUTH DASH / BACKSTEP
     // 10TH ROUND (items 28-29) / 15TH ROUND (items 29, 34): LB is the
@@ -3727,6 +3860,9 @@ function togglePauseMenu() {
   if (state.paused) {
     bgmAudioEl.pause();
   } else {
+    // 29TH ROUND (item 18): real resume-instant timestamp for the DEBUG
+    // panel's INPUT group.
+    state.lastResumeAt = performance.now();
     // 27TH ROUND item 10: root cause of "PAUSEから復帰後、画面をタッチする
     // まで操作が効かない" — RESUME (and every other pause-menu button:
     // STAGE TYPE/GAME MODE/ENEMY SELECT/AIM SENSITIVITY/DEBUG/etc.) is a
@@ -4155,8 +4291,11 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   // gamepad (see pollGamepad()'s ESCAPE branch, which previously left
   // gpMove.y at 0 always). moveY<0 (stick/D-PAD UP) = NORTH = away =
   // es.depthPos toward +1; moveY>0 = SOUTH = toward -1. No auto-recovery —
-  // see ESCAPE_DEPTH_SPEED's own comment.
-  es.depthPos = Math.max(-1, Math.min(1, es.depthPos - moveY * ESCAPE_DEPTH_SPEED * dt));
+  // see ESCAPE_DEPTH_SPEED's own comment. 29TH ROUND (item 7): SOUTH is
+  // floored at ESCAPE_DEPTH_SOUTH_LIMIT (not -1) so the player can never
+  // scroll/walk south of the LAB/EXPERIMENT AREA text — see that
+  // constant's own comment for how the value was measured.
+  es.depthPos = Math.max(ESCAPE_DEPTH_SOUTH_LIMIT, Math.min(1, es.depthPos - moveY * ESCAPE_DEPTH_SPEED * dt));
 
   // 11TH ROUND (items 6-8, 32): DASH is now a true INSTANT teleport — the
   // full distance is applied in THIS single frame (no eased travel window
@@ -4187,22 +4326,22 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     const oldCx = state.centerX + p.strafeOffset;
     const bottomYNow = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
     const frameNow = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
-    // 27TH ROUND item 8: real-play feedback said the afterimages clustered
-    // near the dash's START position only — the destination end never got
-    // one, so the trail read as "where it left" rather than a real motion
-    // streak toward "where it landed". newStrafeOffset is computed FIRST
-    // (same clamp math the player's own final position uses below) so this
-    // third snapshot's cx is the true post-dash landing spot, not a guess.
+    // 29TH ROUND (item 8): real-play feedback said 3 simultaneous ghosts
+    // (start/mid/end) read as clutter rather than a single motion streak,
+    // and the start-position ghost specifically looked like it was
+    // overlapping/duplicating the player's own pre-dash pose. Rebuilt to
+    // spawn exactly ONE afterimage per dash, placed 65% of the way from
+    // start to end — clearly past the start point (never overlapping it)
+    // and clearly offset toward the landing position, without sitting
+    // exactly on top of the final resting pose either. newStrafeOffset is
+    // computed FIRST (same clamp math the player's own final position uses
+    // below) so the single snapshot's placement is derived from the true
+    // post-dash landing spot, not a guess.
     const newStrafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     if (imgReady(frameNow.img)) {
-      const startRect = computeEscapePlayerDrawRect(oldCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
-      es.afterimages.push({ img: frameNow.img, dx: startRect.dx, dy: startRect.dy, drawW: startRect.drawW, drawH: startRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad });
-      const midCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
-      const midRect = computeEscapePlayerDrawRect(midCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
-      es.afterimages.push({ img: frameNow.img, dx: midRect.dx, dy: midRect.dy, drawW: midRect.drawW, drawH: midRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS * 0.7, angleRad: afterimageAngleRad });
-      const endCx = state.centerX + newStrafeOffset;
-      const endRect = computeEscapePlayerDrawRect(endCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
-      es.afterimages.push({ img: frameNow.img, dx: endRect.dx, dy: endRect.dy, drawW: endRect.drawW, drawH: endRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad });
+      const ghostCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.65;
+      const ghostRect = computeEscapePlayerDrawRect(ghostCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
+      es.afterimages.push({ img: frameNow.img, dx: ghostRect.dx, dy: ghostRect.dy, drawW: ghostRect.drawW, drawH: ghostRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad });
     }
     p.strafeOffset = newStrafeOffset;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
@@ -4229,7 +4368,10 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
   if (actions.southDash) {
     forwardDelta += ESCAPE_DIR_SIGN * ESCAPE_SOUTH_DASH_DISTANCE_Z;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
-    es.depthPos = Math.max(-1, es.depthPos - ESCAPE_DEPTH_DASH_NUDGE);
+    // 29TH ROUND (item 7): the position nudge is clamped at the same
+    // ESCAPE_DEPTH_SOUTH_LIMIT as continuous SOUTH input — only the
+    // dashScalePulse below (a brief size-only effect) stays unclamped.
+    es.depthPos = Math.max(ESCAPE_DEPTH_SOUTH_LIMIT, es.depthPos - ESCAPE_DEPTH_DASH_NUDGE);
     // NEXT ROUND (spec section 1): real-play feedback said the old +2% pulse
     // was too subtle to notice once depthPos was already near its own max
     // (the "5枚目相当" already-largest state) — bumped to a genuinely visible
@@ -4372,6 +4514,7 @@ function advanceCollapseWorldZ(forwardDelta, dt, now) {
       if (Math.abs(playerScreenX - screenX) < COLLAPSE_DEBRIS_HALF_W_PX) {
         ob.resolved = true;
         ob.hit = true;
+        ob.hitAt = now; // 29TH ROUND item 2: drives the brief brightness-only hit flash in renderCollapseObstacles() — never a color/hue change
         damageEscapePlayer(COLLAPSE_DEBRIS_DAMAGE, now);
       }
     }
@@ -4576,10 +4719,33 @@ function updateCombatQuake(dt, now) {
 // established (explicitly never potato/pale-brown-triangle — item 14's
 // repeated prohibition), with two THICK rebar rods added (not just a thin
 // sliver) so the rotating-rebar read is unmistakable at combat/escape scale.
-function renderCollapseObstacles() {
+// 29TH ROUND items 2-3: complete redesign per explicit new spec — "大きさの
+// 異なる3つ程度のコンクリート立方体が集合した瓦礫", NO rebar/rod/straw-like
+// parts at all, and a single grayscale/concrete palette with NO red/brown/
+// warm tone anywhere, including the hit-feedback state (see below — the OLD
+// ob.hit branch swapped in a red/orange palette #a8402f/#742a1c/#c9705a,
+// which is the actual root cause of "赤い瓦礫と灰色の瓦礫が混在" real-device
+// report: a piece that had already hit the player stayed permanently red
+// for the rest of its rolling lifetime while OTHER still-grey pieces kept
+// falling/rolling alongside it. Fixed by dropping the red palette entirely —
+// hit feedback is now a brief brightness lift on the SAME grey tones, never
+// a color/hue change, so nothing on screen can ever read as "red debris".
+const DEBRIS_CUBE_COUNT = 3;
+const DEBRIS_CUBE_SIZE_RATIOS = [1.0, 0.72, 0.5]; // large / medium / small
+// 29TH ROUND item 4: zFilter lets the caller depth-sort debris against the
+// BOSS instead of a fixed draw order — see the ESCAPE render branch in
+// frame(), which now calls this ONCE for debris with z > e.z (farther than
+// the boss — drawn BEFORE renderEnemy() so the boss correctly overlaps them)
+// and ONCE for z <= e.z (nearer than the boss — drawn AFTER, so THEY
+// correctly overlap the boss). undefined/omitted draws everything, for any
+// other caller that doesn't need boss-relative depth sorting.
+function renderCollapseObstacles(zFilter) {
   const debris = state.escape.collapse.obstacles;
+  const now = performance.now();
   for (const ob of debris) {
     if (ob.state === 'pending') continue; // not fallen yet — nothing to draw
+    if (zFilter === 'behindBoss' && !(ob.z > state.enemy.z)) continue;
+    if (zFilter === 'frontOfBoss' && !(ob.z <= state.enemy.z)) continue;
     const proj = project(ob.worldX, CORRIDOR_FLOOR_Y - ob.fallHeight, ob.z);
     const h = 62 * proj.scale;
     if (h < 2) continue;
@@ -4588,61 +4754,38 @@ function renderCollapseObstacles() {
     ctx.save();
     ctx.translate(proj.x, proj.y);
     ctx.rotate(ob.rotationAngle);
-    // 26TH ROUND item 12 (visual QC): real screenshot review found these
-    // concrete-tone colors sat too close in luminance to the near-black
-    // ESCAPE corridor background — the piece WAS drawing correctly (angular
-    // 3-face blocks + rebar, confirmed by direct pixel inspection) but read
-    // as a faint smudge rather than a legible fragment. Brightened across
-    // the board (front/dark/top-highlight all lifted), never changing the
-    // shapes/geometry themselves, just enough separation to read clearly
-    // against the dark background at any distance.
-    // 28TH ROUND item 2: root-caused via a rotation-angle screenshot test
-    // (?variant static rotationAngle=0.25) — at a shallow/near-flat rotation
-    // the OLD warm brownish-tan palette (#5a5348/#332f28/#84796a) genuinely
-    // read as cardboard/kraft-paper, exactly the user's complaint, because
-    // "brown + flat rectangle + soft corners" IS the cardboard-box visual
-    // language. Fixed to a cool, neutral concrete grey (a touch of blue,
-    // zero warm/brown bias) so no rotation angle can make it read as paper.
-    const baseColor = ob.hit ? '#a8402f' : '#6d716c';
-    const darkColor = ob.hit ? '#742a1c' : '#3a3d3a';
-    const topColor = ob.hit ? '#c9705a' : '#9aa39c';
-    // 28TH ROUND item 2: three DESIGN VARIANTS (A/B/C per spec) selectable
-    // via state.escape.collapse.debrisVariant (also window.__darkoutTps.
-    // setDebrisVariant(n) for screenshot comparison) — differ only in piece-
-    // count/size ratio and rebar count/shape, reusing the exact same 3-face-
-    // block + shaded-cylinder-rebar drawing code below so all three stay
-    // equally "solid concrete + metal", never flat/papery.
-    // A=0: one dominant concrete chunk + a couple of smaller chips, short
-    //      rebar stubs barely poking past the block edge.
-    // B=1: several smaller, more numerous fragments (no single dominant
-    //      block), MORE rebar rods (4, thinner) — a "scattered debris"
-    //      read rather than one big rock.
-    // C=2: two big, wide, flatter wall-panel-style slabs (bigger W:H ratio)
-    //      + a visibly BENT rebar (drawn as 2 segments meeting at an angle,
-    //      not one straight rod) mixed in with a straight one.
-    const variant = (state.escape && state.escape.collapse && state.escape.collapse.debrisVariant) || 0;
-    const pieceCount = variant === 1 ? 5 : 3;
-    for (let i = 0; i < pieceCount; i++) {
-      const fx = (rnd(i * 3 + 1) - 0.5) * w * 0.7;
-      const fy = (rnd(i * 3 + 5) - 0.5) * h * 0.3;
-      const isDominant = variant === 0 && i === 0;
-      const wideSlab = variant === 2;
-      const pieceW = w * (isDominant ? 0.58 : wideSlab ? (0.5 + rnd(i * 3 + 2) * 0.34) : variant === 1 ? (0.22 + rnd(i * 3 + 2) * 0.2) : (0.34 + rnd(i * 3 + 2) * 0.3));
-      const pieceH = h * (isDominant ? 0.78 : wideSlab ? (0.3 + rnd(i * 3 + 3) * 0.22) : variant === 1 ? (0.28 + rnd(i * 3 + 3) * 0.3) : (0.46 + rnd(i * 3 + 3) * 0.5));
-      const rot = (rnd(i * 3 + 4) - 0.5) * 0.9;
-      const depth = Math.min(pieceW, pieceH) * 0.4;
+    // Cool neutral concrete grey — zero warm/brown/red bias at any rotation
+    // angle (confirmed via a rotation-sweep screenshot test). A recent hit
+    // brightens these SAME tones briefly (never swaps to a different hue).
+    const hitBoost = ob.hit && ob.hitAt && (now - ob.hitAt) < 260 ? 1.35 : 1;
+    const lift = (hex, mul) => {
+      const r = Math.min(255, Math.round(parseInt(hex.slice(1, 3), 16) * mul));
+      const g = Math.min(255, Math.round(parseInt(hex.slice(3, 5), 16) * mul));
+      const b = Math.min(255, Math.round(parseInt(hex.slice(5, 7), 16) * mul));
+      return `rgb(${r},${g},${b})`;
+    };
+    const baseColor = lift('#6d716c', hitBoost);
+    const darkColor = lift('#3a3d3a', hitBoost);
+    const topColor = lift('#9aa39c', hitBoost);
+    for (let i = 0; i < DEBRIS_CUBE_COUNT; i++) {
+      const sizeRatio = DEBRIS_CUBE_SIZE_RATIOS[i];
+      const pieceW = w * 0.52 * sizeRatio;
+      const pieceH = h * 0.7 * sizeRatio;
+      // clustered around the shared center — larger cube near the middle,
+      // smaller ones offset so all three read as one fractured pile, never
+      // a stack of separate, unrelated shapes.
+      const fx = (rnd(i * 3 + 1) - 0.5) * w * 0.55 * (i === 0 ? 0.3 : 1);
+      const fy = (rnd(i * 3 + 5) - 0.5) * h * 0.22 + h * 0.12 * (1 - sizeRatio);
+      const rot = (rnd(i * 3 + 4) - 0.5) * 0.8;
+      const depth = Math.min(pieceW, pieceH) * 0.42;
       ctx.save();
       ctx.translate(fx, fy);
       ctx.rotate(rot);
       // front face
       ctx.fillStyle = i === 0 ? baseColor : darkColor;
       ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
-      // 28TH ROUND item 2: small aggregate-speckle dots — the single flat
-      // fillRect above, even in the new grey, still had a uniform/printed
-      // look up close (part of why it could read as cardboard); real
-      // poured concrete shows visible stone aggregate. A handful of tiny
-      // dark+light flecks (seeded, so stable frame-to-frame) breaks up that
-      // flat fill into a genuinely rough/aggregate surface.
+      // aggregate-speckle dots — breaks the flat fill into a genuinely rough
+      // poured-concrete surface rather than a uniform/printed-looking block.
       const speckleCount = 5;
       for (let s = 0; s < speckleCount; s++) {
         const sx = (rnd(i * 7 + s * 2 + 40) - 0.5) * pieceW * 0.8;
@@ -4653,9 +4796,10 @@ function renderCollapseObstacles() {
         ctx.arc(sx, sy, sr, 0, Math.PI * 2);
         ctx.fill();
       }
-      // top face (extruded up-left in FIXED screen space, undone by -rot so
-      // it stays screen-aligned rather than spinning with the piece's own
-      // random tilt): lighter tone reads as a lit, angled concrete face.
+      // top face (extruded in FIXED screen space, undone by -rot so it stays
+      // screen-aligned rather than spinning with the piece's own tilt) —
+      // lighter tone reads as a lit, angled concrete face, giving the cube a
+      // little visible thickness per spec ("少しだけ厚みを感じる陰影").
       ctx.save();
       ctx.rotate(-rot);
       ctx.rotate(-ob.rotationAngle);
@@ -4667,7 +4811,7 @@ function renderCollapseObstacles() {
       ctx.closePath();
       ctx.fillStyle = topColor;
       ctx.fill();
-      // side face: darker, gives the block right-edge thickness
+      // side face: darker, gives the cube right-edge thickness
       ctx.beginPath();
       ctx.moveTo(pieceW / 2, -pieceH / 2);
       ctx.lineTo(pieceW / 2 + depth * 0.6, -pieceH / 2 - depth);
@@ -4677,8 +4821,7 @@ function renderCollapseObstacles() {
       ctx.fillStyle = darkColor;
       ctx.fill();
       ctx.restore();
-      // fine crack lines + a broken-corner chip triangle for a fractured,
-      // not-smooth, concrete read.
+      // fine crack lines + a broken-corner chip triangle — "ひび割れ、欠け".
       ctx.strokeStyle = 'rgba(0,0,0,0.35)';
       ctx.lineWidth = Math.max(0.6, h * 0.012);
       ctx.beginPath();
@@ -4699,90 +4842,6 @@ function renderCollapseObstacles() {
       ctx.strokeRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
       ctx.restore();
     }
-    // 25TH ROUND additional item 4 (+ 28TH ROUND item 2 variants): rebar
-    // rods drawn as shaded cylinders (dark rod + offset bright highlight
-    // stripe = metallic-round read, never a flat line) whose apparent
-    // LENGTH breathes with a fast secondary tumble phase (own per-rod
-    // frequency) to fake end-over-end 3D rotation (foreshortening) on top
-    // of the cluster's shared 2D spin. drawRod() below is shared by all
-    // three variants; variant C also uses it twice per "bent" rod (two
-    // straight segments meeting at a kink point) rather than one straight
-    // line, so a bent rebar reads as genuinely bent, not just rotated.
-    // 28TH ROUND item 2: the OLD tan/beige rebarColor (120,108,92) at a
-    // thin uniform width is exactly what read as "straws" in the rotation-
-    // angle screenshot test — a smooth, warm-toned, featureless line. Fixed
-    // to a darker, cooler rusted-steel tone (visibly metal, not wood/straw
-    // colored) AND thickened further, AND drawRod() now stamps periodic
-    // dark ridge ticks across the rod's width — the actual raised ring
-    // pattern real rebar has — so the silhouette itself reads as ridged
-    // metal rod even in a still frame, not a smooth stick.
-    const rebarColor = 'rgba(74,66,58,0.97)';
-    const rebarHighlight = 'rgba(168,158,142,0.55)';
-    const rodW = Math.max(3.2, h * (variant === 1 ? 0.09 : 0.13));
-    ctx.lineCap = 'round';
-    ctx.save();
-    const drawRod = (x1, y1, x2, y2, tumble, width) => {
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      const tx1 = mx + (x1 - mx) * tumble, ty1 = my + (y1 - my) * tumble;
-      const tx2 = mx + (x2 - mx) * tumble, ty2 = my + (y2 - my) * tumble;
-      ctx.strokeStyle = rebarColor;
-      ctx.lineWidth = width;
-      ctx.beginPath(); ctx.moveTo(tx1, ty1); ctx.lineTo(tx2, ty2); ctx.stroke();
-      ctx.strokeStyle = rebarHighlight;
-      ctx.lineWidth = Math.max(1, width * 0.28);
-      ctx.beginPath();
-      ctx.moveTo(tx1, ty1 - width * 0.22); ctx.lineTo(tx2, ty2 - width * 0.22);
-      ctx.stroke();
-      // ridge ticks: short dark perpendicular strokes at regular intervals
-      // along the rod — the raised-ring texture that reads as "rebar", not
-      // a smooth dowel/straw.
-      const len = Math.hypot(tx2 - tx1, ty2 - ty1);
-      const dirX = (tx2 - tx1) / (len || 1), dirY = (ty2 - ty1) / (len || 1);
-      const perpX = -dirY * width * 0.55, perpY = dirX * width * 0.55;
-      const ridgeCount = Math.max(2, Math.round(len / (width * 1.4)));
-      ctx.strokeStyle = 'rgba(20,17,14,0.55)';
-      ctx.lineWidth = Math.max(1, width * 0.16);
-      for (let r = 1; r < ridgeCount; r++) {
-        const rx = tx1 + dirX * len * (r / ridgeCount);
-        const ry = ty1 + dirY * len * (r / ridgeCount);
-        ctx.beginPath();
-        ctx.moveTo(rx - perpX, ry - perpY);
-        ctx.lineTo(rx + perpX, ry + perpY);
-        ctx.stroke();
-      }
-    };
-    if (variant === 1) {
-      // B: 4 thin rods scattered across the whole cluster footprint.
-      const spans = [
-        [-w * 0.6, -h * 0.5, w * 0.5, -h * 0.05],
-        [-w * 0.35, h * 0.1, w * 0.62, -h * 0.6],
-        [-w * 0.55, h * 0.4, w * 0.15, h * 0.75],
-        [w * 0.05, -h * 0.7, w * 0.6, h * 0.35],
-      ];
-      spans.forEach((s, i) => {
-        const tumble = 0.55 + 0.45 * Math.cos(ob.rotationAngle * (1.6 + i * 0.4) + ob.seed * (1 + i * 0.5) + i);
-        drawRod(s[0], s[1], s[2], s[3], tumble, rodW);
-      });
-    } else if (variant === 2) {
-      // C: one straight rod + one visibly BENT rod (kink at its midpoint,
-      // offset perpendicular to the rod's own axis) mixed together.
-      const tumbleA = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 2.3 + ob.seed);
-      drawRod(-w * 0.6, -h * 0.2, w * 0.62, -h * 0.7, tumbleA, rodW);
-      const bx1 = -w * 0.5, by1 = h * 0.1, bx2 = w * 0.45, by2 = h * 0.7;
-      const bkx = (bx1 + bx2) / 2 + w * 0.16, bky = (by1 + by2) / 2 - h * 0.12; // kink point, offset off the straight line
-      const tumbleB = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 1.7 + ob.seed * 1.7 + 2.1);
-      drawRod(bx1, by1, bkx, bky, tumbleB, rodW);
-      drawRod(bkx, bky, bx2, by2, tumbleB, rodW);
-    } else {
-      // A (default): 2 short stubs barely poking past the dominant block's
-      // own edge — reads as protruding rebar snapped off close to the
-      // concrete, not a separate long rod lying loose.
-      const tumbleA = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 2.3 + ob.seed);
-      const tumbleB = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 1.7 + ob.seed * 1.7 + 2.1);
-      drawRod(-w * 0.3, -h * 0.32, w * 0.4, -h * 0.55, tumbleA, rodW);
-      drawRod(-w * 0.22, h * 0.28, w * 0.28, h * 0.52, tumbleB, rodW);
-    }
-    ctx.restore();
     ctx.restore();
 
     // soft contact shadow pinned to the FLOOR (never rotates/rises with the
@@ -5502,6 +5561,27 @@ function isRoidActivelyFiring(now) {
   return (now - state.enemy.lastShotFiredAt) < ROID_ATTACK_POSE_HOLD_MS;
 }
 
+// 29TH ROUND (item 15): root cause of "連射でずっと赤いまま" — the real-
+// damage hit-flash used to work by extending e.hitFlashUntil (now + 120)
+// on EVERY hit. Under sustained fire (shots landing faster than 120ms
+// apart, which is the normal case), each new hit pushed the deadline
+// further out before the previous window ever expired, so `now <
+// e.hitFlashUntil` read continuously true for as long as the player kept
+// hitting — a solid, non-blinking red wash, not the point-in-time pulse it
+// was meant to be. Genuine blinking needs the opposite design: each hit
+// starts its OWN short, independent ON window measured from ITS OWN
+// instant (e.lastDamageHitAt), not a shared deadline that later hits can
+// push forward. At normal fire cadence (shots noticeably more than
+// ENEMY_HIT_FLASH_ON_MS apart) this reads as a clean RED/normal/RED/normal
+// blink, exactly matching the spec's "点滅" ask — completely separate from
+// e.hitFlashUntil, which stays exactly as before for the COUNTER-attack
+// blink (ROID_COUNTER_BLINK_MS=700ms, a single deliberate long window, not
+// a rapid-hit pulse).
+const ENEMY_HIT_FLASH_ON_MS = 55;
+function isEnemyDamageFlashing(e, now) {
+  return (now - (e.lastDamageHitAt != null ? e.lastDamageHitAt : -Infinity)) < ENEMY_HIT_FLASH_ON_MS;
+}
+
 // 27TH ROUND item 4: root cause of "通常画像にエフェクトだけ乗っている" —
 // isRoidActivelyFiring() above only covers the brief per-shot ping-pong
 // hold. MISSILE (lockon/target/impact) and MULTI MISSILE BARRAGE
@@ -5622,6 +5702,11 @@ function spawnEnemy(type) {
   e.invulnerable = false;
   e.counterPhaseUntil = 0;
   e.hitFlashUntil = 0;
+  // 29TH ROUND (item 15): real-damage hit-flash pulses are now tracked
+  // separately from e.hitFlashUntil (which stays reserved for the longer
+  // COUNTER-attack blink, ROID_COUNTER_BLINK_MS=700ms — untouched) — see
+  // isEnemyDamageFlashing()'s own comment for why.
+  e.lastDamageHitAt = -Infinity;
   e.roidFireFrame = 0;
   e.roidFireDir = 1;
   e.roidFireFrameElapsedMs = 0;
@@ -5827,7 +5912,24 @@ function startEnemyDeath(now) {
   }
 }
 
+// 29TH ROUND (item 18): thin wrapper around the real state machine (renamed
+// updateEnemyCore below) so the DEBUG panel's ENEMY group can report a real
+// lastAttackAt timestamp — the moment attackState most recently left
+// 'idle' — without threading a stamp through every individual attack-kind's
+// own idle->lock-on/telegraph/lockon transition site (there are several,
+// one per SNIPER/MISSILE/SWEEP/BARRAGE/CLAW kind). Captures the state
+// BEFORE and AFTER the real update call and stamps only on a genuine
+// idle->non-idle transition, so it can never fire on identical successive
+// frames or misreport a state that didn't actually change this frame.
 function updateEnemy(dt, now) {
+  const wasIdle = state.enemy.attackState === 'idle';
+  updateEnemyCore(dt, now);
+  if (wasIdle && state.enemy.attackState !== 'idle') {
+    state.enemyLastAttackAt = now;
+    state.enemyLockCancelledReason = '-'; // 29TH ROUND item 18: clears once a real attack actually starts, so a stale 'cover' reading can't linger indefinitely after COVER ends
+  }
+}
+function updateEnemyCore(dt, now) {
   const e = state.enemy;
   const p = state.player;
 
@@ -5866,6 +5968,7 @@ function updateEnemy(dt, now) {
   const rangedLockStates = ['lock_red', 'lock_yellow', 'lockon', 'sweepTelegraph', 'barrageLockon'];
   if (e.kind !== 'claw' && isPlayerInCover() && rangedLockStates.includes(e.attackState)) {
     if (DEBUG_MODE) r10DebugLog('LOCK-ON CANCELLED: player entered COVER (' + e.attackState + ')');
+    state.enemyLockCancelledReason = 'cover'; // 29TH ROUND item 18: DEBUG panel field
     e.attackState = 'idle';
     e.nextIdleCheckAt = now + 400;
   }
@@ -5936,6 +6039,7 @@ function updateEnemy(dt, now) {
       // excluded here and keeps rolling normally. Just requeues the
       // idle-check shortly (same cadence the "too far" miss-branch below
       // already uses) so targeting resumes immediately once COVER ends.
+      state.enemyLockCancelledReason = 'cover'; // 29TH ROUND item 18: DEBUG panel field
       e.nextIdleCheckAt = now + 400;
     } else if (now >= e.nextIdleCheckAt && e.z < 900 && (e.type === 'gabriel' || e.type === 'adam') && e.z >= CLAW_TRIGGER_Z_MAX) {
       // 24TH ROUND items 21-23: still too far for a REAL CLAW range — never
@@ -6374,6 +6478,18 @@ function updateEnemy(dt, now) {
     } else if (e.attackState === 'barrageFalling') {
       for (const m of e.barrage) {
         if (m.impacted || now < m.launchAt) continue;
+        // 29TH ROUND item 14: BARRAGE never stamped lastShotFiredAt at all —
+        // unlike SNIPER (line ~6205) and SWEEP (below), each missile's real
+        // launch instant never triggered the FIRE-pose ping-pong, so the
+        // body sat on one continuous "in attack sequence" look for the whole
+        // multi-missile burst instead of pulsing FIRE per actual launch.
+        // m.launchPosePulsed guards this to fire exactly once per missile,
+        // right when now first crosses its own launchAt — not every frame
+        // it stays true afterward.
+        if (!m.launchPosePulsed) {
+          m.launchPosePulsed = true;
+          if (e.type !== 'gabriel') e.lastShotFiredAt = now;
+        }
         const fallProgress = clamp(1 - (m.impactAt - now) / BARRAGE_FALL_MS, 0, 1);
         m.height = MISSILE_PROJECTILE_START_HEIGHT * (1 - fallProgress);
         if (now >= m.impactAt) {
@@ -6547,6 +6663,17 @@ function computeBodyVisualScale(frame, targetBodyHeightPx) {
   return bodyHeightPx > 0 ? targetBodyHeightPx / bodyHeightPx : 1;
 }
 
+// 29TH ROUND item 5: the player's own current foot/shoe-bottom screen Y in
+// ESCAPE mode — the SAME formula computeEscapePlayerDrawRect()/the DASH
+// afterimage code/the DEBUG screenY field all already use for the player's
+// own bottom edge, reused here (not reinvented) as the hard south limit no
+// enemy render rect may cross. NORTH movement (es.depthPos toward +1) makes
+// this SMALLER (player recedes); SOUTH (toward -1) makes it LARGER (player
+// approaches the camera) — matching applyEscapeMoveCurve()'s own convention.
+function escapePlayerFootY() {
+  return state.cssH * 1.02 - (state.escape.depthPos || 0) * ESCAPE_DEPTH_SCREEN_RANGE_PX;
+}
+
 // Shared by renderEnemy() and fireWeapon() so the hit-test always matches
 // what's actually drawn.
 function computeEnemyDrawRect() {
@@ -6633,8 +6760,24 @@ function computeEnemyDrawRect() {
     const drawW = drawH * aspect;
     const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));
     const anchorFrac = 1.0 - closeT * 0.45;
-    const drawBottomY = proj.y + (1 - anchorFrac) * drawH;
+    let drawBottomY = proj.y + (1 - anchorFrac) * drawH;
     const drawX = proj.x - drawW / 2;
+    // 29TH ROUND item 5: root cause of "GABRIEL/ADAMが主人公を追い越して南
+    // へ出る" — the CLAW attack's 'approach' sub-state closes e.z to a FIXED
+    // world constant (GABRIEL_Z_MIN/ADAM_Z_MIN), tuned for COMBAT mode's
+    // static camera. ESCAPE's own player foot-line is NOT fixed — it moves
+    // with es.depthPos (SOUTH input brings the player's bike closer to the
+    // camera) — so that same fixed zMin can project to a screen Y south of
+    // wherever the player currently is, letting the boss visually pass them.
+    // Clamped here, at render time only (never touches e.z/the attack timing/
+    // hit-test), so the boss can still close in for real (size/pose/effects
+    // keep doing the work per spec: "近接攻撃の迫力はサイズ・攻撃ポーズ・
+    // エフェクトで表現") but its drawn body can never cross the player's own
+    // shoe-bottom line. COMBAT mode is untouched (state.gameMode check).
+    if (state.gameMode === 'escape') {
+      const footY = escapePlayerFootY();
+      if (drawBottomY > footY) drawBottomY = footY;
+    }
     const drawTopY = drawBottomY - drawH;
     return { img, proj, x: drawX, y: drawTopY, w: drawW, h: drawH, cx: proj.x, cy: drawTopY + drawH * 0.42 };
   }
@@ -6694,6 +6837,19 @@ function computeEnemyDrawRect() {
   // clear of a safe top margin, preserving the "迫力"/close-up size.
   const roidTopSafeMarginPx = state.cssH * ROID_TOP_SAFE_MARGIN_FRAC;
   if (dy < roidTopSafeMarginPx) dy += roidTopSafeMarginPx - dy;
+
+  // 29TH ROUND item 5: same south-of-player clamp as GABRIEL/ADAM above,
+  // applied here too per spec's "BOSS全般について" — a no-op in practice
+  // (ROID1/ROID2/DRONE/ADAM SPHERE's own z floor, approachZMinForRoid(), is
+  // already screen-fit-aware, not a raw fixed constant like GABRIEL_Z_MIN/
+  // ADAM_Z_MIN, so this type was not found to reproduce the "passes the
+  // player" bug) but kept as defense-in-depth since it can only ever pull a
+  // render rect north, never push one further south.
+  if (state.gameMode === 'escape') {
+    const footY = escapePlayerFootY();
+    const bottomY = dy + h;
+    if (bottomY > footY) dy = footY - h;
+  }
 
   // 11TH ROUND (items 17-19): ROID1/ROID2 HEAD WEAK POINT — only present
   // when the current frame carries real measured head metadata
@@ -7066,7 +7222,11 @@ function updateBullets(now) {
       } else {
         const hpBefore = e.hp;
         e.hp = Math.max(0, e.hp - BULLET_DAMAGE);
-        e.hitFlashUntil = now + 120;
+        // 29TH ROUND item 15: real damage hits now pulse via
+        // isEnemyDamageFlashing()/e.lastDamageHitAt (a fresh short window
+        // per hit) instead of extending e.hitFlashUntil — see that
+        // function's own comment for the full root-cause story.
+        e.lastDamageHitAt = now;
         spawnPlayerImpact(b.x2, b.y2, now);
         if (DEBUG_MODE) {
           r10DebugState.hitCount++;
@@ -7815,11 +7975,22 @@ function renderBossAttackFullBody() {
 // type is completely untouched (still the original 0.65) — the normal
 // hit-flash system itself is not removed, only re-tuned for these two
 // oversized types.
-const BOSS_HIT_FLASH_TINT_ALPHA = 0.18;
+// 29TH ROUND (item 16): 0.18 turned out too subtle to read as a hit at all
+// ("被弾しても赤くならない") — but the ORIGINAL giant-silhouette bug this
+// constant fixed was purely an alpha-over-large-area problem (0.65 across
+// a ~233x414px rect on a 390px-tall canvas reads as a screen-filling red
+// blob), independent of how long the flash stays on. Item 15's fix (real
+// per-hit blink instead of an indefinitely-extended window) doesn't change
+// that area math, so this can't simply go back to 0.65 either. Raised to a
+// middle value — clearly visible as a hit cue, still well short of the
+// solid-blob threshold that caused the original bug. Needs real-device
+// confirmation (see completion report) since the exact "reads as a blob"
+// threshold was only ever judged visually.
+const BOSS_HIT_FLASH_TINT_ALPHA = 0.38;
 function renderEnemyHitFlash() {
   const e = state.enemy;
   const now = performance.now();
-  if (e.deathState !== 'alive' || now >= e.hitFlashUntil) return;
+  if (e.deathState !== 'alive' || !(isEnemyDamageFlashing(e, now) || now < e.hitFlashUntil)) return;
   const rect = computeEnemyDrawRect();
   if (!imgReady(rect.img)) return;
   let bobY = 0, bobScale = 1;
@@ -7931,11 +8102,22 @@ function renderPlayer(theme) {
   // the separate tint-fade effect below, applied ON TOP of whichever
   // sprite — cover or normal — ends up chosen here).
   const dashActive = nowTs < p.fwdDashUntil || nowTs < p.dashUntil;
-  // 24TH ROUND item 19: NORTH input (p.moveDirNorth, set in updatePlayer())
+  // 24TH ROUND item 19 (+ 29TH ROUND item 1): NORTH input (p.moveDirNorth)
   // suppresses COVER pose so the player visibly stands/switches to the
   // normal WALK sprite before moving north, instead of sliding north while
-  // still drawn crouched in cover.
-  const usingCoverPose = !dashActive && isPlayerInCover() && !p.moveDirNorth;
+  // still drawn crouched in cover. 29TH ROUND item 1: SOUTH input
+  // (p.moveDirSouth) now gets the EXACT SAME treatment — real-device report
+  // was "しゃがみ画像のまま南へ滑って移動する". Root cause: isPlayerInCover()
+  // is a pure barrel-proximity/world-z check (see its own comment) that only
+  // flips false once the corridor has scrolled the barrel's z past
+  // BARREL_TOUCH_Z_MAX — for SOUTH that takes a real moment (barrels recede
+  // via applyForwardDelta()'s b.z -= forwardDelta), during which the OLD
+  // code kept showing the crouched COVER sprite while the world was already
+  // visibly scrolling. Exactly mirroring NORTH's fix: the moment SOUTH is
+  // held, immediately show the normal (south-walk) sprite regardless of
+  // isPlayerInCover()'s still-true geometric state — a deliberate
+  // responsiveness-over-strict-physical-accuracy choice, same as NORTH.
+  const usingCoverPose = !dashActive && isPlayerInCover() && !p.moveDirNorth && !p.moveDirSouth;
   const coverFlip = usingCoverPose && p.coverFacing === 'west';
   const coverFrame = usingCoverPose ? (coverFlip ? ASSETS.player.cover.east : ASSETS.player.cover[p.coverFacing]) : null;
 
@@ -8257,7 +8439,10 @@ function renderEnemy(theme) {
   // whichever pose is active, for every state (idle/movement/attack/
   // damage/CLAW/death) — e.facing is still tracked (updateEnemyFacing())
   // for lane-drift bias math elsewhere, but no longer read here.
-  const flashing = e.deathState === 'alive' && now < e.hitFlashUntil;
+  // 29TH ROUND item 15: `flashing` now also covers the short per-hit damage
+  // pulse (isEnemyDamageFlashing()), not just the longer counter-blink
+  // window (e.hitFlashUntil) — see that function's own comment.
+  const flashing = e.deathState === 'alive' && (isEnemyDamageFlashing(e, now) || now < e.hitFlashUntil);
   ctx.save();
   if (flashing) ctx.filter = 'brightness(2.2)';
 
@@ -9479,6 +9664,16 @@ function frame(ts) {
     // reticle — the PLAYER still has no weapon in ESCAPE, only
     // updateBullets()/fireWeapon()/renderBullets()/renderAimReticle() stay
     // excluded.
+    // 29TH ROUND item 4: root cause of "奥にあるはずの瓦礫がBOSSの上に貼り
+    // 付く" — this used to be a FIXED draw order (all debris always drawn
+    // AFTER, i.e. on top of, renderEnemy() regardless of either object's
+    // actual world-Z), so any debris piece further away than the boss still
+    // visually overlaid it. Fixed with a real depth split: debris farther
+    // than the boss (larger z) draws FIRST so the boss correctly covers it,
+    // then the boss itself, then debris nearer than the boss (smaller z)
+    // draws LAST so it correctly covers the boss — see
+    // renderCollapseObstacles()'s own zFilter comment.
+    renderCollapseObstacles('behindBoss');
     renderEnemy(theme);
     // METROPOLIS COLLAPSE — left/right-avoid hazards render at the same
     // environmental layer as the enemy (both are real world-Z objects via
@@ -9488,7 +9683,7 @@ function frame(ts) {
     // only collapse hazard now is this real falling/bouncing/rolling
     // debris, which already has its own world-Z and needs no special
     // draw-order bracketing around the player.
-    renderCollapseObstacles();
+    renderCollapseObstacles('frontOfBoss');
     renderParticles();
     renderBlasts(); // 16TH ROUND (Part A/B)
     // 26TH ROUND item 9: missile/barrage projectile draws BEFORE the player
@@ -9647,6 +9842,7 @@ window.__darkoutTps = {
   getAimPoint, getFlashlightCenter, computeEnemyDrawRect,
   isPlayerInCover, getStealthStrength, applyAimCurve, playerMarkerPos, barrels,
   isAimOnEffectiveHit, isEffectiveDamageNow, enemyHitRadius, approachZMinForRoid, isRoidActivelyFiring, isRoidInAttackSequence,
+  isEnemyDamageFlashing,
   // added 3rd round (PART 3/4/6/9/11/12): new stick curve/collision helpers
   applyLightCurve, clampStrafeForBarrels, clampForwardDeltaForBarrels,
   triggerFireHaptics,
