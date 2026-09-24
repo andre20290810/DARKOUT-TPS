@@ -1081,6 +1081,26 @@ const SNIPER_DAMAGE = 16;
 // NEXT ROUND (spec section 4): real hit-radius check at resolve time —
 // mirrors SWEEP_HIT_RADIUS_PX's existing role for SWEEP FIRE.
 const SNIPER_HIT_RADIUS_PX = 46;
+// 30TH ROUND item 17: DRONE WAVE 2 — 3 extra Drones, spread across LEFT/
+// CENTER/RIGHT lanes so they never overlap (world-x offsets, same scale as
+// the debris danger-lane spread already tuned this round), each with its
+// own real SNIPER-style attack cycle (reuses SNIPER_LOCK_RED_MS/LOCK_
+// YELLOW_MS/FIRE_TRAVEL_MS/IMPACT_MS/DRONE_SNIPER_COOLDOWN_MS/SNIPER_DAMAGE/
+// SNIPER_HIT_RADIUS_PX above verbatim — never a new/duplicated attack
+// system, and explicitly never MISSILE per spec). Half ENEMY_MAX_HP each
+// (150) — 3 simultaneous full-HP(300) Drones would make WAVE 2 far tankier
+// than WAVE 1 for no stated reason; halved keeps the total WAVE-2 HP pool
+// roughly comparable to one extra full Drone, spread across 3 targets.
+const DRONE_WAVE_EXTRA_COUNT = 3;
+const DRONE_WAVE_LANE_OFFSETS = [-170, 0, 170]; // left / center / right
+const DRONE_WAVE_HP = 150;
+const DRONE_WAVE_DESCEND_STAGGER_MS = 350; // gap between each of the 3 starting their own descent — never simultaneous
+const DRONE_WAVE_DESCEND_MS = 650;
+const DRONE_WAVE_DESCEND_DROP_PX = 240; // how far above its resting screen-Y each one starts
+const DRONE_WAVE_GRACE_MS = 700; // brief pause after landing before it can begin attacking
+const DRONE_WAVE_Z = 420; // fixed engagement depth for all 3 (roughly mid COMBAT range)
+const DRONE_WAVE_HIT_RADIUS_PX = SNIPER_HIT_RADIUS_PX + 4; // slightly larger than the sniper lock radius — the wave drone's own screen-space body hit test, independent of computeEnemyDrawRect() (that path stays state.enemy-only)
+const DRONE_WAVE_DEATH_MS = 500; // short explode-then-gone window per extra Drone, distinct from the (longer) singleton DEATH_EXPLODE_MS since these are half-HP support units
 
 const MISSILE_LOCKON_MS = 650;
 const MISSILE_TARGET_MS = 1500;
@@ -2861,6 +2881,18 @@ const state = {
   // is AUTO_SEQUENCE's own index (only ever points at an implemented type).
   enemySelect: 'auto',
   autoMode: { active: true, index: 0 },
+
+  // 30TH ROUND item 17: DRONE WAVE — a SEPARATE, ADDITIVE multi-enemy
+  // structure for the 3-Drone WAVE 2 ONLY. Deliberately never touches
+  // state.enemy (the primary singleton every OTHER boss's AI/render/hit-
+  // test still exclusively assumes) — WAVE 1 is state.enemy itself (a
+  // normal single 'drone' spawn, completely unchanged), and these 3 EXTRA
+  // instances are tracked/updated/rendered/hit-tested entirely through
+  // their own parallel code path (spawnDroneWave2()/updateDroneWave()/
+  // renderDroneWave(), plus a small addition in updateBullets()). Reset
+  // fresh by spawnEnemy() on every new spawn so a stale wave can never leak
+  // into a different encounter/enemy-type selection.
+  droneWave: { active: false, wave2Triggered: false, extra: [] },
 
   // 9TH ROUND (item 30-35): the shared "escape the darkness" CLEAR
   // SEQUENCE — gate appears -> opens -> player runs through -> light
@@ -5428,6 +5460,228 @@ function resolveSniperImpact(now) {
   }
 }
 
+// 30TH ROUND item 17: DRONE WAVE 2 — spawns the 3 EXTRA Drones once the
+// singleton WAVE-1 Drone (state.enemy) has been defeated. Deliberately a
+// fully separate, additive parallel system (state.droneWave.extra[]) rather
+// than any change to state.enemy or its many kind-specific branches — every
+// other boss's single-enemy-instance assumptions (state.enemy is always
+// exactly one thing) stay completely intact; this never writes to
+// state.enemy at all.
+function spawnDroneWave2(now) {
+  const dw = state.droneWave;
+  dw.extra = [];
+  for (let i = 0; i < DRONE_WAVE_EXTRA_COUNT; i++) {
+    dw.extra.push({
+      lane: DRONE_WAVE_LANE_OFFSETS[i] || 0,
+      z: DRONE_WAVE_Z,
+      hp: DRONE_WAVE_HP,
+      maxHp: DRONE_WAVE_HP,
+      state: 'descending',
+      descendStartedAt: now + i * DRONE_WAVE_DESCEND_STAGGER_MS,
+      attackUntil: 0,
+      nextIdleCheckAt: 0,
+      lockX: 0, lockY: 0,
+      fireFromX: 0, fireFromY: 0, fireToX: 0, fireToY: 0,
+      screenX: 0, screenY: 0, scale: 1,
+      lastDamageHitAt: 0,
+      deathUntil: 0,
+    });
+  }
+  dw.active = true;
+  if (DEBUG_MODE) r10DebugLog('DRONE WAVE 2: spawned ' + DRONE_WAVE_EXTRA_COUNT + ' extra drones');
+}
+
+// Mirrors resolveSniperImpact() for a single WAVE-2 extra drone — same
+// invincible/COVER/moved-away dodge judgment, applied to state.player, but
+// keyed off the individual drone instance instead of state.enemy.
+function resolveDroneWaveSniperImpact(d, now) {
+  const p = state.player;
+  const invincible = now < p.invincibleUntil;
+  const blocked = COVER_BLOCKS_ATTACK.sniper && isPlayerInCover();
+  spawnBlast(d.fireToX, d.fireToY, now, { scale: 0.42, big: false, shockwave: false });
+  const nowMarker = playerMarkerPos();
+  const dist = Math.hypot(nowMarker.x - d.fireToX, nowMarker.y - d.fireToY);
+  const outOfRange = dist >= SNIPER_HIT_RADIUS_PX;
+  if (invincible) {
+    if (DEBUG_MODE) r10DebugLog('DRONE WAVE SNIPER: AVOIDED (dash-invincible)');
+  } else if (blocked) {
+    if (DEBUG_MODE) r10DebugLog('DRONE WAVE SNIPER: BLOCKED (cover)');
+  } else if (outOfRange) {
+    if (DEBUG_MODE) r10DebugLog('DRONE WAVE SNIPER: DODGED (moved out of locked point)');
+  } else {
+    p.hp = Math.max(0, p.hp - SNIPER_DAMAGE);
+    p.hitFlashUntil = now + PLAYER_HIT_FLASH_MS;
+  }
+}
+
+// Per-bullet hit-test against the WAVE-2 extras, called from updateBullets()
+// BEFORE it falls through to the normal state.enemy hit-test (which is
+// naturally a no-op during this window — WAVE 1's own e.deathState is
+// already 'gone'). Returns true once a bullet has been consumed by a wave
+// drone (hit OR out-of-effective-range spark), so updateBullets() knows not
+// to also run its own state.enemy-based resolution for that same bullet.
+function resolveDroneWaveBulletHit(b, now) {
+  const dw = state.droneWave;
+  for (const d of dw.extra) {
+    if (d.state === 'dead' || d.state === 'dying') continue;
+    const dist = Math.hypot(b.x2 - d.screenX, b.y2 - d.screenY);
+    if (dist > DRONE_WAVE_HIT_RADIUS_PX) continue;
+    spawnPlayerImpact(b.x2, b.y2, now);
+    const distMult = distanceDamageMultiplier(d.z);
+    if (distMult <= 0) {
+      if (DEBUG_MODE) r10DebugLog('DRONE WAVE: DAMAGE BLOCKED (out of effective range)');
+      return true;
+    }
+    const scaledDamage = Math.round(BULLET_DAMAGE * distMult);
+    d.hp = Math.max(0, d.hp - scaledDamage);
+    d.lastDamageHitAt = now;
+    if (DEBUG_MODE) r10DebugLog('DRONE WAVE HIT lane=' + d.lane + ' damage=' + scaledDamage + ' hp=' + d.hp + '/' + d.maxHp);
+    if (d.hp <= 0 && d.state !== 'dying') {
+      d.state = 'dying';
+      d.deathUntil = now + DRONE_WAVE_DEATH_MS;
+      spawnBlast(d.screenX, d.screenY, now, { scale: 0.65, big: false, shockwave: false });
+    }
+    return true;
+  }
+  return false;
+}
+
+// Per-frame state machine for all 3 WAVE-2 extras: descend -> grace -> the
+// same idle/lock_red/lock_yellow/fire/impact/cooldown SNIPER cycle each
+// drone in this repo already uses (reusing the shared SNIPER_* constants
+// verbatim, never a new/duplicated attack system), independently per
+// instance. Once every extra is dead, fires the SAME shared CLEAR SEQUENCE
+// COMBAT's normal boss-defeat path uses (triggerClearSequence) — WAVE 1's
+// own defeat deliberately withheld that call (see updateEnemyCore()) so the
+// encounter's real end condition is "all of WAVE 2 down", not just WAVE 1.
+function updateDroneWave(dt, now) {
+  const dw = state.droneWave;
+  if (!dw.active) return;
+  let allDead = true;
+  for (const d of dw.extra) {
+    if (d.state === 'dead') continue;
+    allDead = false;
+
+    const proj = project(d.lane, CORRIDOR_FLOOR_Y - DRONE_WORLD_HEIGHT * 0.55, d.z);
+    let descendOffsetY = 0;
+
+    if (d.state === 'dying') {
+      if (now >= d.deathUntil) d.state = 'dead';
+    } else if (d.state === 'descending') {
+      const t = clamp((now - d.descendStartedAt) / DRONE_WAVE_DESCEND_MS, 0, 1);
+      const eased = 1 - Math.pow(1 - t, 2);
+      descendOffsetY = -DRONE_WAVE_DESCEND_DROP_PX * (1 - eased);
+      if (now >= d.descendStartedAt && t >= 1) {
+        d.state = 'grace';
+        d.attackUntil = now + DRONE_WAVE_GRACE_MS;
+      }
+    } else if (d.state === 'grace') {
+      if (now >= d.attackUntil) {
+        d.state = 'idle';
+        d.nextIdleCheckAt = now + (400 + Math.random() * 900);
+      }
+    } else if (d.state === 'idle') {
+      if (now >= d.nextIdleCheckAt) {
+        d.state = 'lock_red';
+        d.attackUntil = now + SNIPER_LOCK_RED_MS;
+      }
+    } else if (d.state === 'lock_red' || d.state === 'lock_yellow') {
+      if (d.state === 'lock_red') {
+        const m = playerMarkerPos();
+        d.lockX = m.x; d.lockY = m.y;
+      }
+      if (now >= d.attackUntil) {
+        if (d.state === 'lock_red') {
+          d.state = 'lock_yellow';
+          d.attackUntil = now + SNIPER_LOCK_YELLOW_MS;
+        } else {
+          d.fireFromX = proj.x; d.fireFromY = proj.y + descendOffsetY;
+          d.fireToX = d.lockX; d.fireToY = d.lockY;
+          d.state = 'fire';
+          d.attackUntil = now + SNIPER_FIRE_TRAVEL_MS;
+        }
+      }
+    } else if (d.state === 'fire') {
+      if (now >= d.attackUntil) {
+        d.state = 'impact';
+        d.attackUntil = now + SNIPER_IMPACT_MS;
+        resolveDroneWaveSniperImpact(d, now);
+      }
+    } else if (d.state === 'impact') {
+      if (now >= d.attackUntil) {
+        d.state = 'cooldown';
+        d.attackUntil = now + DRONE_SNIPER_COOLDOWN_MS;
+      }
+    } else if (d.state === 'cooldown') {
+      if (now >= d.attackUntil) {
+        d.state = 'idle';
+        d.nextIdleCheckAt = now + (700 + Math.random() * 1200);
+      }
+    }
+
+    // still descending drones (descendStartedAt in the future) hold at the
+    // fully-raised offset until their own staggered start time arrives.
+    if (d.state === 'descending' && now < d.descendStartedAt) descendOffsetY = -DRONE_WAVE_DESCEND_DROP_PX;
+    d.screenX = proj.x;
+    d.screenY = proj.y + descendOffsetY;
+    d.scale = proj.scale;
+  }
+  if (allDead) {
+    dw.active = false;
+    triggerClearSequence(now, 'combat');
+  }
+}
+
+// Draws every alive/descending/dying WAVE-2 extra (body sprite + its own
+// SNIPER lock box/bolt telegraph, mirroring renderEnemyTelegraphs()'s sniper
+// block) — a self-contained render pass, called alongside renderEnemy()/
+// renderEnemyTelegraphs() in frame()'s COMBAT branch only (WAVE 2 never
+// triggers in ESCAPE — see updateEnemyCore()'s own gate).
+function renderDroneWave() {
+  const dw = state.droneWave;
+  if (!dw.active) return;
+  const now = performance.now();
+  const img = DRONE_SPRITES.search[2].img;
+  for (const d of dw.extra) {
+    if (d.state === 'dead') continue;
+    const drawH = DRONE_WORLD_HEIGHT * d.scale;
+    const drawW = drawH * (img && img.naturalWidth ? img.naturalWidth / img.naturalHeight : 0.8);
+    ctx.save();
+    if (d.state === 'dying') {
+      const t = clamp(1 - (d.deathUntil - now) / DRONE_WAVE_DEATH_MS, 0, 1);
+      ctx.globalAlpha = 1 - t;
+    }
+    if (img && img.complete) {
+      ctx.drawImage(img, d.screenX - drawW / 2, d.screenY - drawH * 0.5, drawW, drawH);
+    }
+    ctx.restore();
+
+    if (d.state === 'lock_red' || d.state === 'lock_yellow') {
+      const size = 46;
+      ctx.save();
+      ctx.strokeStyle = d.state === 'lock_red' ? '#ff3b3b' : '#ffd23b';
+      ctx.lineWidth = 3;
+      ctx.globalAlpha = 0.65 + 0.35 * Math.sin(now * 0.018);
+      ctx.strokeRect(d.lockX - size / 2, d.lockY - size / 2, size, size);
+      ctx.restore();
+    } else if (d.state === 'fire') {
+      const t = clamp(1 - (d.attackUntil - now) / SNIPER_FIRE_TRAVEL_MS, 0, 1);
+      const hx = d.fireFromX + (d.fireToX - d.fireFromX) * t;
+      const hy = d.fireFromY + (d.fireToY - d.fireFromY) * t;
+      const tailT = Math.max(0, t - 0.35);
+      const tx = d.fireFromX + (d.fireToX - d.fireFromX) * tailT;
+      const ty = d.fireFromY + (d.fireToY - d.fireFromY) * tailT;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,90,70,0.95)';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = 'rgba(255,90,70,0.8)';
+      ctx.shadowBlur = 6;
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
 // 12TH ROUND (items 20-24): world X/Z -> project() -> screen X/Y, recomputed
 // every tick while the TARGET AREA is live so the drawn ellipse and the
 // actual damage check (resolveMissileImpact(), below) always agree — the
@@ -5921,6 +6175,13 @@ function updateRoidAnimation(dt, now) {
 // next one (PART 13's explicit requirement).
 function spawnEnemy(type) {
   const e = state.enemy;
+  // 30TH ROUND item 17: fresh DRONE WAVE state on every new spawn (any
+  // type, any reason — switching away from 'drone' mid-wave, AUTO MODE
+  // rotating, or genuinely starting a new 'drone' encounter) so a stale
+  // WAVE 2 can never leak from a previous encounter into this one.
+  state.droneWave.active = false;
+  state.droneWave.wave2Triggered = false;
+  state.droneWave.extra = [];
   e.type = type;
   // 9TH ROUND (item 25/27-28): GABRIEL/ADAM used to spawn at the same
   // generic z=900 as ROID1/ROID2/ADAM SPHERE — since e.z<900 gates their own
@@ -6193,12 +6454,26 @@ function updateEnemyCore(dt, now) {
   if (e.deathState !== 'alive') {
     if (now >= e.deathUntil) {
       e.deathState = 'gone';
-      // 9TH ROUND (item 30-35): COMBAT MODE's clear condition (item 38) is
-      // BOSS HP=0 — trigger the shared CLEAR SEQUENCE here, but only for
-      // real play (not AUTO MODE's own continuous QA rotation loop, which
-      // must keep cycling enemies uninterrupted for testing, per its own
-      // existing PART 12 design — see advanceEnemyRotation() below).
-      if (state.gameMode === 'combat' && !state.autoMode.active) {
+      // 30TH ROUND item 17: DRONE WAVE — the primary DRONE (this singleton
+      // e) defeating is WAVE 1. Instead of immediately clearing, spawn the
+      // 3-Drone WAVE 2 exactly once (wave2Triggered guards against this
+      // block re-running every frame while deathState stays 'gone') and
+      // hold off triggerClearSequence() until updateDroneWave() itself
+      // confirms all 3 are also defeated. Real play only (not AUTO MODE —
+      // same existing gate the CLEAR SEQUENCE call already used), and only
+      // once per encounter (wave2Triggered is reset fresh by spawnEnemy()).
+      if (e.type === 'drone' && state.gameMode === 'combat' && !state.autoMode.active && !state.droneWave.wave2Triggered) {
+        state.droneWave.wave2Triggered = true;
+        spawnDroneWave2(now);
+      } else if (state.gameMode === 'combat' && !state.autoMode.active && !state.droneWave.active) {
+        // 9TH ROUND (item 30-35): COMBAT MODE's clear condition (item 38) is
+        // BOSS HP=0 — trigger the shared CLEAR SEQUENCE here, but only for
+        // real play (not AUTO MODE's own continuous QA rotation loop, which
+        // must keep cycling enemies uninterrupted for testing, per its own
+        // existing PART 12 design — see advanceEnemyRotation() below).
+        // 30TH ROUND item 17: also skipped while a DRONE WAVE 2 is still in
+        // progress (state.droneWave.active) — updateDroneWave() fires this
+        // exact same call itself once all 3 extra Drones are defeated.
         triggerClearSequence(now, 'combat');
       }
       advanceEnemyRotation(now);
@@ -7406,6 +7681,14 @@ function updateBullets(now) {
     if (!b.active) continue;
     if (now < b.resolveAt) continue;
     b.active = false;
+    // 30TH ROUND item 17: DRONE WAVE 2 — checked BEFORE the normal
+    // state.enemy hit-test below, since WAVE 1 (state.enemy) is already
+    // deathState!=='alive' for the whole WAVE-2 window and would otherwise
+    // just fall into the "enemy not alive" no-op for every shot. A bullet
+    // that hits one of the 3 extras is fully resolved here and skips the
+    // rest of this loop body; a miss falls through unchanged (harmless —
+    // resolves against the dead WAVE-1 singleton exactly as before).
+    if (state.droneWave.active && resolveDroneWaveBulletHit(b, now)) continue;
     if (e.deathState !== 'alive') {
       if (DEBUG_MODE) r10DebugLog('SHOT RESOLVED: enemy not alive (deathState=' + e.deathState + ') — no hit-test run');
       continue; // PART 27: no damage while already dying/gone
@@ -9999,6 +10282,7 @@ function frame(ts) {
       applyForwardDelta(forwardDelta); // 12TH ROUND (item 30): BARREL no longer blocks movement — see clampStrafeForBarrels()'s own comment
       updateCombatQuake(dt, ts); // NEXT ROUND (spec section 7): COMBAT's own lightweight quake+debris atmosphere
       updateEnemy(dt, ts);
+      updateDroneWave(dt, ts); // 30TH ROUND item 17: no-op unless a DRONE WAVE 2 is active — must run every COMBAT frame regardless of state.enemy's own deathState
       updateBullets(ts);
       updateGabrielAdamReaim(ts); // 14TH ROUND (items 27-30): must tick every frame, independent of firing, so AIM-moved-away tracking never misses a frame
       updateExplosionChain(ts); // 14TH ROUND (items 5-8): outlives the brief attackState impact/cooldown window, so must tick every frame independent of it
@@ -10179,6 +10463,11 @@ function frame(ts) {
     // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
     // comment for the bug this fixes.
     renderEnemyTelegraphs(theme);
+    // 30TH ROUND item 17: DRONE WAVE 2 — no-op unless active. Drawn post-mask
+    // (same reasoning as renderEnemyTelegraphs()/renderBlasts() above: a
+    // SNIPER lock/bolt telegraph must stay legible outside the lit circle),
+    // right alongside the singleton enemy's own telegraphs.
+    renderDroneWave();
     renderAimReticle();
   }
 
@@ -10347,4 +10636,11 @@ window.__darkoutTps = {
   get AIM_MOVE_SPEED_PX_S() { return AIM_MOVE_SPEED_PX_S; },
   distanceDamageMultiplier, isWithinEffectiveDamageRange,
   DAMAGE_FALLOFF_FULL_Z, DAMAGE_FALLOFF_MAX_EFFECTIVE_Z, BULLET_DAMAGE,
+  // 30TH ROUND item 17: DRONE WAVE 2 (1 drone -> 3 extra drones) — exposed
+  // for automated testing only.
+  spawnDroneWave2, updateDroneWave, renderDroneWave,
+  resolveDroneWaveSniperImpact, resolveDroneWaveBulletHit,
+  DRONE_WAVE_EXTRA_COUNT, DRONE_WAVE_LANE_OFFSETS, DRONE_WAVE_HP,
+  DRONE_WAVE_DESCEND_STAGGER_MS, DRONE_WAVE_DESCEND_MS, DRONE_WAVE_GRACE_MS,
+  DRONE_WAVE_Z, DRONE_WAVE_HIT_RADIUS_PX, DRONE_WAVE_DEATH_MS,
 };
