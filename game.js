@@ -3022,6 +3022,12 @@ const STRUCTURE_KINDS = [
   // visibly lined up down the corridor at once, per item 8.
   { kind: 'labTank', spacing: 240 },     // LAB only: cylindrical culture tank along the wall
   { kind: 'labConsole', spacing: 260 },  // LAB only: wall-mounted monitor/console glow
+  // 30TH ROUND items 23-26: LAB-only self-illuminating ceiling light,
+  // mirrored left/right (see MIRRORED_STRUCTURE_KINDS below) and receding
+  // at these Z intervals — see renderStructure()'s own 'labCeilingLight'
+  // case and renderCorridor()'s new selfLit pass for the "independent of
+  // SPOTLIGHT mask" half of the spec.
+  { kind: 'labCeilingLight', spacing: 260 },
   // 10TH ROUND items 10-12: the old 'armorPlate' (a horizontal bar spanning
   // the full corridor width at every spacing — the "bridge cross-bar"
   // clutter from item 11) and 'armorHatch' (a square-with-an-X badge — the
@@ -3050,7 +3056,14 @@ const structures = [];
 // every time, no reliance on how the random draw happened to fall. Every
 // other structure kind (gantry/pipe/panel/etc.) keeps its original
 // single-random-phase behavior unchanged.
-const MIRRORED_STRUCTURE_KINDS = { labTank: true, labConsole: true };
+// 30TH ROUND item 23: 'warningLight' (shared across every theme, incl.
+// ARMORED's own red warning lamps) and the new 'labCeilingLight' below join
+// this guaranteed-mirrored-pair list too — same root cause as labTank/
+// labConsole originally had ("完全な鏡写しで構いません"): a single random-
+// phase-per-slot draw can land lopsided across a whole session by pure
+// chance, and for a LIGHT specifically that reads as a genuinely uneven,
+// unintentional-looking stage rather than a stylistic choice.
+const MIRRORED_STRUCTURE_KINDS = { labTank: true, labConsole: true, warningLight: true, labCeilingLight: true };
 for (const def of STRUCTURE_KINDS) {
   for (let z = Z_NEAR + def.spacing * 0.5; z < Z_FAR; z += def.spacing) {
     if (MIRRORED_STRUCTURE_KINDS[def.kind]) {
@@ -8333,6 +8346,37 @@ function renderStructure(s, theme) {
       ctx.restore();
       break;
     }
+    case 'labCeilingLight': {
+      // 30TH ROUND items 24-25: a self-illuminating fixture near the LAB
+      // ceiling's own left/right edges (distinct from the generic, already-
+      // centered 'ceilingLight' bar every theme shares), mirrored via
+      // MIRRORED_STRUCTURE_KINDS so every Z slot gets exactly one left +
+      // one right instance — receding at STRUCTURE_KINDS' own spacing
+      // interval like every other structure. Drawn as its own separate
+      // 'selfLit' renderCorridor() pass, called AFTER renderFlashlightMask()
+      // in frame()'s COMBAT branch specifically so it reads as a genuine
+      // light SOURCE (always at full brightness) rather than a passive
+      // surface the mask darkens like the corridor geometry around it —
+      // same reasoning renderBlasts()/renderEnemyTelegraphs() already use
+      // for their own post-mask passes. Blink is "gentle" (a continuous
+      // sine pulse, never a hard on/off flash) and inherently async between
+      // the left/right pair since they carry two different s.phase values.
+      if (state.theme !== 'lab') break;
+      const side = s.phase > Math.PI ? 1 : -1;
+      const pt = project(side * half * 0.92, CORRIDOR_CEIL_Y * 0.98, s.z);
+      const pulse = 0.65 + 0.35 * Math.sin(state.timeSec * 1.6 + s.phase);
+      const r = Math.max(2, 9 * pt.scale);
+      ctx.save();
+      const g = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, r * 2.4);
+      g.addColorStop(0, 'rgba(210,235,255,' + (0.9 * pulse) + ')');
+      g.addColorStop(1, 'rgba(210,235,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, r * 2.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(240,250,255,' + Math.min(1, pt.scale * 1.8) + ')';
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, r * 0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      break;
+    }
     case 'armorGate': {
       // 10TH ROUND items 10-12: replaces the removed 'armorPlate' (a
       // full-width horizontal bar at every spacing — read as "bridge
@@ -8413,24 +8457,40 @@ function renderStructure(s, theme) {
   }
 }
 
-function renderCorridor(theme) {
-  ctx.fillStyle = theme.fog;
-  ctx.fillRect(0, 0, state.cssW, state.cssH);
+// 30TH ROUND item 25: kinds that are genuine light SOURCES rather than
+// passive geometry — real root cause of "LABの照明がFLASHLIGHTの外だと暗く
+// なる" was the same bug class renderBlasts()/renderEnemyTelegraphs() had
+// before their own post-mask moves: renderCorridor() (and therefore every
+// structure, lights included) always ran BEFORE renderFlashlightMask() in
+// COMBAT, so the darkness overlay dimmed a light fixture exactly like any
+// other pre-mask wall/floor geometry. ESCAPE never draws a mask at all (see
+// its own render branch), so this split is a COMBAT-only concern.
+const SELF_LIT_STRUCTURE_KINDS = { ceilingLight: true, warningLight: true, labCeilingLight: true };
+function renderCorridor(theme, pass) {
+  if (!pass || pass === 'passive') {
+    ctx.fillStyle = theme.fog;
+    ctx.fillRect(0, 0, state.cssW, state.cssH);
 
-  // floor / ceiling wedge (ground plane readability even without structures)
-  const flFar = project(0, CORRIDOR_FLOOR_Y, Z_FAR);
-  const flNearL = project(-CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
-  const flNearR = project(CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
-  ctx.fillStyle = theme.floor;
-  ctx.beginPath();
-  ctx.moveTo(flFar.x, flFar.y);
-  ctx.lineTo(flNearL.x, flNearL.y);
-  ctx.lineTo(flNearR.x, flNearR.y);
-  ctx.closePath();
-  ctx.fill();
+    // floor / ceiling wedge (ground plane readability even without structures)
+    const flFar = project(0, CORRIDOR_FLOOR_Y, Z_FAR);
+    const flNearL = project(-CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
+    const flNearR = project(CORRIDOR_HALF_WIDTH * 2.4, CORRIDOR_FLOOR_Y, Z_NEAR);
+    ctx.fillStyle = theme.floor;
+    ctx.beginPath();
+    ctx.moveTo(flFar.x, flFar.y);
+    ctx.lineTo(flNearL.x, flNearL.y);
+    ctx.lineTo(flNearR.x, flNearR.y);
+    ctx.closePath();
+    ctx.fill();
+  }
 
   const sorted = structures.slice().sort((a, b) => b.z - a.z); // far to near
-  for (const s of sorted) renderStructure(s, theme);
+  for (const s of sorted) {
+    const isSelfLit = SELF_LIT_STRUCTURE_KINDS[s.kind];
+    if (pass === 'passive' && isSelfLit) continue;
+    if (pass === 'selfLit' && !isSelfLit) continue;
+    renderStructure(s, theme);
+  }
 }
 
 // PART 4: drum-can cover objects, drawn far-to-near so nearer barrels
@@ -10460,7 +10520,11 @@ function frame(ts) {
   }
 
   const theme = THEMES[state.theme];
-  renderCorridor(theme);
+  // 30TH ROUND item 25: ESCAPE has no darkness mask at all (unchanged,
+  // single unfiltered pass); COMBAT defers its self-illuminating structures
+  // (ceilingLight/warningLight/labCeilingLight) to a second post-mask pass
+  // below — see SELF_LIT_STRUCTURE_KINDS' own comment.
+  renderCorridor(theme, state.gameMode === 'escape' ? undefined : 'passive');
   // 27TH ROUND item 2 (regression fix): the 26th round moved renderBarrels()
   // to AFTER renderFlashlightMask() to fix barrels reading dim/washed-out
   // outside the lit circle — but renderEnemy() (drawn further below, still
@@ -10552,6 +10616,12 @@ function frame(ts) {
     // "behind the drum can" redraw moves with it (was previously paired
     // with this now-removed early draw).
     renderFlashlightMask();
+    // 30TH ROUND item 25: self-illuminating structures (ceilingLight/
+    // warningLight/labCeilingLight) draw here, AFTER the mask, so they stay
+    // at full brightness regardless of where the flashlight currently
+    // points — same bug class/fix as renderBlasts()/renderEnemyTelegraphs()
+    // below. See SELF_LIT_STRUCTURE_KINDS' own comment for the root cause.
+    renderCorridor(theme, 'selfLit');
     // 27TH ROUND item 2: renderBarrels() no longer runs here — see the
     // single call site right after renderCorridor() above (background ->
     // STAGE OBJECTS -> enemy), which fixes barrels drawing on top of the
@@ -10800,4 +10870,9 @@ window.__darkoutTps = {
   // 30TH ROUND items 19-22: DECOY — exposed for automated testing only.
   updateEscapeDecoy, renderEscapeDecoy, playerOrDecoyMarkerPos,
   DECOY_DURATION_MS, DECOY_SCREEN_OFFSET_PX, COLLAPSE_JUMP_COMBO_WINDOW_MS,
+  // 30TH ROUND items 23-26: lighting symmetry — exposed for automated
+  // testing only.
+  renderCorridor, renderStructure, structures, MIRRORED_STRUCTURE_KINDS,
+  SELF_LIT_STRUCTURE_KINDS, STRUCTURE_KINDS,
+  CORRIDOR_HALF_WIDTH, CORRIDOR_CEIL_Y, CORRIDOR_FLOOR_Y,
 };
