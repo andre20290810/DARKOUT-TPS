@@ -364,6 +364,17 @@ const COLLAPSE_DEBRIS_DAMAGE = 26;
 // 26TH ROUND item 9: JUMP peak height doubled (was 46px).
 const COLLAPSE_JUMP_ARC_PX = 92;           // peak visual height (screen px) of the JUMP hop
 const COLLAPSE_JUMP_COMBO_WINDOW_MS = 140; // LB+RB "natural simultaneous press" tolerance
+// 30TH ROUND items 19-22: DECOY — a thrown marker that draws enemy SNIPER-
+// style lock-tracking away from the real player for DECOY_DURATION_MS. Long
+// enough to matter across a real lock_red->lock_yellow window (SNIPER_LOCK_
+// RED_MS+SNIPER_LOCK_YELLOW_MS is well under this), short enough that it
+// can't be thrown once and forgotten for the whole encounter.
+const DECOY_DURATION_MS = 2200;
+// Lateral screen-space offset (px) from the player's own live marker — big
+// enough that a locked-on shot aimed at the decoy is a genuinely different
+// point from wherever the player has actually moved to, never a rounding-
+// error near-miss.
+const DECOY_SCREEN_OFFSET_PX = 150;
 // NEXT ROUND (real-play feedback): 45ms read as flickery/eye-straining —
 // eased back up partway toward the pre-speed-pass 90ms (never all the way
 // back, so the faster auto-scroll and this stay in the same speed range —
@@ -2755,12 +2766,20 @@ const state = {
     // edge-triggered ESCAPE-exclusive actions, consumed each frame by
     // consumeEscapeActions() — separate from state.actions above so an
     // ESCAPE dash can never be misread as a LAB dash or vice versa.
-    actions: { westDash: false, eastDash: false, northBackstep: false, southDash: false, jump: false },
+    actions: { westDash: false, eastDash: false, northBackstep: false, southDash: false, jump: false, westDecoy: false, eastDecoy: false },
     // NEW FEATURE: METROPOLIS COLLAPSE — LB+RB JUMP combo edge-detection
     // timestamps (see pollGamepad()'s ESCAPE branch) — separate from
     // `actions` above since these track raw button-down MOMENTS across
     // frames, not a one-shot edge-triggered command.
     lbDownAt: 0, rbDownAt: 0,
+    // 30TH ROUND items 19-22: DECOY — a thrown marker that draws enemy
+    // SNIPER-style lock-tracking (see playerOrDecoyMarkerPos()) away from
+    // the real player for DECOY_DURATION_MS, a genuine new evasion option
+    // distinct from DASH (i-frames) and JUMP (obstacle avoidance). side is
+    // -1 (west) or 1 (east); x/y are recomputed every frame in
+    // updateEscapeDecoy() so it visually tracks alongside the player at a
+    // fixed lateral screen offset rather than a static world point.
+    decoy: { active: false, side: 0, x: 0, y: 0, until: 0 },
     // METROPOLIS COLLAPSE state — see the COLLAPSE_* constants and
     // updateEscapeCollapse()/renderCollapseObstacles() for the full design
     // rationale. phase: 'idle'|'quake'|'obstacles'|'recover'. 26TH ROUND
@@ -3472,6 +3491,20 @@ function pollGamepad(now) {
       if (es.lbDownAt && es.rbDownAt && Math.abs(es.lbDownAt - es.rbDownAt) <= COLLAPSE_JUMP_COMBO_WINDOW_MS) {
         es.actions.jump = true;
         es.lbDownAt = 0; es.rbDownAt = 0;
+      } else {
+        // 30TH ROUND items 19-21: RB alone = EAST DECOY, LB alone = WEST
+        // DECOY — but only once fired NEITHER can still turn into the
+        // LB+RB JUMP combo above, i.e. only after this same
+        // COLLAPSE_JUMP_COMBO_WINDOW_MS grace period has elapsed with the
+        // OTHER button still not pressed (mirrors the jump-combo's own
+        // "natural simultaneous press" tolerance exactly, so a real LB+RB
+        // chord always resolves to JUMP alone, never JUMP+DECOY or a stray
+        // DECOY firing a beat before the jump). es.lbDownAt/rbDownAt reset
+        // to 0 immediately below once the window elapses (whether decoy
+        // fired or the press was released), so this can only fire once per
+        // physical press — no separate "already fired" flag needed.
+        if (es.lbDownAt && (now || 0) - es.lbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.actions.westDecoy = true;
+        if (es.rbDownAt && (now || 0) - es.rbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.actions.eastDecoy = true;
       }
       if (es.lbDownAt && (now || 0) - es.lbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.lbDownAt = 0;
       if (es.rbDownAt && (now || 0) - es.rbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.rbDownAt = 0;
@@ -3711,6 +3744,11 @@ wireButton('touch-dash-e', () => { if (state.gameMode === 'escape') state.escape
 // button fires JUMP directly, same as N-DASH/S-STEP's own single-button
 // touch equivalents for their own gamepad actions.
 wireButton('touch-dash-jump', () => { if (state.gameMode === 'escape') state.escape.actions.jump = true; });
+// 30TH ROUND items 19-22: DECOY touch parity — see index.html's own comment
+// for why these fire immediately (no gamepad chord-priority debounce needed
+// on touch, each is its own distinct physical button).
+wireButton('touch-decoy-w', () => { if (state.gameMode === 'escape') state.escape.actions.westDecoy = true; });
+wireButton('touch-decoy-e', () => { if (state.gameMode === 'escape') state.escape.actions.eastDecoy = true; });
 
 // 9TH ROUND (item 0-2): STAGE TYPE (state.theme — cosmetic world/background
 // only) and GAME MODE (state.gameMode — control scheme + win condition)
@@ -4083,6 +4121,7 @@ function consumeEscapeActions() {
   const a = state.escape.actions;
   const out = { ...a };
   a.westDash = a.eastDash = a.northBackstep = a.southDash = a.jump = false;
+  a.westDecoy = a.eastDecoy = false;
   return out;
 }
 
@@ -5331,6 +5370,43 @@ function showCenterMsg(text, color) {
 
 function playerMarkerPos() {
   return { x: state.centerX + state.player.strafeOffset, y: state.cssH * 0.9 };
+}
+
+// 30TH ROUND items 19-22: DECOY — throws a marker DECOY_SCREEN_OFFSET_PX to
+// the west/east of the player's own marker. Fires from consumeEscapeActions()'
+// westDecoy/eastDecoy (gamepad LB/RB, debounced against the LB+RB JUMP
+// combo — see pollGamepad()'s ESCAPE branch — or touch-decoy-w/e directly).
+// A new throw always overwrites any still-active one (never stacks).
+function updateEscapeDecoy(dt, now, escActions) {
+  const es = state.escape;
+  const d = es.decoy;
+  if (escActions.westDecoy) { d.active = true; d.side = -1; d.until = now + DECOY_DURATION_MS; }
+  if (escActions.eastDecoy) { d.active = true; d.side = 1; d.until = now + DECOY_DURATION_MS; }
+  if (d.active && now >= d.until) { d.active = false; }
+  if (d.active) {
+    const m = playerMarkerPos();
+    d.x = m.x + d.side * DECOY_SCREEN_OFFSET_PX;
+    d.y = m.y;
+  }
+}
+
+// Only the LOCK-TRACKING call sites (the live "aim follows its target"
+// line during an enemy's lock_red telegraph — see updateEnemyCore()'s
+// SNIPER branch and updateDroneWave()) read through this instead of the
+// real playerMarkerPos(). resolveSniperImpact()/resolveDroneWaveSniperImpact()'s
+// own impact-time dodge recheck deliberately keeps calling playerMarkerPos()
+// directly and is NEVER routed through here — the decoy fools where the
+// LOCK ends up aiming, but the actual hit/dodge judgment must always compare
+// against the REAL player's current position, or a decoy would let a shot
+// "aimed at the decoy" still silently damage the real player standing
+// somewhere else (the opposite of what a decoy is for). ESCAPE-only by
+// construction (state.escape.decoy only ever becomes active in ESCAPE —
+// COMBAT never touches westDecoy/eastDecoy at all), so this is safe to call
+// unconditionally from any lock-tracking site without a gameMode check.
+function playerOrDecoyMarkerPos() {
+  const d = state.escape.decoy;
+  if (d.active) return { x: d.x, y: d.y };
+  return playerMarkerPos();
 }
 
 // Facing/turning — a slow, deliberate "heavy mech" turn, not an instant
@@ -6827,7 +6903,12 @@ function updateEnemyCore(dt, now) {
       // player's CURRENT position against this frozen point, matching how
       // SWEEP FIRE's resolveSweepShot() already worked.
       if (e.attackState === 'lock_red') {
-        const m = playerMarkerPos();
+        // 30TH ROUND items 19-22: DECOY — reads playerOrDecoyMarkerPos()
+        // instead of playerMarkerPos() directly, so an active decoy pulls
+        // this live tracking toward itself instead of the real player. See
+        // that function's own comment for why the impact-time recheck
+        // (resolveSniperImpact() below) deliberately does NOT do the same.
+        const m = playerOrDecoyMarkerPos();
         e.lockX = m.x; e.lockY = m.y;
       }
       if (now >= e.attackUntil) {
@@ -9450,6 +9531,27 @@ function renderMissileProjectiles(zFilter) {
   }
 }
 
+// 30TH ROUND items 19-22: DECOY marker — a small pulsing amber diamond at
+// its own screen position (see updateEscapeDecoy()), distinct from any
+// enemy telegraph color (red/yellow) so it never reads as a threat marker
+// itself, just the player's own thrown decoy.
+function renderEscapeDecoy() {
+  const d = state.escape.decoy;
+  if (!d.active) return;
+  const now = performance.now();
+  const pulse = 0.55 + 0.45 * Math.sin(now * 0.012);
+  ctx.save();
+  ctx.translate(d.x, d.y);
+  ctx.rotate(Math.PI / 4);
+  ctx.fillStyle = 'rgba(255,176,60,' + (0.55 + 0.3 * pulse) + ')';
+  ctx.strokeStyle = 'rgba(255,220,140,0.9)';
+  ctx.lineWidth = 2;
+  const s = 12;
+  ctx.fillRect(-s, -s, s * 2, s * 2);
+  ctx.strokeRect(-s, -s, s * 2, s * 2);
+  ctx.restore();
+}
+
 // FOLLOWUP FIX: attack telegraphs (LOCK boxes, ▲, target ellipse, bolts)
 // used to be drawn as part of renderEnemy(), BEFORE the DARK/FLASHLIGHT
 // mask — so the mask's own darkness overlay silently dimmed them to
@@ -10294,6 +10396,12 @@ function frame(ts) {
       // already-edge-consumed JUMP action (LB+RB combo or the touch button).
       advanceCollapseWorldZ(forwardDelta, dt, ts);
       updateEscapeCollapse(dt, ts, escActions.jump);
+      // 30TH ROUND items 19-22: DECOY — consumes escActions.westDecoy/
+      // eastDecoy (same one-shot pattern as jump above) and ticks the
+      // active decoy's own screen position/expiry every frame, BEFORE
+      // updateEnemy() so this frame's lock_red tracking (which reads
+      // playerOrDecoyMarkerPos()) already sees the up-to-date decoy state.
+      updateEscapeDecoy(dt, ts, escActions);
       updateEnemy(dt, ts);
       updateEscapeEnemyPursuit(ts);
       updateExplosionChain(ts); // 14TH ROUND (items 5-8): outlives the brief attackState impact/cooldown window, so must tick every frame independent of it
@@ -10413,6 +10521,8 @@ function frame(ts) {
     renderMissileProjectiles('behindPlayer');
     renderEscapePlayer();
     renderMissileProjectiles('frontOfPlayer');
+    // 30TH ROUND items 19-22: DECOY marker — no-op unless active.
+    renderEscapeDecoy();
     // 9TH ROUND (item 20): ESCAPE MODE has no LIGHT at all — it is a
     // survive-until-TIME-LIMIT mode, not explore-in-darkness, so the
     // darkness mask/flashlight is never drawn here (was previously called
@@ -10687,4 +10797,7 @@ window.__darkoutTps = {
   DRONE_WAVE_EXTRA_COUNT, DRONE_WAVE_LANE_OFFSETS, DRONE_WAVE_HP,
   DRONE_WAVE_DESCEND_STAGGER_MS, DRONE_WAVE_DESCEND_MS, DRONE_WAVE_GRACE_MS,
   DRONE_WAVE_Z, DRONE_WAVE_HIT_RADIUS_PX, DRONE_WAVE_DEATH_MS,
+  // 30TH ROUND items 19-22: DECOY — exposed for automated testing only.
+  updateEscapeDecoy, renderEscapeDecoy, playerOrDecoyMarkerPos,
+  DECOY_DURATION_MS, DECOY_SCREEN_OFFSET_PX, COLLAPSE_JUMP_COMBO_WINDOW_MS,
 };

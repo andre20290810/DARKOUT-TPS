@@ -285,6 +285,12 @@
            and pollGamepad()'s ESCAPE branch). ESCAPE-exclusive, same as
            W-DASH/E-DASH above. -->
       <button type="button" tabindex="-1" id="touch-dash-jump" class="touch-btn touch-escape-only">JUMP</button>
+      <!-- 30TH ROUND items 19-22: DECOY — touch equivalent of the gamepad's
+           LB(WEST)/RB(EAST) DECOY throw. Touch has no chord-priority concern
+           (each is its own physical button, no LB+RB ambiguity to resolve),
+           so these fire immediately, unlike the gamepad's debounced version. -->
+      <button type="button" tabindex="-1" id="touch-decoy-w" class="touch-btn touch-escape-only">W-DECOY</button>
+      <button type="button" tabindex="-1" id="touch-decoy-e" class="touch-btn touch-escape-only">E-DECOY</button>
     </div>
   </div>
 
