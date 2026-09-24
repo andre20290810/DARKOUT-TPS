@@ -161,6 +161,19 @@ const ESCAPE_DEPTH_SOUTH_LIMIT = -0.3;
 // stage-label clamp in renderEscapePlayer() — see its own comment for why
 // this replaced relying on ESCAPE_DEPTH_SOUTH_LIMIT alone.
 const ESCAPE_LABEL_CLAMP_MARGIN_PX = 6;
+// 30TH ROUND items 14-15: earthquake-start auto-backshift — EXPLICITLY
+// REVERSES the prior-round "PLAYERを地震時に強制移動させない" instruction
+// per this round's own "今回の指示を最新仕様として優先" override. If the
+// PLAYER/BOSS don't have real room to dodge when the quake starts, both are
+// smoothly (never instantly) drifted apart over several hundred ms — never
+// an instant teleport/snap, and never mid-attack for the boss (see the
+// trigger site's own attackState==='idle' gate).
+const PLAYER_BACKSHIFT_TRIGGER_DEPTH = -0.15; // "too close" = leaning south/near past this es.depthPos
+const PLAYER_BACKSHIFT_TARGET_DEPTH = 0.15;   // eased toward this (north/far) value
+const PLAYER_BACKSHIFT_MS = 500;
+const BOSS_BACKSHIFT_TRIGGER_MARGIN_Z = 150;  // trigger if e.z is within this margin of its own ESCAPE pursuit-min floor
+const BOSS_BACKSHIFT_DISTANCE_Z = 350;        // world-units pushed back
+const BOSS_BACKSHIFT_MS = 500;
 // 13TH ROUND (item 1): decay rate for the NORTH/SOUTH DASH scale pulse
 // (1/rate ~= the time constant) — ~120ms, short enough to read as a snap,
 // never a residual offset from the normal depth-based perspective scale.
@@ -2740,6 +2753,12 @@ const state = {
       nextEventAt: 6000, // real elapsed ms before the FIRST cycle can fire (real interval is re-rolled every cycle after — see updateEscapeCollapse())
       shakeX: 0, shakeY: 0, tiltAngle: 0,
       obstacles: [],         // [{ z, worldX, screenXAtHit, resolved, hit }]
+      // 30TH ROUND items 14-15: PLAYER/ENEMY earthquake-start auto-backshift
+      // tweens — null when inactive, {fromDepth/fromZ, to*, startedAt,
+      // durationMs} while smoothly drifting. See updateEscapeCollapse()'s own
+      // trigger comment for the full explicit-spec-reversal story.
+      playerBackshift: null,
+      bossBackshift: null,
     },
     // 9TH ROUND (item 36): counts down from ESCAPE_TIME_LIMIT_SEC in real
     // elapsed seconds (see frame()'s ESCAPE branch); reset by setGameMode()
@@ -4740,6 +4759,28 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
     es.freeJumping = false;
   }
 
+  // 30TH ROUND items 14-15: apply the earthquake-start backshift tweens
+  // (triggered at the 'idle'->'quake' transition below) every frame while
+  // active — eased, never instant, per spec. PLAYER: overrides es.depthPos
+  // for the tween's duration (updatePlayer()/updateEscapePlayer() already
+  // ran earlier this frame, so this write is the final one for depthPos
+  // this frame). BOSS: overrides e.z directly — updateEscapeEnemyPursuit()
+  // (called later this frame and every frame after, in frame()'s ESCAPE
+  // branch) has its own matching guard so it can never immediately stomp
+  // this tween back to its own sinusoidal position.
+  if (c.playerBackshift) {
+    const bt = clamp((now - c.playerBackshift.startedAt) / c.playerBackshift.durationMs, 0, 1);
+    const eased = 1 - Math.pow(1 - bt, 2);
+    es.depthPos = c.playerBackshift.fromDepth + (c.playerBackshift.toDepth - c.playerBackshift.fromDepth) * eased;
+    if (bt >= 1) c.playerBackshift = null;
+  }
+  if (c.bossBackshift) {
+    const bt = clamp((now - c.bossBackshift.startedAt) / c.bossBackshift.durationMs, 0, 1);
+    const eased = 1 - Math.pow(1 - bt, 2);
+    state.enemy.z = c.bossBackshift.fromZ + (c.bossBackshift.toZ - c.bossBackshift.fromZ) * eased;
+    if (bt >= 1) c.bossBackshift = null;
+  }
+
   // Shake/tilt envelope — shared by 'quake'/'obstacles' (ramps in, sustains,
   // tapers) and 'recede' (tapering out the last of it). Zero in every other
   // phase. Pure Canvas transform (see frame()'s own wrap around the whole
@@ -4787,6 +4828,32 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
       c.phase = 'quake';
       c.phaseStartedAt = now;
       c.obstacles.length = 0;
+      // 30TH ROUND items 14-15: earthquake-start auto-backshift — see
+      // PLAYER_BACKSHIFT_TRIGGER_DEPTH's own comment for the explicit
+      // spec-reversal story. PLAYER: if leaning too close to SOUTH (near-
+      // camera), smoothly drift back toward a more neutral/NORTH depthPos
+      // over PLAYER_BACKSHIFT_MS so the falling-debris telegraph has real
+      // room to read clearly. Never an instant snap — see the tween applied
+      // below, every frame, while c.playerBackshift is set.
+      if (es.depthPos < PLAYER_BACKSHIFT_TRIGGER_DEPTH) {
+        c.playerBackshift = { fromDepth: es.depthPos, toDepth: PLAYER_BACKSHIFT_TARGET_DEPTH, startedAt: now, durationMs: PLAYER_BACKSHIFT_MS };
+      }
+      // BOSS: only when genuinely idle (never interrupts an attack — "絶対
+      // に攻撃中に不自然に瞬間移動させない") and only when within
+      // BOSS_BACKSHIFT_TRIGGER_MARGIN_Z of its own ESCAPE pursuit-min floor
+      // (the closest it's normally allowed to approach), so the debris-
+      // dodge minigame has genuine spacing to function in. Drives e.z
+      // directly here (see below) — updateEscapeEnemyPursuit() has its own
+      // matching guard so its per-frame sinusoidal recompute can never
+      // immediately overwrite this smooth tween mid-drift.
+      const e = state.enemy;
+      if (e.attackState === 'idle' && e.deathState === 'alive') {
+        const bossMinZ = (e.type === 'gabriel' || e.type === 'adam') ? ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z : ESCAPE_ENEMY_PURSUIT_MIN_Z;
+        if (e.z < bossMinZ + BOSS_BACKSHIFT_TRIGGER_MARGIN_Z) {
+          const targetZ = Math.min(ESCAPE_ENEMY_PURSUIT_MAX_Z, e.z + BOSS_BACKSHIFT_DISTANCE_Z);
+          c.bossBackshift = { fromZ: e.z, toZ: targetZ, startedAt: now, durationMs: BOSS_BACKSHIFT_MS };
+        }
+      }
     }
   } else if (c.phase === 'quake') {
     if (elapsed >= COLLAPSE_QUAKE_MS) {
@@ -9628,6 +9695,14 @@ function updateEscapeEnemyPursuit(now) {
   // attack-side z write) — same "idle = free to move" rule COMBAT's own
   // recovery gating uses (see applyForwardDelta()'s isClawIdle).
   if (e.attackState !== 'idle') return;
+  // 30TH ROUND item 15: while the earthquake-start backshift tween
+  // (state.escape.collapse.bossBackshift, applied in updateEscapeCollapse())
+  // is smoothly driving e.z back, this deterministic sinusoidal recompute
+  // must NOT run — it would recompute e.z from `now` alone every frame and
+  // instantly overwrite the tween's eased value, making the "smooth, never
+  // instant" drift invisible. Resumes automatically the instant the tween
+  // finishes (bossBackshift is cleared to null there).
+  if (state.escape.collapse.bossBackshift) return;
   // 25TH ROUND item 6: gabriel/adam use the tighter CLAW-specific near
   // point so the cycle actually swings into real CLAW attack range (see
   // ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z's own comment) — every other type keeps
@@ -10262,6 +10337,7 @@ window.__darkoutTps = {
   updateEnemyFacing, resolveSniperImpact, SNIPER_HIT_RADIUS_PX,
   updateCombatQuake, COMBAT_QUAKE_MIN_INTERVAL_MS, COMBAT_QUAKE_MAX_INTERVAL_MS,
   updateEscapeCollapse, renderCollapseObstacles, spawnCollapseObstacles, advanceCollapseWorldZ,
+  updateEscapeEnemyPursuit,
   triggerClearSequence, renderClearSequence, updateClearSequence,
   // 30TH ROUND: sustained-FIRE move-lock, dynamic AIM/SPOTLIGHT range —
   // exposed for automated testing only.
