@@ -3889,6 +3889,28 @@ function togglePauseMenu() {
   pauseMenuEl.hidden = !state.paused;
   if (state.paused) {
     bgmAudioEl.pause();
+    // 30TH ROUND item 9 (PAUSE->RESUME RB FIRE re-investigation): re-tested
+    // the GAMEPAD RB path fresh via Playwright (RB held continuously through
+    // PAUSE->RESUME, in COVER=false/COVER=true/COVER-just-released) and it
+    // resolved correctly in every case — FIRE reads a plain `pressed(5)`
+    // every frame (no edge/re-arm dependency at all), so a genuine RB signal
+    // arriving post-resume cannot be blocked by prevButtons/edge-tracking
+    // state. Per this round's explicit "COVER単独と結論しない" instruction,
+    // this widens the investigation to a DIFFERENT real (if previously
+    // unchecked) risk on the TOUCH side instead of re-asserting the same
+    // COVER conclusion: touchFireHeld/touchFocusHeld are only ever cleared
+    // by the touch FIRE/FOCUS buttons' own pointerup/pointercancel — if
+    // PAUSE opens while a finger is physically still down on one of them
+    // (the button then sits behind the PAUSE overlay), nothing here
+    // previously guaranteed that a stray pointerup delivered to a now-
+    // hidden/overlaid element is actually the one the flag sees. Explicitly
+    // clearing both the instant PAUSE opens removes that dependency
+    // entirely — a real finger still down when PAUSE opens has already lost
+    // control input for the pause window anyway (COMBAT/FOCUS are inert
+    // while paused), so this can only ever prevent a stale "still firing"
+    // read post-resume, never suppress a genuine post-resume touch.
+    touchFireHeld = false;
+    touchFocusHeld = false;
   } else {
     // 29TH ROUND (item 18): real resume-instant timestamp for the DEBUG
     // panel's INPUT group.
