@@ -7485,7 +7485,10 @@ const redTintCtx = redTintCanvas.getContext('2d');
 // ONLY the sprite's own pixels), apply source-atop there — so it can only
 // ever redden pixels the sprite itself painted — then blit that tinted
 // result onto the main canvas with a normal source-over draw.
-function drawRedTintedSprite(img, dx, dy, w, h) {
+// 27TH ROUND FOLLOW-UP: tintAlpha param (default 0.65, unchanged for every
+// existing caller) — see renderEnemyHitFlash()'s own comment for why
+// GABRIEL/ADAM pass a much lower value here instead.
+function drawRedTintedSprite(img, dx, dy, w, h, tintAlpha) {
   const cw = Math.max(1, Math.round(w));
   const ch = Math.max(1, Math.round(h));
   if (redTintCanvas.width !== cw || redTintCanvas.height !== ch) {
@@ -7496,7 +7499,7 @@ function drawRedTintedSprite(img, dx, dy, w, h) {
   redTintCtx.globalCompositeOperation = 'source-over';
   redTintCtx.drawImage(img, 0, 0, cw, ch);
   redTintCtx.globalCompositeOperation = 'source-atop';
-  redTintCtx.fillStyle = 'rgba(255,40,40,0.65)';
+  redTintCtx.fillStyle = 'rgba(255,40,40,' + (tintAlpha != null ? tintAlpha : 0.65) + ')';
   redTintCtx.fillRect(0, 0, cw, ch);
   ctx.drawImage(redTintCanvas, dx, dy, w, h);
 }
@@ -7538,6 +7541,29 @@ function renderBossAttackFullBody() {
   ctx.drawImage(rect.img, rect.x, rect.y, rect.w, rect.h);
 }
 
+// 27TH ROUND FOLLOW-UP (root-cause fix — see the completion report for the
+// full investigation): reproduced via Playwright as a real "giant red
+// silhouette covering most of the screen" whenever ADAM (or GABRIEL) takes
+// a bullet hit while its own draw rect is large — which close-range CLAW
+// bosses routinely are (up to ~1.94x player height even after the earlier
+// GABRIEL/ADAM size-reduction fix). Root cause: this function's existing,
+// unmodified hit-flash tint — the SAME drawRedTintedSprite() every other
+// enemy type also uses on a real hit — was applying its normal 0.65 fill
+// alpha across the sprite's ENTIRE opaque silhouette regardless of that
+// silhouette's on-screen size. For a small/medium enemy (ROID1/ROID2/DRONE/
+// AdamSphere) 0.65 reads as a normal damage flash; for ADAM's huge
+// wingspan at close range, the exact same math paints a screen-filling
+// solid-red shape — not a second/duplicate sprite, not a separate ARC CLAW
+// asset, just this one existing tint applied at an alpha tuned for a much
+// smaller silhouette. Confirmed via computeEnemyDrawRect() (rect ~233x414px
+// on a 390px-tall canvas) and by toggling this alpha down and re-shooting
+// the exact same forced state (see report for both screenshots). BOSS-only
+// (e.kind==='claw' — GABRIEL/ADAM): a much lower alpha keeps the "you hit
+// it" flash cue readable without covering the screen. Every other enemy
+// type is completely untouched (still the original 0.65) — the normal
+// hit-flash system itself is not removed, only re-tuned for these two
+// oversized types.
+const BOSS_HIT_FLASH_TINT_ALPHA = 0.18;
 function renderEnemyHitFlash() {
   const e = state.enemy;
   const now = performance.now();
@@ -7551,7 +7577,8 @@ function renderEnemyHitFlash() {
     bobScale = 1 + Math.sin(phase * Math.PI * 2) * 0.012;
   }
   const w = rect.w * bobScale;
-  drawRedTintedSprite(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, rect.h);
+  const tintAlpha = e.kind === 'claw' ? BOSS_HIT_FLASH_TINT_ALPHA : 0.65;
+  drawRedTintedSprite(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, rect.h, tintAlpha);
 }
 
 function getStealthStrength(now) {
@@ -8100,7 +8127,12 @@ function renderEnemy(theme) {
     const h = rect.h;
     if (flashing) {
       ctx.filter = 'none';
-      drawRedTintedSprite(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
+      // 27TH ROUND FOLLOW-UP: this is the ONLY hit-flash tint draw ESCAPE
+      // mode ever gets (renderEnemyHitFlash() below is COMBAT-only — see its
+      // own comment), so this needed the same GABRIEL/ADAM alpha reduction
+      // as that function, otherwise the giant-red-silhouette bug still
+      // reproduced identically in ESCAPE even after fixing COMBAT.
+      drawRedTintedSprite(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h, e.kind === 'claw' ? BOSS_HIT_FLASH_TINT_ALPHA : 0.65);
     } else {
       ctx.drawImage(rect.img, rect.x - (w - rect.w) / 2, rect.y + bobY, w, h);
     }
@@ -8110,7 +8142,7 @@ function renderEnemy(theme) {
     if (flashing) {
       ctx.filter = 'none';
       ctx.globalCompositeOperation = 'source-atop';
-      ctx.fillStyle = 'rgba(255,40,40,0.65)';
+      ctx.fillStyle = 'rgba(255,40,40,' + (e.kind === 'claw' ? BOSS_HIT_FLASH_TINT_ALPHA : 0.65) + ')';
       ctx.fillRect(rect.x, rect.y + bobY, rect.w, rect.h);
     }
   }
