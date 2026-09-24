@@ -856,8 +856,22 @@ const FOCUS_RECOVER_PER_SEC = 20; // refills in 5s from empty while not in use
 const AUTO_AIM_APPROACH_RATE = 9;
 
 // ENEMY DEATH (4th round) — durations for the two death-effect families.
-const DEATH_EXPLODE_MS = 650; // DRONE/ROID1/ROID2/ADAM SPHERE: existing explosion particles + fade
+// 28TH ROUND item 5: DEATH_EXPLODE_MS extended 650->1000 ("約1秒に圧縮" per
+// spec, compressing DARK OUT 1's ~5s ADAM SPHERE defeat sequence) so the
+// scattered multi-burst body explosion (see startEnemyDeath()) has room to
+// read as several beats rather than one instant flash.
+const DEATH_EXPLODE_MS = 1000; // DRONE/ROID1/ROID2/ADAM SPHERE: scattered body-explosion chain + fade
 const DEATH_BURN_MS = 950;    // GABRIEL/ADAM: burn-down/dissolve, see startEnemyDeath()
+const DEATH_EXPLOSION_BURST_COUNT = 9;   // 28TH ROUND item 5: bursts scattered across the body (was 6, single-point)
+const DEATH_EXPLOSION_WINDOW_MS = 850;   // 28TH ROUND item 5: spread across most of DEATH_EXPLODE_MS
+const DEATH_EXPLOSION_FLATTEN_Y = 0.85;  // 28TH ROUND item 5: rounder than floor-disc BLAST_FLATTEN_Y(0.58)
+// 28TH ROUND item 6: GABRIEL/ADAM burn-death now ALSO gets a handful of the
+// same scattered body-anchored blasts as ROID1/ROID2/DRONE (smaller scale,
+// fewer bursts — the burn/dissolve stays the primary silhouette read, the
+// bursts are what makes "defeated" unmistakable even at a glance/screenshot).
+const GABRIEL_DEATH_BURST_COUNT = 5;
+const GABRIEL_DEATH_WINDOW_MS = 650;
+const GABRIEL_DEATH_BLAST_SCALE = 0.85;
 
 // Per-shot damage — PREVIOUSLY DID NOT EXIST AT ALL (see PHASE 9 root-cause
 // report: enemy.hp was declared but never once decremented anywhere in the
@@ -1310,6 +1324,7 @@ const focusFillEl = document.getElementById('focus-bar-fill');
 // togglePauseMenu() for the actual lifecycle.
 const bgmAudioEl = document.getElementById('bgm-audio');
 const themeLabelEl = document.getElementById('theme-label');
+const tapEnableGuideEl = document.getElementById('tap-enable-guide');
 
 const dbgFpsEl = document.getElementById('dbg-fps');
 const dbgFrameEl = document.getElementById('dbg-frametime');
@@ -2602,6 +2617,7 @@ const state = {
       nextEventAt: 6000, // real elapsed ms before the FIRST cycle can fire (real interval is re-rolled every cycle after — see updateEscapeCollapse())
       shakeX: 0, shakeY: 0, tiltAngle: 0,
       obstacles: [],         // [{ z, worldX, screenXAtHit, resolved, hit }]
+      debrisVariant: 0,      // 28TH ROUND item 2: 0=A concrete+short rebar, 1=B thin rebar+small fragments, 2=C wall fragments+bent rebar
     },
     // 9TH ROUND (item 36): counts down from ESCAPE_TIME_LIMIT_SEC in real
     // elapsed seconds (see frame()'s ESCAPE branch); reset by setGameMode()
@@ -3557,6 +3573,28 @@ pauseDebugToggleBtnEl.addEventListener('pointerdown', (e) => { e.preventDefault(
 // calling play() repeatedly before playback has actually begun, and
 // against ever calling it again afterward (so it never re-triggers/
 // restarts once genuinely started).
+// 28TH ROUND item 7: show/hide the persistent "tap once to enable audio and
+// controller" guide (#tap-enable-guide). APPEARS only if, some time (500ms —
+// long enough that the ordinary case, where the mode-select tap itself
+// already unlocked audio, never even flickers it) after MODE SELECT was
+// dismissed, bgmStarted is STILL false — i.e. that one gesture genuinely did
+// not unlock audio (the real-device-only autoplay-policy race
+// bgmRetryOnGesture()'s own comment describes). DISAPPEARS the instant
+// bgmAudioEl actually starts producing sound — the native 'playing' event
+// (see its listener below tryStartBgm()) is the ONLY trigger, never a fixed
+// timeout, so it can never vanish while genuinely still stuck. REAPPEARS:
+// never — once real playback has begun even once, bgmStarted latches true
+// forever (see tryStartBgm()'s own guard) and nothing in this game ever
+// re-suspends/re-locks audio afterward, so there is no later state this
+// guide would need to warn about again.
+function showTapEnableGuideIfStillLocked() {
+  if (!tapEnableGuideEl || bgmStarted) return;
+  tapEnableGuideEl.hidden = false;
+}
+function hideTapEnableGuide() {
+  if (tapEnableGuideEl) tapEnableGuideEl.hidden = true;
+}
+
 let bgmStarted = false;
 function tryStartBgm() {
   if (bgmStarted || !bgmAudioEl) return;
@@ -3589,6 +3627,19 @@ function tryStartBgm() {
       if (DEBUG_MODE) r10DebugLog('AUDIO UNLOCKED');
     }
   }
+}
+
+// 28TH ROUND item 7: the one authoritative "audio genuinely started" signal
+// — the native 'playing' event fires only once real playback has actually
+// begun (unlike a resolved play() Promise, which can resolve even for a
+// muted/policy-limited start), so this is what actually dismisses the tap
+// guide, independent of exactly which retry path (touch/keydown/gamepad
+// button) finally got it going.
+if (bgmAudioEl) {
+  bgmAudioEl.addEventListener('playing', () => {
+    bgmStarted = true;
+    hideTapEnableGuide();
+  });
 }
 
 // 14TH ROUND (items 12-14): the comment above has always described
@@ -3652,6 +3703,13 @@ function handleModeSelect(mode) {
   tryStartBgm();
   state.gameStarted = true;
   if (DEBUG_MODE) { r10DebugState.inputMode = mode; r10DebugLog('MODE SELECTED: ' + mode); }
+  // 28TH ROUND item 7: APPEARS here — 500ms after the mode-select gesture,
+  // only if that gesture's own tryStartBgm() call did NOT actually result in
+  // real playback (checked via the 'playing' listener above, not a fixed
+  // guess). 500ms is comfortably longer than any successful play() takes in
+  // practice, so the overwhelmingly common case (audio starts immediately)
+  // never shows it at all.
+  setTimeout(showTapEnableGuideIfStillLocked, 500);
 }
 
 document.getElementById('mode-btn-controller').addEventListener('click', () => handleModeSelect('controller'));
@@ -4538,23 +4596,39 @@ function renderCollapseObstacles() {
     // the board (front/dark/top-highlight all lifted), never changing the
     // shapes/geometry themselves, just enough separation to read clearly
     // against the dark background at any distance.
-    const baseColor = ob.hit ? '#a8402f' : '#5a5348';
-    const darkColor = ob.hit ? '#742a1c' : '#332f28';
-    const topColor = ob.hit ? '#c9705a' : '#84796a';
-    // 25TH ROUND additional item 4 (pseudo-3D reinforcement): each concrete
-    // piece is now drawn as a real 3-face block (front/top/side), never a
-    // single flat rotated rect — the extrusion offset is a FIXED screen-
-    // space vector (not rotating with ob.rotationAngle), the same trick used
-    // to fake solid rotating cubes in 2D — so it keeps reading as a solid
-    // chunk with thickness even as the whole cluster spins. Corner "chip"
-    // triangles (broken-edge flecks) reinforce the angular/fractured-
-    // concrete read the user asked for over the old flat-rect look.
-    const pieceCount = 3;
+    // 28TH ROUND item 2: root-caused via a rotation-angle screenshot test
+    // (?variant static rotationAngle=0.25) — at a shallow/near-flat rotation
+    // the OLD warm brownish-tan palette (#5a5348/#332f28/#84796a) genuinely
+    // read as cardboard/kraft-paper, exactly the user's complaint, because
+    // "brown + flat rectangle + soft corners" IS the cardboard-box visual
+    // language. Fixed to a cool, neutral concrete grey (a touch of blue,
+    // zero warm/brown bias) so no rotation angle can make it read as paper.
+    const baseColor = ob.hit ? '#a8402f' : '#6d716c';
+    const darkColor = ob.hit ? '#742a1c' : '#3a3d3a';
+    const topColor = ob.hit ? '#c9705a' : '#9aa39c';
+    // 28TH ROUND item 2: three DESIGN VARIANTS (A/B/C per spec) selectable
+    // via state.escape.collapse.debrisVariant (also window.__darkoutTps.
+    // setDebrisVariant(n) for screenshot comparison) — differ only in piece-
+    // count/size ratio and rebar count/shape, reusing the exact same 3-face-
+    // block + shaded-cylinder-rebar drawing code below so all three stay
+    // equally "solid concrete + metal", never flat/papery.
+    // A=0: one dominant concrete chunk + a couple of smaller chips, short
+    //      rebar stubs barely poking past the block edge.
+    // B=1: several smaller, more numerous fragments (no single dominant
+    //      block), MORE rebar rods (4, thinner) — a "scattered debris"
+    //      read rather than one big rock.
+    // C=2: two big, wide, flatter wall-panel-style slabs (bigger W:H ratio)
+    //      + a visibly BENT rebar (drawn as 2 segments meeting at an angle,
+    //      not one straight rod) mixed in with a straight one.
+    const variant = (state.escape && state.escape.collapse && state.escape.collapse.debrisVariant) || 0;
+    const pieceCount = variant === 1 ? 5 : 3;
     for (let i = 0; i < pieceCount; i++) {
       const fx = (rnd(i * 3 + 1) - 0.5) * w * 0.7;
       const fy = (rnd(i * 3 + 5) - 0.5) * h * 0.3;
-      const pieceW = w * (0.34 + rnd(i * 3 + 2) * 0.3);
-      const pieceH = h * (0.46 + rnd(i * 3 + 3) * 0.5);
+      const isDominant = variant === 0 && i === 0;
+      const wideSlab = variant === 2;
+      const pieceW = w * (isDominant ? 0.58 : wideSlab ? (0.5 + rnd(i * 3 + 2) * 0.34) : variant === 1 ? (0.22 + rnd(i * 3 + 2) * 0.2) : (0.34 + rnd(i * 3 + 2) * 0.3));
+      const pieceH = h * (isDominant ? 0.78 : wideSlab ? (0.3 + rnd(i * 3 + 3) * 0.22) : variant === 1 ? (0.28 + rnd(i * 3 + 3) * 0.3) : (0.46 + rnd(i * 3 + 3) * 0.5));
       const rot = (rnd(i * 3 + 4) - 0.5) * 0.9;
       const depth = Math.min(pieceW, pieceH) * 0.4;
       ctx.save();
@@ -4563,6 +4637,22 @@ function renderCollapseObstacles() {
       // front face
       ctx.fillStyle = i === 0 ? baseColor : darkColor;
       ctx.fillRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
+      // 28TH ROUND item 2: small aggregate-speckle dots — the single flat
+      // fillRect above, even in the new grey, still had a uniform/printed
+      // look up close (part of why it could read as cardboard); real
+      // poured concrete shows visible stone aggregate. A handful of tiny
+      // dark+light flecks (seeded, so stable frame-to-frame) breaks up that
+      // flat fill into a genuinely rough/aggregate surface.
+      const speckleCount = 5;
+      for (let s = 0; s < speckleCount; s++) {
+        const sx = (rnd(i * 7 + s * 2 + 40) - 0.5) * pieceW * 0.8;
+        const sy = (rnd(i * 7 + s * 2 + 41) - 0.5) * pieceH * 0.8;
+        const sr = Math.max(0.6, h * 0.01) * (0.6 + rnd(i * 7 + s + 60) * 0.8);
+        ctx.fillStyle = s % 2 === 0 ? 'rgba(0,0,0,0.3)' : 'rgba(230,228,220,0.28)';
+        ctx.beginPath();
+        ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+        ctx.fill();
+      }
       // top face (extruded up-left in FIXED screen space, undone by -rot so
       // it stays screen-aligned rather than spinning with the piece's own
       // random tilt): lighter tone reads as a lit, angled concrete face.
@@ -4609,46 +4699,89 @@ function renderCollapseObstacles() {
       ctx.strokeRect(-pieceW / 2, -pieceH / 2, pieceW, pieceH);
       ctx.restore();
     }
-    // 25TH ROUND additional item 4: two rebar rods drawn as shaded cylinders
-    // (dark rod + offset bright highlight stripe = metallic-round read, not
-    // a flat line) and their apparent LENGTH breathes with a fast secondary
-    // tumble phase (own per-rod frequency) to fake end-over-end 3D rotation
-    // (foreshortening) on top of the cluster's shared 2D spin.
-    const tumbleA = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 2.3 + ob.seed);
-    const tumbleB = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 1.7 + ob.seed * 1.7 + 2.1);
-    const rebarColor = 'rgba(120,108,92,0.95)';
-    const rebarHighlight = 'rgba(215,205,185,0.65)';
-    const rodW = Math.max(2.4, h * 0.11);
+    // 25TH ROUND additional item 4 (+ 28TH ROUND item 2 variants): rebar
+    // rods drawn as shaded cylinders (dark rod + offset bright highlight
+    // stripe = metallic-round read, never a flat line) whose apparent
+    // LENGTH breathes with a fast secondary tumble phase (own per-rod
+    // frequency) to fake end-over-end 3D rotation (foreshortening) on top
+    // of the cluster's shared 2D spin. drawRod() below is shared by all
+    // three variants; variant C also uses it twice per "bent" rod (two
+    // straight segments meeting at a kink point) rather than one straight
+    // line, so a bent rebar reads as genuinely bent, not just rotated.
+    // 28TH ROUND item 2: the OLD tan/beige rebarColor (120,108,92) at a
+    // thin uniform width is exactly what read as "straws" in the rotation-
+    // angle screenshot test — a smooth, warm-toned, featureless line. Fixed
+    // to a darker, cooler rusted-steel tone (visibly metal, not wood/straw
+    // colored) AND thickened further, AND drawRod() now stamps periodic
+    // dark ridge ticks across the rod's width — the actual raised ring
+    // pattern real rebar has — so the silhouette itself reads as ridged
+    // metal rod even in a still frame, not a smooth stick.
+    const rebarColor = 'rgba(74,66,58,0.97)';
+    const rebarHighlight = 'rgba(168,158,142,0.55)';
+    const rodW = Math.max(3.2, h * (variant === 1 ? 0.09 : 0.13));
     ctx.lineCap = 'round';
     ctx.save();
-    const ax1 = -w * 0.55, ay1 = -h * 0.15, ax2 = w * 0.6, ay2 = -h * 0.85;
-    const amx = (ax1 + ax2) / 2, amy = (ay1 + ay2) / 2;
-    ctx.strokeStyle = rebarColor;
-    ctx.lineWidth = rodW;
-    ctx.beginPath();
-    ctx.moveTo(amx + (ax1 - amx) * tumbleA, amy + (ay1 - amy) * tumbleA);
-    ctx.lineTo(amx + (ax2 - amx) * tumbleA, amy + (ay2 - amy) * tumbleA);
-    ctx.stroke();
-    ctx.strokeStyle = rebarHighlight;
-    ctx.lineWidth = Math.max(1, rodW * 0.3);
-    ctx.beginPath();
-    ctx.moveTo(amx + (ax1 - amx) * tumbleA, amy + (ay1 - amy) * tumbleA - rodW * 0.22);
-    ctx.lineTo(amx + (ax2 - amx) * tumbleA, amy + (ay2 - amy) * tumbleA - rodW * 0.22);
-    ctx.stroke();
-    const bx1 = -w * 0.4, by1 = h * 0.05, bx2 = w * 0.35, by2 = h * 0.75;
-    const bmx = (bx1 + bx2) / 2, bmy = (by1 + by2) / 2;
-    ctx.strokeStyle = rebarColor;
-    ctx.lineWidth = rodW;
-    ctx.beginPath();
-    ctx.moveTo(bmx + (bx1 - bmx) * tumbleB, bmy + (by1 - bmy) * tumbleB);
-    ctx.lineTo(bmx + (bx2 - bmx) * tumbleB, bmy + (by2 - bmy) * tumbleB);
-    ctx.stroke();
-    ctx.strokeStyle = rebarHighlight;
-    ctx.lineWidth = Math.max(1, rodW * 0.3);
-    ctx.beginPath();
-    ctx.moveTo(bmx + (bx1 - bmx) * tumbleB, bmy + (by1 - bmy) * tumbleB - rodW * 0.22);
-    ctx.lineTo(bmx + (bx2 - bmx) * tumbleB, bmy + (by2 - bmy) * tumbleB - rodW * 0.22);
-    ctx.stroke();
+    const drawRod = (x1, y1, x2, y2, tumble, width) => {
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      const tx1 = mx + (x1 - mx) * tumble, ty1 = my + (y1 - my) * tumble;
+      const tx2 = mx + (x2 - mx) * tumble, ty2 = my + (y2 - my) * tumble;
+      ctx.strokeStyle = rebarColor;
+      ctx.lineWidth = width;
+      ctx.beginPath(); ctx.moveTo(tx1, ty1); ctx.lineTo(tx2, ty2); ctx.stroke();
+      ctx.strokeStyle = rebarHighlight;
+      ctx.lineWidth = Math.max(1, width * 0.28);
+      ctx.beginPath();
+      ctx.moveTo(tx1, ty1 - width * 0.22); ctx.lineTo(tx2, ty2 - width * 0.22);
+      ctx.stroke();
+      // ridge ticks: short dark perpendicular strokes at regular intervals
+      // along the rod — the raised-ring texture that reads as "rebar", not
+      // a smooth dowel/straw.
+      const len = Math.hypot(tx2 - tx1, ty2 - ty1);
+      const dirX = (tx2 - tx1) / (len || 1), dirY = (ty2 - ty1) / (len || 1);
+      const perpX = -dirY * width * 0.55, perpY = dirX * width * 0.55;
+      const ridgeCount = Math.max(2, Math.round(len / (width * 1.4)));
+      ctx.strokeStyle = 'rgba(20,17,14,0.55)';
+      ctx.lineWidth = Math.max(1, width * 0.16);
+      for (let r = 1; r < ridgeCount; r++) {
+        const rx = tx1 + dirX * len * (r / ridgeCount);
+        const ry = ty1 + dirY * len * (r / ridgeCount);
+        ctx.beginPath();
+        ctx.moveTo(rx - perpX, ry - perpY);
+        ctx.lineTo(rx + perpX, ry + perpY);
+        ctx.stroke();
+      }
+    };
+    if (variant === 1) {
+      // B: 4 thin rods scattered across the whole cluster footprint.
+      const spans = [
+        [-w * 0.6, -h * 0.5, w * 0.5, -h * 0.05],
+        [-w * 0.35, h * 0.1, w * 0.62, -h * 0.6],
+        [-w * 0.55, h * 0.4, w * 0.15, h * 0.75],
+        [w * 0.05, -h * 0.7, w * 0.6, h * 0.35],
+      ];
+      spans.forEach((s, i) => {
+        const tumble = 0.55 + 0.45 * Math.cos(ob.rotationAngle * (1.6 + i * 0.4) + ob.seed * (1 + i * 0.5) + i);
+        drawRod(s[0], s[1], s[2], s[3], tumble, rodW);
+      });
+    } else if (variant === 2) {
+      // C: one straight rod + one visibly BENT rod (kink at its midpoint,
+      // offset perpendicular to the rod's own axis) mixed together.
+      const tumbleA = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 2.3 + ob.seed);
+      drawRod(-w * 0.6, -h * 0.2, w * 0.62, -h * 0.7, tumbleA, rodW);
+      const bx1 = -w * 0.5, by1 = h * 0.1, bx2 = w * 0.45, by2 = h * 0.7;
+      const bkx = (bx1 + bx2) / 2 + w * 0.16, bky = (by1 + by2) / 2 - h * 0.12; // kink point, offset off the straight line
+      const tumbleB = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 1.7 + ob.seed * 1.7 + 2.1);
+      drawRod(bx1, by1, bkx, bky, tumbleB, rodW);
+      drawRod(bkx, bky, bx2, by2, tumbleB, rodW);
+    } else {
+      // A (default): 2 short stubs barely poking past the dominant block's
+      // own edge — reads as protruding rebar snapped off close to the
+      // concrete, not a separate long rod lying loose.
+      const tumbleA = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 2.3 + ob.seed);
+      const tumbleB = 0.55 + 0.45 * Math.cos(ob.rotationAngle * 1.7 + ob.seed * 1.7 + 2.1);
+      drawRod(-w * 0.3, -h * 0.32, w * 0.4, -h * 0.55, tumbleA, rodW);
+      drawRod(-w * 0.22, h * 0.28, w * 0.28, h * 0.52, tumbleB, rodW);
+    }
     ctx.restore();
     ctx.restore();
 
@@ -5110,6 +5243,12 @@ function spawnBlast(x, y, now, opts) {
   state.blasts.push({
     active: true, x, y, startAt: now, scale, big,
     shockwave: !!o.shockwave, sparks, debris,
+    // 28TH ROUND item 5: optional per-blast Y-flatten override — see
+    // startEnemyDeath()'s own comment for why a BODY-height death
+    // explosion needs a rounder, less floor-disc-like shape than a normal
+    // ground missile impact. undefined preserves the existing BLAST_
+    // FLATTEN_Y default for every other (unchanged) caller.
+    flattenY: o.flattenY,
   });
 }
 function updateBlasts(now) {
@@ -5128,7 +5267,7 @@ function renderBlast(b, now) {
   const sc = b.scale;
   ctx.save();
   ctx.translate(b.x, b.y);
-  ctx.scale(1, BLAST_FLATTEN_Y);
+  ctx.scale(1, b.flattenY != null ? b.flattenY : BLAST_FLATTEN_Y);
 
   // CORE FLASH: brief, sharp, white -> hot-yellow radial gradient — a FACE
   // of light expanding from the impact center, never a symbol/glyph.
@@ -5258,17 +5397,31 @@ function renderBlasts() {
 // see spawnBlast()'s own comment.
 function spawnExplosionChainBurst(e, now, burstIndex) {
   const sc = e.explosionChainScale || 1;
-  let ox = 0, oy = 0;
-  if (burstIndex > 0) {
-    const ang = Math.random() * Math.PI * 2;
-    const r = (0.35 + Math.random() * 0.65) * EXPLOSION_CHAIN_SCATTER_PX * sc;
-    ox = Math.cos(ang) * r;
-    oy = Math.sin(ang) * r * 0.55; // flattened to read as sitting on the floor
+  // 28TH ROUND item 5: startEnemyDeath() (ROID1/ROID2/DRONE/ADAM SPHERE
+  // defeat) now pre-computes e.explosionChainAnchors — points scattered
+  // ACROSS the actual defeated body's own screen rect (shoulder/chest/leg
+  // height, not just a small radius around one center point) — so the
+  // chain reads as the machine itself bursting apart in several places, not
+  // one point flashing near a floating body. resolveMissileImpact() (a
+  // normal in-combat missile hit) never sets this field, so it keeps the
+  // exact original center+random-radius scatter unchanged.
+  const anchor = e.explosionChainAnchors && e.explosionChainAnchors[burstIndex];
+  let x, y, flattenY;
+  if (anchor) {
+    x = anchor.x; y = anchor.y; flattenY = anchor.flattenY;
+  } else {
+    let ox = 0, oy = 0;
+    if (burstIndex > 0) {
+      const ang = Math.random() * Math.PI * 2;
+      const r = (0.35 + Math.random() * 0.65) * EXPLOSION_CHAIN_SCATTER_PX * sc;
+      ox = Math.cos(ang) * r;
+      oy = Math.sin(ang) * r * 0.55; // flattened to read as sitting on the floor
+    }
+    x = e.explosionChainX + ox;
+    y = e.explosionChainY + oy;
   }
-  const x = e.explosionChainX + ox;
-  const y = e.explosionChainY + oy;
   const big = burstIndex === 0;
-  spawnBlast(x, y, now, { scale: (big ? 1 : 0.6) * sc, big, shockwave: big });
+  spawnBlast(x, y, now, { scale: (big ? 1 : 0.6) * sc, big, shockwave: big, flattenY });
 }
 
 // 14TH ROUND (items 5-8): the per-frame driver that spreads the remaining
@@ -5282,13 +5435,19 @@ function spawnExplosionChainBurst(e, now, burstIndex) {
 function updateExplosionChain(now) {
   const e = state.enemy;
   if (!e.explosionChainActive) return;
+  // 28TH ROUND item 5: per-instance count/window overrides (startEnemyDeath()
+  // uses more bursts over a longer window than a normal missile impact) —
+  // undefined for resolveMissileImpact()'s own call, so it keeps the exact
+  // original EXPLOSION_CHAIN_COUNT/WINDOW_MS behavior unchanged.
+  const count = e.explosionChainCount || EXPLOSION_CHAIN_COUNT;
+  const windowMs = e.explosionChainWindowMs || EXPLOSION_CHAIN_WINDOW_MS;
   const elapsed = now - e.explosionChainStartAt;
-  const targetCount = Math.min(EXPLOSION_CHAIN_COUNT, Math.floor((elapsed / EXPLOSION_CHAIN_WINDOW_MS) * EXPLOSION_CHAIN_COUNT) + 1);
+  const targetCount = Math.min(count, Math.floor((elapsed / windowMs) * count) + 1);
   while (e.explosionChainSpawned < targetCount) {
     spawnExplosionChainBurst(e, now, e.explosionChainSpawned);
     e.explosionChainSpawned++;
   }
-  if (elapsed >= EXPLOSION_CHAIN_WINDOW_MS) {
+  if (elapsed >= windowMs) {
     e.explosionChainActive = false;
   }
 }
@@ -5509,6 +5668,13 @@ function spawnEnemy(type) {
   e.explosionChainSpawned = 0;
   e.explosionChainX = 0;
   e.explosionChainY = 0;
+  // 28TH ROUND item 5: death-explosion-only overrides — reset on every
+  // (re)spawn so a fresh enemy's own regular missile impacts never
+  // accidentally inherit the PREVIOUS enemy's death-burst anchors/count/
+  // window (which would resurrect the old, wrong scattered pattern).
+  e.explosionChainAnchors = null;
+  e.explosionChainCount = null;
+  e.explosionChainWindowMs = null;
   e.explosionChainScale = 1;
   // 14TH ROUND (items 22-43): GABRIEL/ADAM DEFENSE/re-aim/COUNTER state —
   // see updateBullets()/updateEnemy()'s 'claw' branch. Field names per the
@@ -5572,27 +5738,86 @@ function startEnemyDeath(now) {
 
   const rect = computeEnemyDrawRect();
   if (family === 'explode') {
-    // 16TH ROUND (Part A/B, item 14): DRONE/ROID1/ROID2/ADAM SPHERE defeat
-    // now reuses the SAME chained-BLAST system (spawnExplosionChainBurst()/
-    // updateExplosionChain(), see their own comments) resolveMissileImpact()
-    // drives, rather than the old flat white circle + asterisk-ray + plain
-    // grey circle combo — a genuine "BOOM -> BA-BA-BA-BA" defeat explosion,
-    // scaled up a bit (1.3x) so a boss defeat still reads bigger/more final
-    // than a mid-fight MISSILE impact.
+    // 28TH ROUND item 5: root cause of "空中に浮いて地面だけ赤く光る" —
+    // this reused resolveMissileImpact()'s own chain system UNCHANGED: a
+    // single center point (rect.cx/cy, roughly chest height) with every
+    // later burst scattered only a SMALL radius around it and drawn with
+    // BLAST_FLATTEN_Y(0.58)'s heavy floor-disc squash. On a boss-sized
+    // sprite that reads as one wide, flat, glowing ellipse sitting in
+    // front of the torso — bright enough to visually swallow the (real,
+    // already fading+brightening — see renderEnemy()'s 'exploding' branch)
+    // body silhouette almost entirely, exactly the "有av floating glow,
+    // ground-only light" complaint (confirmed via a zoomed-in screenshot
+    // crop — the body IS there, just visually drowned out). Fix: scatter
+    // the burst anchors ACROSS the real defeated body's own rect (shoulder/
+    // torso/leg height, not a tight radius around one point) with a
+    // rounder flatten (0.85, not the floor-disc 0.58) so the read becomes
+    // "the machine is bursting apart in several places" rather than "a
+    // pool of light hovers near it". Also more bursts (9, was 6) over a
+    // longer window (850ms) matching the now-longer DEATH_EXPLODE_MS
+    // (1000ms, was 650) — per spec ("DARK OUT 1のADAM SPHERE討伐演出を約1秒
+    // に圧縮"), a genuinely multi-beat "BOOM-BOOM-BOOM" defeat, not a
+    // single flash. resolveMissileImpact()'s own regular in-combat missile
+    // hits are completely untouched (never set explosionChainAnchors/
+    // Count/WindowMs, so spawnExplosionChainBurst()/updateExplosionChain()
+    // fall through to their original, unmodified center+radius/default-
+    // count/default-window behavior there).
     e.explosionChainX = rect.cx;
     e.explosionChainY = rect.cy;
     e.explosionChainScale = 1.3;
+    e.explosionChainCount = DEATH_EXPLOSION_BURST_COUNT;
+    e.explosionChainWindowMs = DEATH_EXPLOSION_WINDOW_MS;
+    e.explosionChainAnchors = [{ x: rect.cx, y: rect.cy, flattenY: DEATH_EXPLOSION_FLATTEN_Y }];
+    for (let i = 1; i < DEATH_EXPLOSION_BURST_COUNT; i++) {
+      const fx = 0.12 + Math.random() * 0.76;
+      const fy = 0.12 + Math.random() * 0.76;
+      e.explosionChainAnchors.push({
+        x: rect.x + fx * rect.w,
+        y: rect.y + fy * rect.h,
+        flattenY: DEATH_EXPLOSION_FLATTEN_Y,
+      });
+    }
     e.explosionChainActive = true;
     e.explosionChainStartAt = now;
     e.explosionChainSpawned = 0;
     spawnExplosionChainBurst(e, now, 0);
     e.explosionChainSpawned = 1;
   } else {
-    // PART 26: GABRIEL/ADAM — NOT the same explosion. A scatter of REAL
-    // traveling embers (spawnSparkEmber() — see its own comment for why
-    // this is no longer a fixed ray-burst) across the body, paired with
-    // renderEnemy()'s own bottom-up dissolve/tint for the sustained
-    // "burning down" read over DEATH_BURN_MS.
+    // PART 26 (embers) + 28TH ROUND item 6 (real blasts): GABRIEL/ADAM —
+    // previously ONLY a scatter of traveling embers + the bottom-up
+    // dissolve/tint below, which the user reported as "absent or weak" —
+    // easy to miss, especially in a still screenshot, since nothing here
+    // ever draws a bright, unmistakable "something exploded" shape the way
+    // ROID1/ROID2's chain-burst does. Fix: reuse the SAME scattered
+    // explosionChainAnchors mechanism as the 'explode' family above (see
+    // its own comment), just smaller/fewer (5 bursts, 0.85 scale, 650ms)
+    // so the burn-down silhouette stays readable as the primary read while
+    // the bursts make "defeated NOW" unmistakable — matching the DARK OUT 1
+    // "the machine itself is exploding" philosophy the user asked to reuse
+    // here where possible, without literally duplicating ROID's bigger/
+    // longer sequence (GABRIEL/ADAM still keep their own distinct burn/
+    // dissolve identity on top).
+    e.explosionChainX = rect.cx;
+    e.explosionChainY = rect.cy;
+    e.explosionChainScale = GABRIEL_DEATH_BLAST_SCALE;
+    e.explosionChainCount = GABRIEL_DEATH_BURST_COUNT;
+    e.explosionChainWindowMs = GABRIEL_DEATH_WINDOW_MS;
+    e.explosionChainAnchors = [{ x: rect.cx, y: rect.cy, flattenY: DEATH_EXPLOSION_FLATTEN_Y }];
+    for (let i = 1; i < GABRIEL_DEATH_BURST_COUNT; i++) {
+      const fx = 0.18 + Math.random() * 0.64;
+      const fy = 0.15 + Math.random() * 0.6;
+      e.explosionChainAnchors.push({
+        x: rect.x + fx * rect.w,
+        y: rect.y + fy * rect.h,
+        flattenY: DEATH_EXPLOSION_FLATTEN_Y,
+      });
+    }
+    e.explosionChainActive = true;
+    e.explosionChainStartAt = now;
+    e.explosionChainSpawned = 0;
+    spawnExplosionChainBurst(e, now, 0);
+    e.explosionChainSpawned = 1;
+
     for (let i = 0; i < 7; i++) {
       spawnSparkEmber(
         rect.cx + (Math.random() - 0.5) * rect.w * 0.6, rect.y + rect.h * (0.3 + Math.random() * 0.5),
@@ -6346,7 +6571,25 @@ function computeEnemyDrawRect() {
     // idle->blink transition) instead of its usual windup/release art.
     // GABRIEL is untouched — isGabriel short-circuits this before it ever
     // reads e.adamAttackVariantIndex.
-    const inAttackPose = e.attackState === 'telegraph' || e.attackState === 'impact';
+    // 28TH ROUND item 1: root cause of "本来の攻撃画像ではない見え方" —
+    // counterAttack (the COUNTER lunge's actual connecting strike) was
+    // routed to `set.release`, which for ADAM is adam_straight_claw.png —
+    // confirmed by direct pixel inspection to be a flat solid-red claw-mark
+    // DECAL (a jagged red silhouette, no body detail at all), not a real
+    // body/attack-pose sprite like GABRIEL's own gabriel_claw_release.png
+    // (a real detailed character render) is. The comment this replaced
+    // assumed ADAM's telegraph/impact used `set.release` same as GABRIEL's
+    // do, but ADAM's telegraph/impact actually route through the
+    // attackVariants branch below (see the 7TH ROUND comment on
+    // ASSETS.adam.attackVariants) — counterAttack was the one state that
+    // never got that override, so it alone fell through to the bad decal.
+    // Fix: counterAttack now takes the SAME attackVariants path ADAM's own
+    // telegraph/impact already correctly use (no new/fabricated asset,
+    // reuses real existing ADAM attack art) — ADAM-only; GABRIEL's own
+    // counterAttack still correctly uses its real gabriel_claw_release.png
+    // body sprite via the unchanged branch below.
+    const inAttackPose = e.attackState === 'telegraph' || e.attackState === 'impact'
+      || (!isGabriel && e.attackState === 'counterAttack');
     // 9TH ROUND (item 30-31): while NORMAL/STALKING (attackState==='idle'),
     // GABRIEL cycles its own real 3-frame walk loop (see updateEnemy()'s
     // clawWalkFrame advance) instead of a single static idle pose. ADAM has
@@ -6376,7 +6619,16 @@ function computeEnemyDrawRect() {
     // kept), just no longer a jump-scare-scale blowup. Mid/far distances are
     // untouched since the boost term is 0 below distNorm 0.55.
     const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 0.34;
-    const drawH = worldHeight * proj.scale * closeBoost;
+    // 28TH ROUND item 1: ADAM's own melee-attack pose (BOSS_ATTACK_ACTIVE_
+    // STATES — the same state set renderBossAttackFullBody() below already
+    // treats as "actively attacking") is now drawn ~10% larger, per spec
+    // ("近接攻撃時の画像サイズは現状より約10%大きく"). ADAM-only (GABRIEL
+    // untouched — not named in this round's spec) and gated to the attack
+    // states specifically, so idle/stalking size is completely unaffected —
+    // this stacks with, not replaces, the 27TH ROUND item 3 close-range
+    // closeBoost above.
+    const adamMeleeSizeBoost = (!isGabriel && BOSS_ATTACK_ACTIVE_STATES[e.attackState]) ? 1.10 : 1;
+    const drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
     const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));

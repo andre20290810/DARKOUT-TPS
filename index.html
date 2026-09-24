@@ -78,6 +78,15 @@
        audio with sound may start. -->
   <audio id="bgm-audio" src="assets/audio/after_the_limits.mp3" loop preload="auto"></audio>
 
+  <!-- 28TH ROUND item 7: visible guide for the case where the mode-select
+       tap/press did NOT actually unlock audio (real-device autoplay-policy
+       edge case) or, in CONTROLLER mode, no gamepad button press has been
+       detected yet — see showTapEnableGuideIfNeeded()/hideTapEnableGuide()
+       in game.js for the exact appear/disappear/reappear rules. Hidden by
+       default; never shown at all on the (overwhelmingly common) path where
+       the mode-select gesture itself already unlocked everything. -->
+  <div id="tap-enable-guide" hidden data-en="Tap once to enable audio and controller." data-ja="タップして音声とコントローラーを有効にしてください">Tap once to enable audio and controller.</div>
+
   <!-- HUD: health / ammo / stealth / theme / enemy HP / FOCUS, kept as static DOM nodes updated via textContent/style only (no per-frame element creation) -->
   <div id="hud">
     <div id="hud-top-left">

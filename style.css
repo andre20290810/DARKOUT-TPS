@@ -360,6 +360,33 @@ html, body {
 #stealth-readout { color: #7fd3ff; opacity: 0.85; }
 #stealth-readout.active #stealth-state { color: #7fffb0; font-weight: 700; }
 
+/* 28TH ROUND item 7: persistent (no auto-hide timer, unlike
+   #hud-center-warning above) tap-to-enable guide — stays up until game.js
+   explicitly hides it once audio has genuinely started / a gamepad press
+   has genuinely been detected, never on a fixed timeout, so it can never
+   disappear while the player is still actually stuck. */
+#tap-enable-guide {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: 80%;
+  text-align: center;
+  padding: 14px 22px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: rgba(10,12,16,0.82);
+  border: 1px solid rgba(255,255,255,0.35);
+  border-radius: 8px;
+  box-shadow: 0 0 24px rgba(0,0,0,0.6);
+  animation: tapGuidePulse 1.1s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes tapGuidePulse { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
+
 #hud-center-warning {
   position: absolute;
   top: 14%;
