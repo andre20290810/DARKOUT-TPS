@@ -5831,7 +5831,19 @@ function updateDroneWave(dt, now) {
   }
   if (allDead) {
     dw.active = false;
-    triggerClearSequence(now, 'combat');
+    // FOLLOWUP HOTFIX: mirrors the exact same AUTO-vs-MANUAL split every
+    // other enemy defeat already uses (see updateEnemyCore() above) — AUTO
+    // MODE advances straight to the next AUTO_SEQUENCE entry (so the DRONE
+    // encounter, wave included, ends cleanly and the rotation continues —
+    // never a second WAVE 2, since advanceEnemyRotation() calls spawnEnemy()
+    // which both changes e.type and resets droneWave state fresh); MANUAL
+    // real play keeps its existing CLEAR SEQUENCE (gate/whiteout, then
+    // respawns a fresh single DRONE to refight).
+    if (state.autoMode.active) {
+      advanceEnemyRotation(now);
+    } else {
+      triggerClearSequence(now, 'combat');
+    }
   }
 }
 
@@ -6658,29 +6670,55 @@ function updateEnemyCore(dt, now) {
   if (e.deathState !== 'alive') {
     if (now >= e.deathUntil) {
       e.deathState = 'gone';
-      // 30TH ROUND item 17: DRONE WAVE — the primary DRONE (this singleton
-      // e) defeating is WAVE 1. Instead of immediately clearing, spawn the
-      // 3-Drone WAVE 2 exactly once (wave2Triggered guards against this
-      // block re-running every frame while deathState stays 'gone') and
-      // hold off triggerClearSequence() until updateDroneWave() itself
-      // confirms all 3 are also defeated. Real play only (not AUTO MODE —
-      // same existing gate the CLEAR SEQUENCE call already used), and only
-      // once per encounter (wave2Triggered is reset fresh by spawnEnemy()).
-      if (e.type === 'drone' && state.gameMode === 'combat' && !state.autoMode.active && !state.droneWave.wave2Triggered) {
+      // 30TH ROUND item 17 / FOLLOWUP HOTFIX: DRONE WAVE — the primary
+      // DRONE (this singleton e) defeating is WAVE 1. Instead of
+      // immediately clearing, spawn the 3-Drone WAVE 2 exactly once
+      // (wave2Triggered guards against this block re-running every frame
+      // while deathState stays 'gone') and hold off the encounter-end call
+      // until updateDroneWave() itself confirms all 3 are also defeated.
+      // FOLLOWUP HOTFIX: this now applies identically whether the DRONE
+      // fight was reached via AUTO MODE's rotation or a MANUAL ENEMY
+      // SELECT — same DRONE-fight rule either way, per explicit spec. The
+      // rotation must NOT advance here (this branch deliberately skips the
+      // advanceEnemyRotation()/triggerClearSequence() call below) — the
+      // encounter isn't actually over until updateDroneWave() below
+      // resolves it, which is what decides AUTO-vs-MANUAL completion.
+      if (e.type === 'drone' && state.gameMode === 'combat' && !state.droneWave.wave2Triggered) {
         state.droneWave.wave2Triggered = true;
         spawnDroneWave2(now);
-      } else if (state.gameMode === 'combat' && !state.autoMode.active && !state.droneWave.active) {
-        // 9TH ROUND (item 30-35): COMBAT MODE's clear condition (item 38) is
-        // BOSS HP=0 — trigger the shared CLEAR SEQUENCE here, but only for
-        // real play (not AUTO MODE's own continuous QA rotation loop, which
-        // must keep cycling enemies uninterrupted for testing, per its own
-        // existing PART 12 design — see advanceEnemyRotation() below).
-        // 30TH ROUND item 17: also skipped while a DRONE WAVE 2 is still in
-        // progress (state.droneWave.active) — updateDroneWave() fires this
-        // exact same call itself once all 3 extra Drones are defeated.
-        triggerClearSequence(now, 'combat');
+      } else if (!state.droneWave.active) {
+        // FOLLOWUP HOTFIX (real bug found during AUTO/MANUAL verification):
+        // this whole outer block re-runs EVERY frame while e.deathState
+        // stays 'gone' (deliberately — see the wave2Triggered guard's own
+        // comment above), which is normally harmless because
+        // advanceEnemyRotation()/spawnEnemy() flips deathState back to
+        // 'alive' on the very first frame it actually runs, so the block
+        // stops re-executing on its own. The DRONE WAVE case is the one
+        // exception: e.type stays 'drone' and e.deathState stays 'gone' for
+        // the WHOLE WAVE 2 fight (many frames), so the instant
+        // wave2Triggered flips true this branch would otherwise be taken
+        // AGAIN on the very next frame — immediately calling
+        // advanceEnemyRotation()/triggerClearSequence() and cutting WAVE 2
+        // off before it ever ran. Gating this branch on
+        // `!state.droneWave.active` makes it a genuine no-op for every frame
+        // WAVE 2 is in progress; updateDroneWave() itself calls the correct
+        // one of these two exact same calls once all 3 extras are actually
+        // defeated (see its own 'allDead' branch).
+        //
+        // 9TH ROUND (item 30-35) / 30TH ROUND item 17: non-DRONE (or a
+        // DRONE encounter whose WAVE 2 already ran) defeat completion —
+        // MANUAL real play triggers the shared CLEAR SEQUENCE (gate open ->
+        // run -> whiteout, then respawns the same enemy type); AUTO MODE's
+        // own continuous QA/demo rotation loop instead advances straight to
+        // the next AUTO_SEQUENCE entry, uninterrupted, per its existing
+        // PART 12 design — see advanceEnemyRotation() below. ESCAPE MODE
+        // never triggers CLEAR SEQUENCE here (COMBAT-only condition) but
+        // AUTO rotation still applies there too, unchanged from before.
+        if (state.gameMode === 'combat' && !state.autoMode.active) {
+          triggerClearSequence(now, 'combat');
+        }
+        advanceEnemyRotation(now);
       }
-      advanceEnemyRotation(now);
     }
     return;
   }
@@ -8618,11 +8656,42 @@ function drawBarrelShadow(b, proj) {
   if (b.z > BARREL_TOUCH_Z_MAX) return;
   const shadowR = barrelCoverRadiusPx(proj);
   const inCover = isPlayerInCover();
+  const cy = proj.y - 2;
   ctx.save();
+  // FOLLOWUP HOTFIX (real-device re-report): the shadow radius here already
+  // matched isPlayerInCover()'s own COVER-eligible radius exactly (see
+  // barrelCoverRadiusPx()) — that truthfulness is untouched — but a flat
+  // near-black fill (rgba(8,8,10,...)) read as invisible against this
+  // game's own near-black floor tones (theme.floor is #1c2422/#14171b/
+  // #191510 — all close to that exact color), so on a real screen the
+  // shape was there but effectively unreadable. Redesigned as a genuine
+  // dark-to-light-gray radial gradient (a lighter warm gray core fading
+  // through mid-gray to fully transparent at the true edge) instead of one
+  // flat near-black tone — gives the eye a real tonal edge to read against
+  // the floor without ever becoming a bright/game-UI shape: still no
+  // yellow, no white outline, no flat circle — same soft blurred ellipse,
+  // same exact radius, same "active COVER darkens/intensifies it further"
+  // behavior as before.
+  // FOLLOWUP HOTFIX 2 (real screenshot + pixel-sampled re-check): the first
+  // pass above was still measured at only ~7/255 brightness even at the
+  // shadow's own dead-center with the flashlight aimed straight at it —
+  // this game's floor/mask darkness is so aggressive (~3/255 baseline) that
+  // a merely "relatively brighter than the floor" gradient was still
+  // effectively invisible in absolute terms on a real screen. Raised the
+  // core color/alpha substantially (still a muted warm gray, never a flat
+  // color/bright fill, no yellow, no white outline) so the shadow reads at
+  // a genuinely perceptible brightness where the player is actually
+  // looking, while staying clearly darker/duller than any lit surface or
+  // UI element in the scene.
+  const g = ctx.createRadialGradient(proj.x, cy, 0, proj.x, cy, shadowR);
+  const centerAlpha = inCover ? 0.85 : 0.72;
+  g.addColorStop(0, 'rgba(102,96,86,' + centerAlpha + ')');
+  g.addColorStop(0.55, 'rgba(62,57,50,' + (centerAlpha * 0.85) + ')');
+  g.addColorStop(1, 'rgba(24,22,20,0)');
   ctx.beginPath();
-  ctx.ellipse(proj.x, proj.y - 2, shadowR, shadowR * 0.4, 0, 0, Math.PI * 2);
-  ctx.fillStyle = inCover ? 'rgba(10,10,14,0.55)' : 'rgba(8,8,10,0.38)';
-  ctx.filter = 'blur(3px)';
+  ctx.ellipse(proj.x, cy, shadowR, shadowR * 0.4, 0, 0, Math.PI * 2);
+  ctx.fillStyle = g;
+  ctx.filter = 'blur(2px)';
   ctx.fill();
   ctx.restore();
 }
