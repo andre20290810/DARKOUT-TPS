@@ -196,10 +196,9 @@ const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 260; // was 200 (11th round) — Y, bri
 const ESCAPE_DASH_BLINK_MS = 300;
 const ESCAPE_DASH_BLINK_TOGGLE_MS = 75; // legacy — no longer read by the blink render logic, kept only for the existing test-export
 const ESCAPE_DASH_BLINK_CYCLES = 1; // exact number of "visible -> invisible" flashes per DASH, deterministic regardless of wall-clock phase
-// NEXT ROUND PART M: how long a single lateral-DASH afterimage snapshot
-// takes to fully fade — "afterimages fade quickly" per spec, never a long
-// lingering trail.
-const ESCAPE_AFTERIMAGE_MS = 220;
+// 27TH ROUND item 8: real-play feedback said these faded too fast to read
+// as a real dash trail — extended by ~0.2s per spec (was 220).
+const ESCAPE_AFTERIMAGE_MS = 420;
 // NEXT ROUND PART N: normal (non-DASH) EAST/WEST movement leans the whole
 // bike sprite up to this many degrees toward the travel direction, and
 // ESCAPE_LEAN_SMOOTH_RATE controls how quickly it eases toward/away from
@@ -267,8 +266,14 @@ const COLLAPSE_TILT_MAX_RAD = 1.1 * Math.PI / 180; // whole-scene rotation durin
 // /updateCollapseDebris() — neither ever touches state.player).
 const COLLAPSE_DEBRIS_COUNT = 3;              // ~3 rolling-debris events per quake (item 13)
 const COLLAPSE_DEBRIS_STAGGER_MS = 550;       // real gap between each of the 3 events starting (never simultaneous)
-const COLLAPSE_DEBRIS_DROP_Z_MIN = 160;       // world z the piece falls at (near/visible range) — varies per instance
-const COLLAPSE_DEBRIS_DROP_Z_SPREAD = 260;
+// 27TH ROUND item 5: moved much closer to the camera (was 160-420, which
+// projected to roughly the player's own chest height — easily lost behind/
+// blended into the player sprite, read as "spawns in the mid/background").
+// 60-170 puts the fall/bounce squarely in front of and below the player
+// (see the completion report's measured screen-Y values), so it reads as a
+// real ground-level hazard the player must actually notice and dodge.
+const COLLAPSE_DEBRIS_DROP_Z_MIN = 60;
+const COLLAPSE_DEBRIS_DROP_Z_SPREAD = 110;
 const COLLAPSE_DEBRIS_DROP_X_SPREAD = 170;    // world-x spread for left-leaning/center/right-leaning starts
 const COLLAPSE_DEBRIS_DROP_HEIGHT = 130;      // world units above the floor it starts falling from
 // 24TH ROUND tuning: ESCAPE's own ESCAPE_AUTO_SCROLL_SPEED (680 world-units/
@@ -343,6 +348,13 @@ const ESCAPE_TIME_LIMIT_SEC = 90;
 const ESCAPE_ENEMY_PURSUIT_MIN_Z = 500;
 const ESCAPE_ENEMY_PURSUIT_MAX_Z = 1100;
 const ESCAPE_ENEMY_PURSUIT_PERIOD_MS = 6000;
+// 27TH ROUND item 7: DRONE-only cap on its own far excursion (see
+// updateEscapeEnemyPursuit()'s comment) — the default 500-1100 sweep spends
+// most of each 6s cycle at z>=900, where updateEnemy()'s own attack-start
+// gate (e.z<900) blocks any new attack roll outright, no matter how short
+// the idle-wait/cooldown are tuned. Well under 900 so DRONE can roll an
+// attack across essentially the whole cycle instead of ~39% of it.
+const ESCAPE_ENEMY_PURSUIT_MAX_Z_DRONE = 850;
 // 25TH ROUND item 6: root cause of "GABRIEL/ADAM approach but never attack
 // in ESCAPE" — their real CLAW attack only ever starts once e.z <
 // CLAW_TRIGGER_Z_MAX (300, see updateEnemy()'s idle-check branch below),
@@ -572,6 +584,11 @@ const ROID_TOP_SAFE_MARGIN_FRAC = 0.08;
 // used before PART 2 of the 2nd round added the now-removed far tier).
 const ROID_FACE_ZONE_NEAR_PX = 60;
 const ROID_FACE_ZONE_HYST_PX = 20;
+// 27TH ROUND item 6: ROID1/ROID2 attack-time lateral sway (see
+// updateEnemyFacing()) — amplitude deliberately well under
+// ROID_FACE_ZONE_NEAR_PX/HYST_PX above so it can never itself flip e.zone.
+const ROID_ATTACK_SWAY_AMPLITUDE_PX = 18;
+const ROID_ATTACK_SWAY_RATE = 3.2; // rad/s — a brisk, visible shift, not a slow drift
 
 // PART 3: ROID's FIRE pose is a non-directional 4-frame ping-pong
 // animation (matches ACTION-GAME's own real ROID1_SPRITES/ROID2_SPRITES —
@@ -953,6 +970,20 @@ const SNIPER_IMPACT_MS = 140;
 // resolved), never part of the player's reaction/telegraph window, so
 // cutting it raises attack frequency without reducing dodgeability.
 const SNIPER_COOLDOWN_MS = 700;
+// 27TH ROUND item 7: real-play feedback said DRONE still felt like it
+// basically never attacks ("全然攻撃していないレベル"), in both COMBAT and
+// ESCAPE. DRONE always uses this SNIPER kind exclusively (25TH ROUND item
+// 7), so its per-cycle pacing is fully governed by
+// LOCK_RED+LOCK_YELLOW+FIRE_TRAVEL+IMPACT+cooldown — with the idle-recheck
+// wait (ENEMY_ATTACK_FREQ_MULT.drone) already cut close to its floor in the
+// 26TH ROUND, that fixed ~2.37s cycle (not the idle wait) was the real
+// remaining bottleneck. Only the post-attack COOLDOWN is shortened here,
+// DRONE-only — never LOCK_RED/LOCK_YELLOW (the real player-reaction/dodge
+// telegraph window, per spec: "回避可能な範囲を保ちつつ"), so this raises
+// frequency without reducing dodgeability. ROID1/ROID2/ADAM SPHERE, which
+// also roll into this same shared SNIPER kind, are untouched (still use
+// SNIPER_COOLDOWN_MS) — this round's spec named DRONE specifically.
+const DRONE_SNIPER_COOLDOWN_MS = 280;
 const SNIPER_DAMAGE = 16;
 // NEXT ROUND (spec section 4): real hit-radius check at resolve time —
 // mirrors SWEEP_HIT_RADIUS_PX's existing role for SWEEP FIRE.
@@ -1179,8 +1210,13 @@ const ENEMY_LANE_TRACK_MULT = {
 // recovery/cooldown timing and the "no overlapping/unavoidable window"
 // guarantee are completely untouched — only the idle re-check wait window
 // shrinks.
+// 27TH ROUND item 7: drone further reduced 0.12 -> 0.06 (idle-recheck wait
+// halved again) on top of the DRONE_SNIPER_COOLDOWN_MS cut above — see that
+// constant's comment for why the cooldown, not this mult, was the larger
+// remaining lever. roid1/roid2/gabriel/adamSphere/adam untouched (not named
+// in this round's spec).
 const ENEMY_ATTACK_FREQ_MULT = {
-  drone: 0.12, roid1: 0.16, roid2: 0.15, gabriel: 0.65, adamSphere: 0.30, adam: 0.70,
+  drone: 0.06, roid1: 0.16, roid2: 0.15, gabriel: 0.65, adamSphere: 0.30, adam: 0.70,
 };
 // 13TH ROUND (item 4): ESCAPE keeps continuous attack pressure (SURVIVE +
 // dodge, not a quiet run) — reuses the SAME ENEMY_ATTACK_FREQ_MULT/
@@ -2415,6 +2451,7 @@ const state = {
     type: 'roid1',
     z: 900,
     lane: 0,          // world X offset — slow drift only (PART 6), never a fast strafe
+    laneBase: 0,      // 27TH ROUND item 6: the tracked value (pre-sway); e.lane = laneBase + attack sway
     laneTarget: 0,
     facing: 'east',   // GABRIEL ONLY — 'east' | 'west', which way the sprite mirrors
     // PART 2 (2nd round): ROID1/ROID2's own 5-zone facing, hysteresis-held
@@ -3632,6 +3669,26 @@ function togglePauseMenu() {
   if (state.paused) {
     bgmAudioEl.pause();
   } else {
+    // 27TH ROUND item 10: root cause of "PAUSEから復帰後、画面をタッチする
+    // まで操作が効かない" — RESUME (and every other pause-menu button:
+    // STAGE TYPE/GAME MODE/ENEMY SELECT/AIM SENSITIVITY/DEBUG/etc.) is a
+    // real <button>, which keeps DOM FOCUS after being pressed. Setting
+    // pauseMenuEl.hidden=true above does not reliably blur a focused
+    // descendant on every browser/WebView (this is a real, documented DOM
+    // inconsistency — some engines silently leave the reference focused even
+    // though it's now display:none/hidden). On gamepad-capable browsers
+    // (notably Android/console WebViews many controllers route through) a
+    // still-focused, now-invisible element can keep intercepting D-PAD/
+    // stick-as-navigation input meant for the page's own gamepad polling —
+    // exactly the class of bug this report describes, and exactly why
+    // touching the canvas elsewhere "fixes" it: a touch naturally moves
+    // focus away. Explicitly blurring whatever element is focused the
+    // instant PAUSE closes removes that dependency entirely — gamepad input
+    // (poll-based, not focus-based) needs no DOM focus at all, so this can
+    // never break FIRE/MOVE/AIM/DASH, only ever unstick them.
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
     // 24TH ROUND item 6: root-cause investigation found pollGamepad() ALREADY
     // runs unconditionally every frame regardless of state.paused (it's
     // called before the `if (!state.gameStarted) return` gate near the top
@@ -4072,14 +4129,24 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     const oldCx = state.centerX + p.strafeOffset;
     const bottomYNow = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
     const frameNow = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
+    // 27TH ROUND item 8: real-play feedback said the afterimages clustered
+    // near the dash's START position only — the destination end never got
+    // one, so the trail read as "where it left" rather than a real motion
+    // streak toward "where it landed". newStrafeOffset is computed FIRST
+    // (same clamp math the player's own final position uses below) so this
+    // third snapshot's cx is the true post-dash landing spot, not a guess.
+    const newStrafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     if (imgReady(frameNow.img)) {
       const startRect = computeEscapePlayerDrawRect(oldCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
       es.afterimages.push({ img: frameNow.img, dx: startRect.dx, dy: startRect.dy, drawW: startRect.drawW, drawH: startRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad });
       const midCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
       const midRect = computeEscapePlayerDrawRect(midCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
       es.afterimages.push({ img: frameNow.img, dx: midRect.dx, dy: midRect.dy, drawW: midRect.drawW, drawH: midRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS * 0.7, angleRad: afterimageAngleRad });
+      const endCx = state.centerX + newStrafeOffset;
+      const endRect = computeEscapePlayerDrawRect(endCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
+      es.afterimages.push({ img: frameNow.img, dx: endRect.dx, dy: endRect.dy, drawW: endRect.drawW, drawH: endRect.drawH, until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad });
     }
-    p.strafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
+    p.strafeOffset = newStrafeOffset;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
     es.lateralDashBlinkSuppressUntil = now + ESCAPE_DASH_BLINK_MS;
   }
@@ -4166,10 +4233,11 @@ function damageEscapePlayer(amount, now) {
 }
 
 // 24TH ROUND (items 10-14): each debris instance runs its own
-// fall -> bounce(xN) -> roll(-away, north/far) -> cull sub-state-machine,
-// on top of the SAME forwardDelta baseline shift every other world-Z object
-// (structures[]/barrels[]) already gets — called once per ESCAPE frame,
-// right after applyForwardDelta(), from frame(). Never reads/writes
+// fall -> bounce(xN) -> roll(-away, north/far) -> cull sub-state-machine.
+// 27TH ROUND item 5: no longer mixed with the ambient forwardDelta
+// camera-follow baseline every other world-Z object (structures[]/
+// barrels[]) gets — see the in-loop comment below for why. Called once per
+// ESCAPE frame, right after applyForwardDelta(), from frame(). Never reads/writes
 // anything toward the player's position except the one-shot hit-test at the
 // end (real physical intersection, never a steering input — item 11).
 function advanceCollapseWorldZ(forwardDelta, dt, now) {
@@ -4177,7 +4245,21 @@ function advanceCollapseWorldZ(forwardDelta, dt, now) {
   const debris = state.escape.collapse.obstacles;
   for (let i = debris.length - 1; i >= 0; i--) {
     const ob = debris[i];
-    ob.z -= forwardDelta; // same camera-follow baseline every world-Z object uses
+    // 27TH ROUND item 5: root cause of "半端な位置で背後に落ち、変な転がり方
+    // をする" — this same forwardDelta camera-follow baseline every other
+    // world-Z object (structures/barrels) uses is MUCH faster
+    // (ESCAPE_AUTO_SCROLL_SPEED=680 world-units/sec) than this object's own
+    // ROLL_Z_SPEED (130-210 world-units/sec, deliberately slow/readable per
+    // spec: "速度は速すぎず"). Applying both meant a piece's own "roll away
+    // north" motion was always completely swamped by the much faster ambient
+    // baseline — net motion was ALWAYS toward the player regardless of roll
+    // direction, so it never actually receded into the distance, and a piece
+    // could even race past the player mid-fall before its bounce sequence
+    // finished (the "half-baked position" the report describes). Debris now
+    // moves ENTIRELY under its own physics (fall/bounce hold their spawn Z
+    // give or take the small per-bounce lateral kick; only 'rolling' below
+    // advances Z, via its own rollZSpeed only) — never mixed with the
+    // ambient corridor-scroll baseline other world-Z objects use.
 
     if (ob.state === 'pending') {
       if (now >= ob.spawnAt) ob.state = 'falling';
@@ -4207,10 +4289,11 @@ function advanceCollapseWorldZ(forwardDelta, dt, now) {
         }
       }
     } else if (ob.state === 'rolling') {
-      // exits SOUTH(near)->NORTH(far): z only ever increases here, on top
-      // of the forwardDelta baseline above — combined with rotationAngle
-      // and the small decaying bounce term below, this is genuine
-      // rotate+bounce+roll motion, never a straight instant slide.
+      // exits SOUTH(near)->NORTH(far): z only ever increases here, purely
+      // from this piece's own rollZSpeed (27TH ROUND item 5: no ambient
+      // baseline mixed in anymore) — combined with rotationAngle and the
+      // small decaying bounce term below, this is genuine rotate+bounce+roll
+      // motion at a real, readable speed, never a straight instant slide.
       ob.z += ob.rollZSpeed * dt;
       ob.worldX += ob.rollXSpeed * dt;
       ob.rollXSpeed *= Math.pow(0.25, dt); // gradually straightens out as it settles into the roll
@@ -4778,7 +4861,8 @@ function playerMarkerPos() {
 // fast strafe — the mech shifts weight, it doesn't sidestep.
 function updateEnemyFacing(dt, now) {
   const e = state.enemy;
-  const proj = project(e.lane, CORRIDOR_FLOOR_Y, e.z);
+  if (e.laneBase == null) e.laneBase = e.lane;
+  const proj = project(e.laneBase, CORRIDOR_FLOOR_Y, e.z);
   const playerScreenX = state.centerX + state.player.strafeOffset;
   const diff = playerScreenX - proj.x;
 
@@ -4831,7 +4915,30 @@ function updateEnemyFacing(dt, now) {
   // change: DRONE/ADAM SPHERE track fast, ROID1/ROID2 stay at the original
   // baseline rate, GABRIEL/ADAM (heavy melee) track slow.
   const trackMult = ENEMY_LANE_TRACK_MULT[e.type] || 1;
-  e.lane += (e.laneTarget - e.lane) * Math.min(1, dt * 0.8 * trackMult);
+  e.laneBase += (e.laneTarget - e.laneBase) * Math.min(1, dt * 0.8 * trackMult);
+
+  // 27TH ROUND item 6: ROID1/ROID2 read as a static "turret" while
+  // attacking — same standing pose, same spot, only the image/effect
+  // changed. Adds a small continuous left-right sway (world-space lane
+  // units, ~9-13px on screen at typical distances after perspective scale)
+  // ONLY while genuinely mid-attack (isRoidInAttackSequence — the same
+  // window item 4 above uses for the FIRE pose). Amplitude (18 world units)
+  // stays well under ROID_FACE_ZONE_NEAR_PX(60)/HYST(20) so it can never by
+  // itself flip e.zone or fight the body-turn hysteresis/cooldown above —
+  // purely a visual "shifting its footing" cue, never touches the attack's
+  // own locked target math (sweep/barrage/missile all lock onto the
+  // PLAYER's world position at lock-time, never onto e.lane). Computed
+  // fresh from e.laneBase (the real tracked position) every frame — never
+  // added cumulatively into e.lane itself, which would integrate the sine
+  // wave into a runaway drift instead of a bounded sway.
+  if ((e.type === 'roid1' || e.type === 'roid2') && isRoidInAttackSequence(e, now)) {
+    if (e.attackSwayPhase == null) e.attackSwayPhase = Math.random() * Math.PI * 2;
+    e.attackSwayPhase += dt * ROID_ATTACK_SWAY_RATE;
+    e.lane = e.laneBase + Math.sin(e.attackSwayPhase) * ROID_ATTACK_SWAY_AMPLITUDE_PX;
+  } else {
+    e.attackSwayPhase = null;
+    e.lane = e.laneBase;
+  }
 }
 
 function resolveSniperImpact(now) {
@@ -5236,6 +5343,37 @@ function isRoidActivelyFiring(now) {
   return (now - state.enemy.lastShotFiredAt) < ROID_ATTACK_POSE_HOLD_MS;
 }
 
+// 27TH ROUND item 4: root cause of "通常画像にエフェクトだけ乗っている" —
+// isRoidActivelyFiring() above only covers the brief per-shot ping-pong
+// hold. MISSILE (lockon/target/impact) and MULTI MISSILE BARRAGE
+// (barrageLockon/barrageFalling) never call e.lastShotFiredAt at all (they
+// have no discrete "shot" instant), so ROID1/ROID2 stayed on the plain
+// SEARCH pose for the ENTIRE attack — only the missile/barrage VFX itself
+// read as "attacking". This covers the WHOLE active-attack window for every
+// ROID1/ROID2 attack kind (SNIPER/MISSILE/SWEEP/BARRAGE), so the real FIRE
+// (muzzle-flash) art — the only "this unit is attacking" body pose that
+// actually exists in ROID1_SPRITES/ROID2_SPRITES — shows for as long as the
+// unit is genuinely mid-attack, not just at the instant a bullet leaves the
+// barrel. Still gated to zone==='center' by computeEnemyDrawRect() below
+// (unchanged) since the FIRE art itself is only drawn correctly facing
+// forward — this never claims a directional pose the asset doesn't have.
+function isRoidInAttackSequence(e, now) {
+  if (e.type !== 'roid1' && e.type !== 'roid2') return false;
+  if (e.kind === 'sniper') {
+    return e.attackState === 'lock_red' || e.attackState === 'lock_yellow' || e.attackState === 'fire' || e.attackState === 'impact';
+  }
+  if (e.kind === 'missile') {
+    return e.attackState === 'lockon' || e.attackState === 'target' || e.attackState === 'impact';
+  }
+  if (e.kind === 'sweep') {
+    return e.attackState === 'sweepTelegraph' || e.attackState === 'sweepFiring';
+  }
+  if (e.kind === 'barrage') {
+    return e.attackState === 'barrageLockon' || e.attackState === 'barrageFalling';
+  }
+  return false;
+}
+
 // Ping-pong index/direction stepper — bounces 0->last->0 instead of
 // wrapping, matching ACTION-GAME's own real stepPingPong() (game.js
 // ~L7602-7609), used here for ROID's FIRE frame cycling.
@@ -5302,7 +5440,9 @@ function spawnEnemy(type) {
   // distance down to NORMAL_Z_MIN instead of starting already pinned there.
   e.z = type === 'gabriel' ? GABRIEL_STALK_Z : (type === 'adam' ? ADAM_STALK_Z : 900);
   e.lane = 0;
+  e.laneBase = 0;
   e.laneTarget = 0;
+  e.attackSwayPhase = null;
   e.facing = 'east';
   e.zone = 'center';
   e.lastTurnAt = -Infinity;
@@ -5541,9 +5681,15 @@ function updateEnemy(dt, now) {
       // sub-state is still the only thing that ever closes past that floor.
       const stalkFloor = e.type === 'gabriel' ? GABRIEL_NORMAL_Z_MIN : ADAM_NORMAL_Z_MIN;
       // NEXT ROUND PART B: ADAM's own normal approach speed doubled (spec
-      // item 5 — ADAM only, GABRIEL unchanged) — still the SAME continuous
-      // FAR->MID->NEAR closing-the-gap tween, just faster, never a jump.
-      const stalkSpeed = e.type === 'adam' ? CLAW_STALK_SPEED * 2 : CLAW_STALK_SPEED;
+      // item 5 — ADAM only, GABRIEL unchanged then).
+      // 27TH ROUND item 9: GABRIEL's own long-range approach walking speed
+      // now +20% (spec: "接近時の歩行速度を20%程度上げてください") — only
+      // this idle-state STALK closing-the-gap tween (far->mid->near, before
+      // any attack has even started) is touched. The actual CLAW attack's
+      // own approach/telegraph/impact timing (CLAW_STALK_SPEED is never read
+      // there) is completely untouched, so melee dodge-fairness is
+      // unaffected — GABRIEL simply reaches attack range a bit sooner.
+      const stalkSpeed = e.type === 'adam' ? CLAW_STALK_SPEED * 2 : CLAW_STALK_SPEED * 1.2;
       if (e.z > stalkFloor) {
         e.z = Math.max(stalkFloor, e.z - stalkSpeed * dt);
       }
@@ -5851,7 +5997,7 @@ function updateEnemy(dt, now) {
         resolveSniperImpact(now);
       }
     } else if (e.attackState === 'impact') {
-      if (now >= e.attackUntil) { e.attackState = 'cooldown'; e.attackUntil = now + SNIPER_COOLDOWN_MS; }
+      if (now >= e.attackUntil) { e.attackState = 'cooldown'; e.attackUntil = now + (e.type === 'drone' ? DRONE_SNIPER_COOLDOWN_MS : SNIPER_COOLDOWN_MS); }
     } else if (e.attackState === 'cooldown') {
       if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (700 + Math.random() * 1200) * enemyAttackFreqMult(e.type); }
     }
@@ -6220,13 +6366,16 @@ function computeEnemyDrawRect() {
         : (e.attackState === 'impact' || e.attackState === 'counterAttack' ? set.release
         : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle)));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
-    // NEXT ROUND (spec section 6): real-play feedback said GABRIEL's
-    // close-range size (was up to +117% at point-blank: 1+(1-0.55)*2.6)
-    // felt like a sudden jump-scare-scale blowup rather than a natural
-    // "closing the distance" read. Multiplier roughly halved (2.6 -> 1.3,
-    // "2段階ほど" smaller) — GABRIEL still visibly grows as it closes in
-    // (up to +58.5% at point-blank), just far less jarring.
-    const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 1.3;
+    // 27TH ROUND item 3: real-play feedback (添付3枚目・4枚目) said GABRIEL/ADAM
+    // still read as unnaturally gigantic at point-blank range (measured
+    // ~2.29x / ~2.67x player body height at zMin with the previous 1.3
+    // multiplier). Multiplier cut further (1.3 -> 0.34) so point-blank size
+    // lands at ~1.66x / ~1.94x player height (measured via
+    // computeEnemyDrawRect() vs computePlayerDrawRect(), see report) — still
+    // visibly closes in and towers over the player (close-range fear/impact
+    // kept), just no longer a jump-scare-scale blowup. Mid/far distances are
+    // untouched since the boost term is 0 below distNorm 0.55.
+    const closeBoost = 1 + Math.max(0, distNorm - 0.55) * 0.34;
     const drawH = worldHeight * proj.scale * closeBoost;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
@@ -6263,7 +6412,7 @@ function computeEnemyDrawRect() {
   // zone==='center', where it's already correct. ADAM SPHERE is untouched
   // (it has no directional search art at all, always uses its own
   // continuously-rotating fire[] frame, as before).
-  const activelyFiringRoid = e.type !== 'adamSphere' && isRoidActivelyFiring(performance.now());
+  const activelyFiringRoid = e.type !== 'adamSphere' && (isRoidActivelyFiring(performance.now()) || isRoidInAttackSequence(e, performance.now()));
   const useFirePose = activelyFiringRoid && e.zone === 'center';
   const frame = e.type === 'adamSphere'
     ? sprites.fire[e.roidFireFrame]
@@ -7761,7 +7910,10 @@ function renderEscapePlayer() {
     for (const a of es.afterimages) {
       const spawnMs = a.until - now <= ESCAPE_AFTERIMAGE_MS ? ESCAPE_AFTERIMAGE_MS : ESCAPE_AFTERIMAGE_MS * 0.7;
       const lifeFrac = Math.max(0, Math.min(1, (a.until - now) / spawnMs));
-      ctx.globalAlpha = lifeFrac * 0.45;
+      // 27TH ROUND item 8: peak alpha lowered (0.45 -> 0.28) per spec
+      // ("もっと透け感を出して") — more see-through, still clearly visible
+      // as a ghost trail rather than a solid duplicate sprite.
+      ctx.globalAlpha = lifeFrac * 0.28;
       if (a.angleRad) {
         const acx = a.dx + a.drawW / 2, acy = a.dy + a.drawH / 2;
         ctx.save();
@@ -8694,9 +8846,24 @@ function updateEscapeEnemyPursuit(now) {
   const minZ = (e.type === 'gabriel' || e.type === 'adam')
     ? ESCAPE_ENEMY_CLAW_PURSUIT_MIN_Z
     : Math.max(ESCAPE_ENEMY_PURSUIT_MIN_Z, approachZMinForRoid());
+  // 27TH ROUND item 7 root cause (ESCAPE half of "全然攻撃していない"): the
+  // idle-recheck wait (ENEMY_ATTACK_FREQ_MULT.drone) and the sniper cooldown
+  // (DRONE_SNIPER_COOLDOWN_MS) only govern how soon an attack roll happens
+  // WHILE e.z<900 (updateEnemy()'s own attack gate) — but this pursuit sweep
+  // still carries every non-CLAW type (DRONE included) all the way out to
+  // ESCAPE_ENEMY_PURSUIT_MAX_Z(1100) every ESCAPE_ENEMY_PURSUIT_PERIOD_MS
+  // cycle, and z sits >=900 for ~61% of that cycle (measured) — during which
+  // NO attack can start no matter how short the other two are tuned. That
+  // was the real remaining bottleneck (measured 30s ESCAPE count barely
+  // moved even after the other two cuts above). DRONE-only: caps its own
+  // far excursion well under the 900 gate so it can roll an attack on
+  // essentially the whole cycle, instead of ~39% of it. ROID1/ROID2/
+  // ADAM SPHERE keep the original 500-1100 sweep (not named in this round's
+  // spec, their own ESCAPE pacing already tuned in earlier rounds).
+  const maxZ = e.type === 'drone' ? ESCAPE_ENEMY_PURSUIT_MAX_Z_DRONE : ESCAPE_ENEMY_PURSUIT_MAX_Z;
   const phase = (now % ESCAPE_ENEMY_PURSUIT_PERIOD_MS) / ESCAPE_ENEMY_PURSUIT_PERIOD_MS;
-  const mid = (minZ + ESCAPE_ENEMY_PURSUIT_MAX_Z) / 2;
-  const amp = (ESCAPE_ENEMY_PURSUIT_MAX_Z - minZ) / 2;
+  const mid = (minZ + maxZ) / 2;
+  const amp = (maxZ - minZ) / 2;
   e.z = mid - amp * Math.cos(phase * Math.PI * 2); // starts near MAX (falling behind), closes in, retreats, repeats
 }
 
@@ -9002,6 +9169,25 @@ function frame(ts) {
 
   const theme = THEMES[state.theme];
   renderCorridor(theme);
+  // 27TH ROUND item 2 (regression fix): the 26th round moved renderBarrels()
+  // to AFTER renderFlashlightMask() to fix barrels reading dim/washed-out
+  // outside the lit circle — but renderEnemy() (drawn further below, still
+  // pre-mask) runs BEFORE that point in the COMBAT branch, so that move
+  // silently put barrels ON TOP of the boss/enemy sprite whenever they
+  // overlapped on screen (exactly the "ドラム缶がボス画像の上に重なる"
+  // report). Per spec's own explicit layer order — background -> STAGE
+  // OBJECTS -> enemy -> attack effects -> player — barrels are a stage
+  // object and must draw BEFORE the enemy. Restored here, immediately
+  // after the corridor and before renderEnemy() in the COMBAT branch below
+  // (ESCAPE never shows barrels at all, unchanged). This does mean barrels
+  // are once again subject to the
+  // darkness mask like every other stage prop (corridor pipes/panels/etc.
+  // already work this way) — real screenshot review last round found the
+  // barrel PNG itself is ~254/255 alpha (already opaque), so any perceived
+  // "transparency" was normal mask-darkening consistent with the rest of
+  // the scene, not a barrel-specific bug; this ordering fix takes priority
+  // since the boss-overlap regression is the concrete, reported problem.
+  if (state.gameMode !== 'escape') renderBarrels();
   if (state.gameMode === 'escape') {
     // 8TH ROUND (item 14): the enemy is no longer inert here — render it
     // and its attack telegraphs same as COMBAT (item 23: same warning/
@@ -9056,20 +9242,10 @@ function frame(ts) {
     // "behind the drum can" redraw moves with it (was previously paired
     // with this now-removed early draw).
     renderFlashlightMask();
-    // 26TH ROUND item 12/15 root-cause fix: renderBarrels() used to be called
-    // once at the very top of this function, BEFORE renderFlashlightMask() —
-    // the exact same bug class already fixed for the player/blasts/bullets/
-    // telegraphs/enemy-hit-flash (all moved to draw AFTER the mask, see their
-    // own comments), just never applied to barrels. Any barrel sitting
-    // outside the currently-lit circle was getting darkened by the mask's
-    // own ~0.90-alpha overlay, which is what actually read as "見た目が透け
-    // ている" (still asset-opaque per direct pixel measurement — this was a
-    // draw-order/lighting bug, not a real alpha problem). Moved here, after
-    // the mask, so barrels stay fully visible regardless of where the
-    // flashlight currently points, same as every other world object already
-    // gets. Still draws before renderPlayer() below, so the FLOOR -> BARREL
-    // -> PLAYER ordering is unchanged.
-    renderBarrels();
+    // 27TH ROUND item 2: renderBarrels() no longer runs here — see the
+    // single call site right after renderCorridor() above (background ->
+    // STAGE OBJECTS -> enemy), which fixes barrels drawing on top of the
+    // boss. Kept pre-mask like every other stage prop.
     // 26TH ROUND item 16/17: BOSS full-body redraw during an active CLAW
     // attack — see renderBossAttackFullBody()'s own comment. Must run before
     // renderPlayer() (spec: BOSS ATTACK SPRITE -> ATTACK EFFECT -> PLAYER).
@@ -9186,7 +9362,7 @@ window.__darkoutTps = {
   // pure read-only helpers, exposed for automated testing only
   getAimPoint, getFlashlightCenter, computeEnemyDrawRect,
   isPlayerInCover, getStealthStrength, applyAimCurve, playerMarkerPos, barrels,
-  isAimOnEffectiveHit, isEffectiveDamageNow, enemyHitRadius, approachZMinForRoid, isRoidActivelyFiring,
+  isAimOnEffectiveHit, isEffectiveDamageNow, enemyHitRadius, approachZMinForRoid, isRoidActivelyFiring, isRoidInAttackSequence,
   // added 3rd round (PART 3/4/6/9/11/12): new stick curve/collision helpers
   applyLightCurve, clampStrafeForBarrels, clampForwardDeltaForBarrels,
   triggerFireHaptics,
