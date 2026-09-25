@@ -795,8 +795,13 @@ const FLASHLIGHT_BASE_RADIUS = 47.25;
 // becoming a slow crawl on a wide screen.
 const AIM_RANGE_BASELINE_PX = 152;   // was VIEW_RANGE=190 (2nd round) — PART4: ~20% lower max reach/speed
 const AIM_MOVE_SPEED_BASELINE_PX_S = 620;
+// AIM OPERATING-AREA ROUND: baseline for AIM_PLAYER_RAMP_PX (see its own
+// comment) — 420px at the AIM_RANGE_BASELINE_PX(152)-per-AIM_RANGE(1280)
+// reference ratio used for desktop testing, i.e. 420 * 152/1280.
+const AIM_PLAYER_RAMP_BASELINE_PX = 49.875;
 let LIGHT_RANGE = AIM_RANGE_BASELINE_PX;
 let AIM_RANGE = AIM_RANGE_BASELINE_PX;
+let AIM_PLAYER_RAMP_PX = AIM_PLAYER_RAMP_BASELINE_PX;
 
 // PART 4 (3rd round): deadzone is intentionally the SAME as MOVE's on BOTH
 // sticks (never shrunk — a smaller deadzone invites stick drift). What's
@@ -1738,13 +1743,22 @@ function r10CollectSnapshot(ts) {
     // player" regression is immediately visible in DEBUG rather than
     // needing a fresh repro.
     aim: (() => {
-      const southLimit = getCombatAimSouthLimit();
+      // AIM OPERATING-AREA ROUND: southLimit is now a function of aimX (2D
+      // body-avoidance column, not a whole-screen horizontal line) — must be
+      // evaluated AFTER pt is known, at pt's own x, or this diagnostic would
+      // itself show a stale/wrong value. bodyBounds added so a future
+      // real-device report can directly show the body column being tested
+      // against, not just the resolved pass/fail.
       const rect = computePlayerDrawRect();
+      const bodyBounds = computePlayerVisualBounds();
       const pt = getAimPoint();
+      const southLimit = getCombatAimSouthLimit(pt.x);
       return {
         aimX: Math.round(pt.x), aimY: Math.round(pt.y),
         aimSouthLimit: Math.round(southLimit),
         playerDrawRectTop: Math.round(rect.topY),
+        bodyLeft: Math.round(bodyBounds.left), bodyRight: Math.round(bodyBounds.right), bodyTop: Math.round(bodyBounds.top),
+        aimInBodyColumn: pt.x >= bodyBounds.left - AIM_PLAYER_MARGIN_PX && pt.x <= bodyBounds.right + AIM_PLAYER_MARGIN_PX,
         aimClamped: pt.y >= southLimit - 0.5,
         focusTarget: p.autoAimActive ? Math.round(p.aimLiveX) + ',' + Math.round(p.aimLiveY) : '-',
         focusValid: p.autoAimActive ? pt.y <= southLimit + 0.5 : true,
@@ -1870,7 +1884,16 @@ function r10CollectSnapshot(ts) {
       return {
         mode: d.inputMode, fireBtn: state.input.fireHeld,
         stickR: state.input.aimX.toFixed(2) + ',' + state.input.aimY.toFixed(2),
-        aim: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0),
+        // AIM OPERATING-AREA ROUND (spec section 10, investigated): this is
+        // p.aimLiveX/Y — the RIGHT STICK's raw, clamped-to-+/-AIM_RANGE
+        // ACCUMULATED OFFSET from AIM's resting point, NOT a screen-space
+        // coordinate. It is NOT the same quantity as the "AIM BOUNDARY"
+        // group's aimX/aimY (getAimPoint()'s final, absolute, post-clamp
+        // screen position) despite the old shared field name "aim:" — no
+        // real coordinate mismatch was found; the two groups always
+        // legitimately differ (offset-from-base vs. resolved-absolute).
+        // Renamed here to stop that from reading as a bug.
+        aimStickOffset: p.aimLiveX.toFixed(0) + ',' + p.aimLiveY.toFixed(0),
         rawLeftStick: gp ? (gp.axes[0] || 0).toFixed(2) + ',' + (gp.axes[1] || 0).toFixed(2) : '-',
         rawRightStick: gp ? (gp.axes[2] || 0).toFixed(2) + ',' + (gp.axes[3] || 0).toFixed(2) : '-',
         rawButtons: gp ? gp.buttons.map((b, i) => (b && b.pressed ? i : null)).filter((i) => i !== null).join(',') : '-',
@@ -2034,7 +2057,7 @@ function r10UpdateDebugPanel(ts) {
     ' extraCount=' + s.droneWave.extraCount + '\n extras=' + s.droneWave.extras;
 
   r10DbgInputEl.textContent = 'INPUT mode=' + s.input.mode + ' fireBtn=' + s.input.fireBtn +
-    '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aim +
+    '\n stickR=' + s.input.stickR + ' aimLive=' + s.input.aimStickOffset +
     // 29TH ROUND item 18: raw stick/button state + X consume/rearm + RB held
     // + paused/cover/lastResumeAt — lets a real device distinguish "input
     // not arriving" from "input arriving but blocked".
@@ -2101,6 +2124,13 @@ function r10FormatDebugText(s) {
   lines.push('AIM BOUNDARY');
   lines.push('aim: ' + s.aim.aimX + ',' + s.aim.aimY + ' southLimit: ' + s.aim.aimSouthLimit);
   lines.push('playerDrawRectTop: ' + s.aim.playerDrawRectTop + ' aimClamped: ' + s.aim.aimClamped);
+  // AIM OPERATING-AREA ROUND: the 2D body-avoidance column now being tested
+  // against — bodyLeft/bodyRight are the real alpha-measured visible body
+  // edges (+/-AIM_PLAYER_MARGIN_PX), not the full sprite bounding box.
+  // aimInBodyColumn distinguishes "clamped because aimX is over the body"
+  // from "not currently restricted at all" (aimClamped alone can no longer
+  // tell them apart now that southLimit varies with x).
+  lines.push('bodyColumn: ' + s.aim.bodyLeft + '..' + s.aim.bodyRight + ' bodyTop: ' + s.aim.bodyTop + ' aimInBodyColumn: ' + s.aim.aimInBodyColumn);
   lines.push('focusTarget: ' + s.aim.focusTarget + ' focusValid: ' + s.aim.focusValid);
   lines.push('');
   lines.push('PLAYER');
@@ -2185,7 +2215,7 @@ function r10FormatDebugText(s) {
   lines.push('mode: ' + s.input.mode);
   lines.push('fireButton: ' + s.input.fireBtn);
   lines.push('rightStick: ' + s.input.stickR);
-  lines.push('aim: ' + s.input.aim);
+  lines.push('aimStickOffset (NOT a screen coordinate - see AIM BOUNDARY aim: for that): ' + s.input.aimStickOffset);
   // 29TH ROUND item 18
   lines.push('rawLeftStick: ' + s.input.rawLeftStick);
   lines.push('rawRightStick: ' + s.input.rawRightStick);
@@ -3869,6 +3899,11 @@ function resize() {
   AIM_RANGE = Math.max(w, h);
   LIGHT_RANGE = AIM_RANGE;
   AIM_MOVE_SPEED_PX_S = AIM_MOVE_SPEED_BASELINE_PX_S * (AIM_RANGE / AIM_RANGE_BASELINE_PX);
+  // AIM OPERATING-AREA ROUND: same scale ratio as AIM_MOVE_SPEED_PX_S — see
+  // AIM_PLAYER_RAMP_PX's own comment for why a fixed pixel ramp left a
+  // narrow mobile-landscape viewport with no x position that ever reaches
+  // the fully-open south limit.
+  AIM_PLAYER_RAMP_PX = AIM_PLAYER_RAMP_BASELINE_PX * (AIM_RANGE / AIM_RANGE_BASELINE_PX);
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', resize);
@@ -5329,7 +5364,12 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // top of (not instead of) getAimPoint()'s own final render-time clamp,
     // so the crosshair can never even visibly APPROACH the player sprite
     // while FOCUS is converging, not just get stopped right at the edge.
-    const maxTargetLiveY = getCombatAimSouthLimit() - baseY - p.aimManualOffsetY;
+    // AIM OPERATING-AREA ROUND: evaluated at the target's OWN x (hitPt.x —
+    // where FOCUS is actually pulling AIM toward), not a stale/central x,
+    // so FOCUS is only held back when the enemy's real hit point genuinely
+    // falls within the player's own body column — see
+    // getCombatAimSouthLimit()'s own comment.
+    const maxTargetLiveY = getCombatAimSouthLimit(hitPt.x) - baseY - p.aimManualOffsetY;
     const targetLiveY = Math.min(clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE), maxTargetLiveY);
     const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
     p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
@@ -5353,6 +5393,26 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // branch for "stick released".
     p.aimLiveX = clamp(p.aimLiveX + state.input.aimX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
     p.aimLiveY = clamp(p.aimLiveY + state.input.aimY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
+    // AIM OPERATING-AREA ROUND: clamp the ACCUMULATOR itself against the
+    // body-avoidance boundary at aimLiveX's CURRENT (just-updated) x — not
+    // only the read-only getAimPoint() clamp — so p.aimLiveY can never
+    // secretly keep growing south while held "behind" the body-column at
+    // the current x. Root cause of a real jump found during Visual QA: a
+    // pure diagonal sweep (e.g. upper-left to lower-right) moves x and y
+    // together continuously; without this, y kept accumulating unseen
+    // while x happened to be crossing the body column, and the instant x
+    // cleared the column on the far side, the display would suddenly
+    // reveal that whole hidden south backlog in a single frame — a visible
+    // snap even though nothing about the player's own stick input jumped.
+    // Clamping the accumulator in lockstep with x every frame means it is
+    // never holding a value that isn't already legal for the CURRENT x, so
+    // there is nothing left to "reveal" once x moves on.
+    {
+      const aimBaseX = state.centerX + p.strafeOffset;
+      const aimBaseY = state.horizonY + state.cssH * 0.06;
+      const aimResolvedX = clamp(aimBaseX + p.aimManualOffsetX + p.aimLiveX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX);
+      p.aimLiveY = Math.min(p.aimLiveY, getCombatAimSouthLimit(aimResolvedX) - aimBaseY - p.aimManualOffsetY);
+    }
     // 26TH ROUND item 10: SPOTLIGHT now moves at the SAME speed/range as
     // AIM (AIM_MOVE_SPEED_PX_S/AIM_RANGE, not the old separate
     // LIGHT_MOVE_SPEED_PX_S/LIGHT_RANGE — spec explicitly bans "SPOTLIGHTだけ
@@ -5368,6 +5428,17 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // already uses.
     p.lightPersistX = clamp(p.lightPersistX + state.input.lightX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
     p.lightPersistY = clamp(p.lightPersistY + state.input.lightY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
+    // AIM OPERATING-AREA ROUND: same accumulator clamp as p.aimLiveY just
+    // above, applied to SPOTLIGHT's own persistent offset — see that
+    // comment. Uses getFlashlightCenter()'s own base (horizonY-based, same
+    // formula) so this lines up with what getFlashlightCenter() will
+    // actually resolve to.
+    {
+      const lightBaseX = state.centerX + p.strafeOffset;
+      const lightBaseY = state.horizonY + state.cssH * 0.06;
+      const lightResolvedX = clamp(lightBaseX + p.aimManualOffsetX + p.lightPersistX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX);
+      p.lightPersistY = Math.min(p.lightPersistY, getCombatAimSouthLimit(lightResolvedX) - lightBaseY - p.aimManualOffsetY);
+    }
   }
   // PART 6 (3rd round): persistent manual AIM trim — LT+D-PAD up/down
   // moves height only (X untouched), RT+D-PAD left/right moves horizontal
@@ -8871,24 +8942,101 @@ function computePlayerDrawRect() {
   return { cx, bottomY, topY: bottomY - h, w, h };
 }
 
-// BUGFIX ROUND (spec sections 21-28): single shared source of truth for
-// "how far south (toward the camera/player) AIM/SPOTLIGHT/FOCUS/FIRE are
-// allowed to reach" — Canvas convention here is larger Y = further south =
-// closer to the player (see computePlayerDrawRect()'s own bottomY/topY),
-// so "never on top of the player" means never south of the player
-// sprite's OWN top edge. Recomputed fresh from computePlayerDrawRect()
-// every call (never a fixed canvasHeight*const) so it automatically tracks
-// whatever NORTH/SOUTH depth movement already did to the player's drawn
-// size/position this exact frame — moving NORTH shrinks+raises the sprite
-// (topY moves further north, i.e. smaller/more negative-ish), which
-// naturally WIDENS the AIM-reachable area; moving SOUTH does the reverse
-// and tightens it. getAimPoint(), getFlashlightCenter(), the FOCUS target
-// (updatePlayer()'s autoAimActive branch, via getEffectiveHitPoint()) and
-// fireWeapon()'s own independent shot-target safety check all read this
-// SAME function — never a separately-computed boundary anywhere else.
-function getCombatAimSouthLimit() {
+// AIM OPERATING-AREA ROUND: real, alpha-channel-measured opaque bounds of
+// ASSETS.player.aim (384x340 native) — the same source computePlayerDrawRect()
+// already uses for w/h. ~46% of the image's WIDTH is transparent padding
+// (measured via a full alpha-channel scan, not a guess), so treating the
+// whole bounding box as off-limits — as the previous single horizontal-line
+// southLimit effectively did — banned AIM from a much wider band than the
+// player's actual visible body. Only this real, visible column is now the
+// forbidden zone.
+const AIM_PLAYER_BODY_LEFT_FRAC = 0.349;
+const AIM_PLAYER_BODY_RIGHT_FRAC = 0.685;
+const AIM_PLAYER_BODY_TOP_FRAC = 0.006;
+function computePlayerVisualBounds() {
   const rect = computePlayerDrawRect();
-  return rect.topY - AIM_PLAYER_MARGIN_PX;
+  return {
+    left: rect.cx - rect.w * (0.5 - AIM_PLAYER_BODY_LEFT_FRAC),
+    right: rect.cx - rect.w * (0.5 - AIM_PLAYER_BODY_RIGHT_FRAC),
+    top: rect.topY + rect.h * AIM_PLAYER_BODY_TOP_FRAC,
+    cx: rect.cx,
+  };
+}
+
+// AIM OPERATING-AREA ROUND: replaces the old single horizontal-line south
+// limit (a full-screen-width "nothing south of the player's top edge is
+// ever reachable" clamp) with a 2D avoidance column matching the player's
+// REAL visible body only (see computePlayerVisualBounds() above) — per
+// explicit spec: the south limit is NOT "AIM's own initial Y" and NOT "ban
+// everything south of the player" — it is "don't let the crosshair render
+// on top of the player's own visible body." Takes the X the caller is
+// actually about to place AIM/SPOTLIGHT/a target at: if that X falls
+// within the player's real body column (+/- AIM_PLAYER_MARGIN_PX), the
+// legal south boundary is the body's real top edge (same as before); if X
+// is clearly to the left/right of the body, there is no body-avoidance
+// restriction at all here (the caller's own screen-edge-margin clamp still
+// applies elsewhere, unrelated to the player). This never moves X and only
+// ever caps Y, so a stick input that isn't itself aimed at the body keeps
+// registering normally — a diagonal sweep naturally clears the column and
+// keeps going south the instant X exits [left,right], with no teleport:
+// the instant X is out of range, this simply stops constraining Y at all,
+// it never relocates an already-resolved point. getAimPoint(),
+// getFlashlightCenter(), the FOCUS target (updatePlayer()'s autoAimActive
+// branch) and fireWeapon()'s own shot-target safety check all read this
+// SAME function, each passing ITS OWN x (never a shared/stale one), so
+// SPOTLIGHT's own south clamp can no longer sit pinned on a stale global
+// line while AIM tries to move past it (root cause of "AIM only reaches
+// +/-41px sideways", diagnosed and fixed this round — see
+// getFlashlightCenter()'s own comment) — recomputed fresh every call, so
+// NORTH/SOUTH depth movement (which changes computePlayerDrawRect()'s own
+// size/position) still automatically widens/tightens this exactly as
+// before.
+// AIM OPERATING-AREA ROUND (Visual QA follow-up): a HARD on/off step at the
+// column edge — while correct at rest, produced a genuine single-frame snap
+// during a continuous diagonal sweep (measured via a real updatePlayer()
+// simulation: up to ~250px in one frame crossing INTO the column, several
+// times the normal ~87px/frame stick-speed step) — exactly the "ガクッと
+// 不自然に座標が変わらない" case flagged as a requirement. Root cause: Y's
+// own accumulator (p.aimLiveY, clamped every frame at the CURRENT x — see
+// updatePlayer()'s own comment) is free to build up close to the wide-open
+// limit right up until the instant x crosses the column edge, at which
+// point the legal ceiling drops all at once. AIM_PLAYER_RAMP_PX turns that
+// single-frame drop into a smooth linear taper spread over this many
+// pixels of x on EITHER side of the column, so a sweep crossing it at
+// normal speed is reined in gradually over several frames — never a
+// visible jump — while directly over the body (x inside [left,right]) the
+// limit is still exactly the hard b.top boundary, with zero extra
+// tolerance, so "never overlaps" is completely unaffected by the ramp.
+// Tuned so the corrective Y-delta the ramp imposes on any single frame
+// never exceeds roughly one normal AIM_MOVE_SPEED_PX_S step even at max
+// stick speed: (openLimit-restrictedLimit range, ~400-450px at a typical
+// desktop viewport) spread across enough x-distance that crossing it at
+// the fastest possible per-frame x-speed still only trims Y by about one
+// frame's worth of normal movement at a time — verified via a real
+// updatePlayer() simulation (see completion report) across all 5 required
+// diagonal sweep directions. Scaled by resize() with the SAME
+// AIM_RANGE/AIM_RANGE_BASELINE_PX ratio AIM_MOVE_SPEED_PX_S already uses
+// (not a fixed pixel count): a narrow mobile-landscape viewport was found
+// to leave NO x position that ever reaches the fully-open south limit at
+// all with a fixed 420px ramp (the ramp zones from both sides of the body
+// column overlapped nearly the whole screen width) — the per-frame stick
+// speed itself is smaller on a smaller canvas, so the ramp needs to
+// shrink by the same proportion to stay "roughly one normal step wide",
+// not a constant pixel count. Declared near AIM_RANGE/LIGHT_RANGE (top of
+// file), not here, since resize() assigns it on its very first (module-
+// load-time) call, before execution would otherwise reach this point.
+function getCombatAimSouthLimit(x) {
+  const b = computePlayerVisualBounds();
+  const left = b.left - AIM_PLAYER_MARGIN_PX;
+  const right = b.right + AIM_PLAYER_MARGIN_PX;
+  const restrictedLimit = b.top - AIM_PLAYER_MARGIN_PX;
+  const openLimit = state.cssH - AIM_SCREEN_SAFE_MARGIN_PX;
+  let distOutside;
+  if (x < left) distOutside = left - x;
+  else if (x > right) distOutside = x - right;
+  else distOutside = 0;
+  const t = clamp(distOutside / AIM_PLAYER_RAMP_PX, 0, 1);
+  return restrictedLimit + (openLimit - restrictedLimit) * t;
 }
 
 function fireWeapon(now) {
@@ -8992,7 +9140,7 @@ function fireWeapon(now) {
   // any future caller ever bypasses that clamp, shot generation is still
   // independently blocked rather than silently damaging something in
   // front of the player.
-  if (aim.y > getCombatAimSouthLimit()) {
+  if (aim.y > getCombatAimSouthLimit(aim.x)) {
     if (DEBUG_MODE) {
       r10DebugState.fireRejectCount++;
       r10DebugState.fireRejectReason = 'TARGET_BEHIND_PLAYER';
@@ -9451,13 +9599,29 @@ function getFlashlightCenter() {
   // mismatch would be most obvious.
   const rawX = state.centerX + p.strafeOffset + p.aimManualOffsetX + p.lightPersistX;
   const rawY = state.horizonY + state.cssH * 0.06 + p.aimManualOffsetY + p.lightPersistY;
+  const lightX = clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX);
   return {
-    x: clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX),
+    x: lightX,
     // BUGFIX ROUND (spec section 25): SPOTLIGHT must stop at the EXACT same
     // south boundary as AIM (getCombatAimSouthLimit(), the single shared
     // source of truth) so the two can never desync at the one place — near
     // the player — where a mismatch would be most visible.
-    y: Math.min(clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX), getCombatAimSouthLimit()),
+    // AIM OPERATING-AREA ROUND: root cause of "AIM can only reach +/-41px
+    // sideways" — this call used to pass NO x, so SPOTLIGHT's own south
+    // clamp always used the (then-scalar) whole-screen line, pinning
+    // light.y to that line's Y the instant lightY tried to go south of it —
+    // regardless of light.x. getAimPoint()'s OWN south clamp then measured
+    // distance against THIS stuck light center, so its light-containment
+    // circle (FLASHLIGHT_BASE_RADIUS, intentionally left unchanged this
+    // round) dragged the resolved AIM point back toward that stuck point in
+    // BOTH x and y the moment AIM's raw target strayed far from it — the
+    // actual mechanism restricting AIM sideways, not the south-limit itself.
+    // Passing lightX here means SPOTLIGHT's own south clamp now uses the
+    // SAME per-x body-avoidance check AIM does, so light.y is free to
+    // follow lightX south of the old line whenever lightX itself is clear
+    // of the player's body — SPOTLIGHT properly tracks AIM instead of
+    // anchoring it.
+    y: Math.min(clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX), getCombatAimSouthLimit(lightX)),
   };
 }
 
@@ -9504,7 +9668,12 @@ function getAimPoint() {
   // unreachable GAME-SPACE coordinate, not just a draw-order trick that
   // hides an otherwise-still-valid south-of-limit value (spec explicitly
   // forbids the latter).
-  y = Math.min(y, getCombatAimSouthLimit());
+  // AIM OPERATING-AREA ROUND: passes the FINAL resolved x (after the LIGHT-
+  // circle adjustment above) — see getCombatAimSouthLimit()'s own comment.
+  // X itself is never touched here; only Y can ever be pulled north, so a
+  // stick input whose X component is already clear of the player's body
+  // keeps registering exactly as moved, with no separate "unstick" case.
+  y = Math.min(y, getCombatAimSouthLimit(x));
   return { x, y };
 }
 
@@ -13057,6 +13226,8 @@ window.__darkoutTps = {
   get controllerAimSensitivity() { return controllerAimSensitivity; },
   set controllerAimSensitivity(v) { controllerAimSensitivity = v; },
   AIM_SENSITIVITY_PRESETS, computePlayerDrawRect,
+  // AIM OPERATING-AREA ROUND: exposed for automated testing only.
+  computePlayerVisualBounds, getCombatAimSouthLimit,
   ENEMY_MAX_HP, ADAM_SPHERE_WORLD_HEIGHT, ROID_WORLD_HEIGHT,
   GABRIEL_Z_MIN, GABRIEL_NORMAL_Z_MIN, ADAM_Z_MIN,
   applyForwardDelta, ATTACK_FLASH_TYPES, fireWeapon,
