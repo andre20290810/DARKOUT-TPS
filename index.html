@@ -71,8 +71,21 @@
          at TAP TO START (see #tap-to-start-btn below), never here. poster is
          the video's own first frame (assets/video/loading_intro_poster.jpg)
          so there is never a black flash before the video's own data arrives. -->
+    <!-- DIAGNOSIS ROUND (section 3): root-caused via a minimal isolated
+         Playwright test (not just "the video element exists") that some
+         Chromium builds report canPlayType('video/mp4; codecs="avc1..."')
+         as "" and resolve to networkState=NETWORK_NO_SOURCE / error.code=4
+         (MEDIA_ERR_SRC_NOT_SUPPORTED) for H.264/MP4 specifically — open-
+         source Chromium distributed without the proprietary H.264 license
+         lacks the decoder outright, and some real-world Linux/de-googled
+         Android builds ship the same way. iOS Safari is the opposite case
+         (MP4/H.264 required, WebM unsupported), so MP4 stays the FIRST
+         <source> (tried first) for that audience; WebM/VP9 is added as a
+         second source the browser falls through to whenever H.264 isn't
+         available, rather than silently failing with no source at all. -->
     <video id="intro-video" muted playsinline autoplay preload="auto" poster="assets/video/loading_intro_poster.jpg?v=1">
       <source src="assets/video/loading_intro.mp4?v=1" type="video/mp4">
+      <source src="assets/video/loading_intro.webm?v=1" type="video/webm">
     </video>
     <!-- UI POLISH ROUND: the "DARK OUT 2" brand title is deliberately no
          longer shown on the LOADING gauge itself — the real intro video

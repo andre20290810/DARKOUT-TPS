@@ -1826,6 +1826,28 @@ function r10CollectSnapshot(ts) {
         side: applicable && dc.active ? (dc.side > 0 ? 'east' : 'west') : '-',
         remainMs: applicable && dc.active ? Math.max(0, Math.round(dc.until - ts)) : 0 };
     })(),
+    // DIAGNOSIS ROUND (spec section 11): temporary numeric diagnostic group
+    // for the ESCAPE player/ghost tire-contact Y investigation (spec
+    // sections 9-10) — PLAYER's own live drawRect + measured tire-contact Y
+    // (es.debugSpriteBottomY, stamped every renderEscapePlayer() call, see
+    // computeEscapePlayerRectClamped()), the current DASH ghost's own
+    // drawRect/anchor/rotation, and the last DASH's start(A)/end(B)/ghost X
+    // for the "ghost X is the midpoint of A/B" check. '-' outside ESCAPE.
+    escapeGhost: (() => {
+      const applicable = state.gameMode === 'escape';
+      const g = es.afterimages && es.afterimages[0];
+      return {
+        applicable,
+        playerTireY: applicable ? Math.round(es.debugSpriteBottomY || 0) : '-',
+        ghostPresent: applicable && !!g,
+        ghostDrawRect: applicable && g ? { x: Math.round(g.dx), y: Math.round(g.dy), w: Math.round(g.drawW), h: Math.round(g.drawH) } : '-',
+        ghostTireY: applicable && g ? Math.round(g.dy + g.drawH) : '-',
+        ghostAnchorXY: applicable && g ? Math.round(g.anchorX) + ',' + Math.round(g.anchorY) : '-',
+        ghostAngleDeg: applicable && g ? Math.round(g.angleRad * 180 / Math.PI) : '-',
+        lastDashStartX: applicable ? Math.round(es.debugLastDashStartX != null ? es.debugLastDashStartX : NaN) : '-',
+        lastDashEndX: applicable ? Math.round(es.debugLastDashEndX != null ? es.debugLastDashEndX : NaN) : '-',
+      };
+    })(),
     // 30TH ROUND item 17/29: DRONE WAVE — per-extra HP/state, and whether
     // the wave itself is currently in progress.
     droneWave: (() => {
@@ -4071,17 +4093,52 @@ function pollGamepad(now) {
     // either) and the settle window is re-armed for defense-in-depth
     // against the next frame too, then this frame returns neutral input,
     // never reaching the gpFire/DASH lines below.
+    // DIAGNOSIS ROUND (spec section 4): explicit requirement CHANGE from the
+    // earlier BOOT FLOW round — a real-device report confirmed the TAP TO
+    // START screen was touch/click-only, leaving CONTROLLER-only players
+    // with no way to proceed at all. The earlier round's own reasoning
+    // ("audio unlock must come from a real gesture, gamepad buttons don't
+    // reliably count as one on iOS Safari") is still correct for iOS
+    // Safari specifically, but the Web Gamepad API is not meaningfully
+    // available on iOS Safari at all (no physical controller pairs with it
+    // the same way), so a CONTROLLER player is, in practice, never on that
+    // exact platform+input combination — and on every platform where a
+    // real gamepad IS usable (desktop Chrome/Firefox/Edge, Android Chrome),
+    // a gamepad-button-triggered play() call is honored by that platform's
+    // own autoplay policy same as a click. So: a gamepad button press here
+    // now calls handleTapToStart() directly (the SAME function the touch
+    // tap uses — same tryStartBgm() unlock call, same tapToStartConsumed
+    // no-multi-fire guard), consuming this exact press (re-baselines
+    // prevButtons + re-arms the settle window, mirroring the mode-select
+    // block below) so it can never ALSO fall through into that block on
+    // this same frame.
+    if (!state.gameStarted && state.assetsReady && !state.tapToStartDone) {
+      if (document.activeElement && typeof document.activeElement.blur === 'function' && document.activeElement !== document.body) {
+        document.activeElement.blur();
+      }
+      let tapToStartTriggered = false;
+      for (let i = 0; i < b.length; i++) {
+        if (pressed(i) && !prev[i]) { tapToStartTriggered = true; break; }
+      }
+      if (tapToStartTriggered) {
+        const triggerSnapshot = new Array(b.length);
+        for (let i = 0; i < b.length; i++) triggerSnapshot[i] = pressed(i);
+        state.prevButtons = triggerSnapshot;
+        if (DEBUG_MODE) r10DebugLog('GAMEPAD UI INPUT -> TAP TO START');
+        handleTapToStart();
+        state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
+        return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
+      }
+    }
     // BOOT FLOW ROUND: added `&& state.tapToStartDone` — without it, ANY
     // gamepad button press during the new TAP TO START screen (assetsReady
     // is already true there, same as at INPUT MODE SELECT) would fall
     // straight into this block and call handleModeSelect() directly,
-    // letting a gamepad alone skip past TAP TO START entirely. That is
-    // exactly what the spec explicitly forbids (audio unlock must come
-    // from a real tap/click, never a gamepad button) — this screen's own
-    // TAP TO START button is deliberately never wired into pollGamepad()
-    // at all, and this added condition is what stops this EXISTING,
-    // broader "any button while assets are ready and not yet started"
-    // block from reaching it indirectly.
+    // letting a gamepad alone skip past TAP TO START entirely. Superseded
+    // by the DIAGNOSIS ROUND block directly above — that block now handles
+    // (and fully consumes) any button press made while !tapToStartDone, so
+    // this condition is what stops THIS block from ALSO reacting to that
+    // same still-held press on a later frame.
     if (!state.gameStarted && state.assetsReady && state.tapToStartDone) {
       // 29TH ROUND item 9: root cause of "最初はGamepadで操作できるが、途中で
       // 効かなくなる" on the INPUT MODE SELECT screen — #mode-btn-controller
@@ -5343,7 +5400,14 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // cadence.
     if (moveY > 0.05) {
       p.southWalkTimer += dt;
-      if (p.southWalkTimer > 0.07) { p.southWalkTimer = 0; p.southWalkFrame = (p.southWalkFrame + 1) % 3; }
+      // DIAGNOSIS ROUND (spec section 6): was `(p.southWalkFrame + 1) % 3`,
+      // cycling 0->1->2->0... i.e. frames 1->2->3->1->2->3 (southWalkFrames[1]
+      // = player_walk_south_02.png, the "2枚目" spec explicitly says to stop
+      // using). Now alternates ONLY between index 0 and index 2 (1st/3rd
+      // photos) — index 1 is never assigned. Only this frame-index sequence
+      // changed; the per-frame timer/cadence (0.07s) and every other WALK
+      // direction (p.walkFrame above) are untouched.
+      if (p.southWalkTimer > 0.07) { p.southWalkTimer = 0; p.southWalkFrame = p.southWalkFrame === 0 ? 2 : 0; }
     }
     // 9TH ROUND (items 7-8): track REAL south movement (D-PAD DOWN/LEFT
     // STICK DOWN, moveY>0 per the same sign convention applyForwardDelta()
@@ -5493,6 +5557,10 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     // explicit request.
     const afterimageAngleRad = (actions.westDash ? -15 : 15) * Math.PI / 180;
     const oldCx = state.centerX + p.strafeOffset;
+    // DIAGNOSIS ROUND (spec sections 9-10): was the raw, unclamped formula
+    // (state.cssH*1.02 - es.depthPos*ESCAPE_DEPTH_SCREEN_RANGE_PX) — see
+    // computeEscapePlayerRectClamped()'s own comment for why that put the
+    // ghost's tire ~39px south of where the real body actually renders.
     const bottomYNow = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
     const frameNow = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
     // FOLLOWUP HOTFIX: re-spec'd to the literal "A ----- GHOST ----- B"
@@ -5506,7 +5574,13 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     const newStrafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     if (imgReady(frameNow.img)) {
       const ghostCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
-      const ghostRect = computeEscapePlayerDrawRect(ghostCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
+      // DIAGNOSIS ROUND (spec sections 9-10): computeEscapePlayerRectClamped()
+      // (not the raw computeEscapePlayerDrawRect()) so the ghost's own tire
+      // sits on the SAME label-clamped ground line renderEscapePlayer() will
+      // actually draw the real body on this same frame — see that helper's
+      // own comment for the ~39px gap this closes.
+      const ghostClamped = computeEscapePlayerRectClamped(ghostCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
+      const ghostRect = ghostClamped.rect;
       // BUGFIX ROUND (spec section 16): a fast double-tap (two DASH presses
       // within ESCAPE_AFTERIMAGE_MS of each other) used to leave BOTH old
       // and new ghosts in the array simultaneously (push() never cleared
@@ -5514,10 +5588,15 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
       // now, matching how state.escape.decoy already works: a new dash
       // always fully replaces whatever ghost was still fading, so at most
       // one can ever be on screen.
+      // DIAGNOSIS ROUND (spec section 11): temporary DEBUG-panel trace of
+      // this DASH's real A (start X) / B (end X) — read by r10CollectSnapshot()'s
+      // escapeGhost group, never gameplay logic.
+      es.debugLastDashStartX = Math.round(oldCx);
+      es.debugLastDashEndX = Math.round(state.centerX + newStrafeOffset);
       es.afterimages = [{
         img: frameNow.img, dx: ghostRect.dx, dy: ghostRect.dy, drawW: ghostRect.drawW, drawH: ghostRect.drawH,
         until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad,
-        anchorX: ghostCx, anchorY: bottomYNow, // 30TH ROUND item 11: real tire/ground-contact pivot point
+        anchorX: ghostCx, anchorY: ghostClamped.bottomY, // 30TH ROUND item 11 + DIAGNOSIS ROUND: real, label-clamped tire/ground-contact pivot point
       }];
     }
     p.strafeOffset = newStrafeOffset;
@@ -8347,8 +8426,28 @@ function getBarrageProjectileVisual(m) {
   };
 }
 
+// DIAGNOSIS ROUND (spec section 7 follow-up, user-approved minimal fix):
+// the solo DRONE (this function) was the only drone-family anchor still
+// floor-level — DRONE WAVE 2's own 3 extra drones already hover above the
+// floor via the identical `CORRIDOR_FLOOR_Y - DRONE_WORLD_HEIGHT * 0.55`
+// formula (see getBarrageProjectileVisual()'s sibling above), so this just
+// brings the solo DRONE in line with its own wave-2 siblings rather than
+// inventing a new convention. Root cause this restores: a real flying
+// drone anchored at ground level renders so small/short (DRONE_WORLD_
+// HEIGHT=140 vs a human's ~900) that its on-screen center sits only
+// ~25px south of the NOW-CORRECTED AIM south limit (getCombatAimSouthLimit()
+// — see computePlayerDrawRect()'s own comment) — outside the enemy's own
+// hit-radius, making it un-hittable by any input method even at rest.
+// ROID1/ROID2/GABRIEL/ADAM/ADAM SPHERE are all tall, floor-standing
+// characters whose own drawn CENTER already sits well north of the AIM
+// boundary purely from their own height — confirmed unaffected by this
+// change (DRONE-only branch) and by live fire-test QA. Does not touch
+// DRONE_WORLD_HEIGHT/HP/attack power/z-distance/hit-radius — purely how
+// high above the floor its existing z/lane position is anchored.
 function screenSpaceEnemyAnchor() {
-  const proj = project(state.enemy.lane, CORRIDOR_FLOOR_Y, state.enemy.z);
+  const e = state.enemy;
+  const floorY = e.type === 'drone' ? CORRIDOR_FLOOR_Y - DRONE_WORLD_HEIGHT * 0.55 : CORRIDOR_FLOOR_Y;
+  const proj = project(e.lane, floorY, e.z);
   return proj;
 }
 
@@ -8734,16 +8833,41 @@ function triggerFireHaptics() {
 // width/height (every player pose shares near-identical proportions), not
 // tied to whichever specific image renderPlayer() happens to be drawing
 // this frame.
+// DIAGNOSIS ROUND (spec section 7): shared by computePlayerDrawRect() AND
+// renderPlayer()'s own "EMERGENCY HOTFIX" label-overlap clamp below — real-
+// device root cause of the AIM south-limit bug was that these two used to
+// compute the clamp independently, and only renderPlayer() actually applied
+// it. Since the player's nominal bottomY (state.cssH * 1.02) sits 2% BELOW
+// the visible canvas by design, this clamp fires on essentially every
+// COMBAT frame at any normal viewport height — meaning the REAL rendered
+// sprite sits ~35-40px further north (smaller Y) than computePlayerDrawRect()
+// used to assume. getCombatAimSouthLimit() inherited that same stale,
+// uncorrected topY, so the "south limit" boundary sat INSIDE the real,
+// visible player silhouette (confirmed via pixel-sampled screenshots: the
+// crosshair visibly overlapped the player's hair even at the resting/
+// neutral aim position) instead of safely above it, and — since the
+// resting AIM Y was already being clamped down to that too-far-south
+// boundary — left essentially zero room to move the crosshair south at
+// all. Guarded against a hidden/zero-size label (labelRect.height === 0)
+// so a future state where #theme-label isn't shown can never mis-clamp.
+function computePlayerLabelOverflowPx(spriteBottomY) {
+  const labelRect = themeLabelEl.getBoundingClientRect();
+  if (labelRect.height <= 0) return 0;
+  const overflowPx = spriteBottomY - (labelRect.top - ESCAPE_LABEL_CLAMP_MARGIN_PX);
+  return overflowPx > 0 ? overflowPx : 0;
+}
+
 function computePlayerDrawRect() {
   const p = state.player;
   const cx = state.centerX + p.strafeOffset;
-  const bottomY = state.cssH * 1.02;
+  let bottomY = state.cssH * 1.02;
   const baseScale = (state.cssH / 900) * PLAYER_SCALE_BOOST * p.scale;
   const img = ASSETS.player.aim;
   const nativeH = imgReady(img) ? img.naturalHeight : 900;
   const nativeW = imgReady(img) ? img.naturalWidth : 640;
   const h = nativeH * baseScale;
   const w = nativeW * baseScale;
+  bottomY -= computePlayerLabelOverflowPx(bottomY);
   return { cx, bottomY, topY: bottomY - h, w, h };
 }
 
@@ -10342,13 +10466,15 @@ function renderPlayer(theme) {
   // touches drawW/drawH/scale, so the DASH scale pulse itself is untouched,
   // only the final screen position.
   {
-    const labelTopY = themeLabelEl.getBoundingClientRect().top;
+    // DIAGNOSIS ROUND (spec section 7): now routed through the SAME
+    // computePlayerLabelOverflowPx() helper computePlayerDrawRect() uses,
+    // so the AIM south-limit boundary and the actual rendered sprite can
+    // never drift apart again — see that helper's own comment.
     const spriteBottomY = dy + drawH;
-    const overflowPx = spriteBottomY - (labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX);
-    if (overflowPx > 0) dy -= overflowPx;
+    dy -= computePlayerLabelOverflowPx(spriteBottomY);
     // DEBUG-only trace fields, mirrors es.debugLabelTopY/debugSpriteBottomY —
     // never read by any gameplay logic.
-    p.debugLabelTopY = labelTopY;
+    p.debugLabelTopY = themeLabelEl.getBoundingClientRect().top;
     p.debugSpriteBottomY = dy + drawH;
   }
   // 5TH ROUND PART 12: short damage-blink — a brief brightness flash on the
@@ -10408,6 +10534,32 @@ function renderPlayer(theme) {
 // NEXT ROUND PART M: shared by the live render AND by afterimage capture
 // (updateEscapePlayer()) so a captured ghost is pixel-identical to how the
 // real sprite would have drawn at that moment — pure math, no ctx calls.
+// DIAGNOSIS ROUND (spec sections 9-10): shared by renderEscapePlayer() (the
+// REAL sprite) AND the DASH afterimage spawn site in updateEscapePlayer()
+// (the GHOST) — root cause of "影分身が本体より下へ落ちる": the real sprite's
+// own label-overlap clamp (originally added 30TH ROUND item 10, see below)
+// was applied ONLY at render time, but the ghost's tire-contact anchor was
+// captured from the RAW, unclamped bottomY formula at DASH-spawn time. Since
+// that raw bottomY sits 2% below the visible canvas by design (same as
+// COMBAT — see computePlayerLabelOverflowPx()'s own comment), the clamp
+// fires on essentially every ESCAPE frame (~39px measured), so the ghost's
+// stored ground line was ~39px SOUTH of where the real body actually ends
+// up rendering a moment later — exactly the reported vertical gap. Now both
+// read this one function, so neither can silently drift from the other
+// again.
+function computeEscapePlayerRectClamped(cx, bottomY, frame, depthPos, dashScalePulse) {
+  let rect = computeEscapePlayerDrawRect(cx, bottomY, frame, depthPos, dashScalePulse);
+  const labelTopY = themeLabelEl.getBoundingClientRect().top;
+  const spriteBottomY = rect.dy + rect.drawH;
+  const overflowPx = spriteBottomY - (labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX);
+  let clampedBottomY = bottomY;
+  if (overflowPx > 0) {
+    clampedBottomY = bottomY - overflowPx;
+    rect = computeEscapePlayerDrawRect(cx, clampedBottomY, frame, depthPos, dashScalePulse);
+  }
+  return { rect, bottomY: clampedBottomY, labelTopY };
+}
+
 function computeEscapePlayerDrawRect(cx, bottomY, frame, depthPos, dashScalePulse) {
   // RUN FLOW round: escapePlayerBaseScaleFromDepth() replaces the old
   // perspectiveScaleFromDepth(depthPos, ESCAPE_DEPTH_SCALE_RANGE) — see its
@@ -10489,8 +10641,6 @@ function renderEscapePlayer() {
   // point (cx, bottomY) every frame, regardless of each source image's own
   // padding — so the bike neither grows/shrinks, bounces vertically, nor
   // drifts horizontally when the sprite switches (spec section 3).
-  let rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
-
   // 30TH ROUND item 10: root cause of "real device でもまだテキストに重なる"
   // — the previous fix (29TH ROUND item 7) only clamped the DEPTHPOS INPUT
   // (ESCAPE_DEPTH_SOUTH_LIMIT), calibrated once against ONE tested viewport's
@@ -10511,15 +10661,15 @@ function renderEscapePlayer() {
   // check, not a pre-computed magic constant. The old ESCAPE_DEPTH_SOUTH_
   // LIMIT input clamp is left in place (harmless, reduces how far this new
   // clamp ever needs to push), but this is now the authoritative guarantee.
-  const labelTopY = themeLabelEl.getBoundingClientRect().top;
-  const spriteBottomY = rect.dy + rect.drawH;
-  const overflowPx = spriteBottomY - (labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX);
-  if (overflowPx > 0) {
-    rect = computeEscapePlayerDrawRect(cx, bottomY - overflowPx, frame, es.depthPos, es.dashScalePulse);
-  }
+  // DIAGNOSIS ROUND (spec sections 9-10): now routed through
+  // computeEscapePlayerRectClamped() (see its own comment) — the SAME
+  // helper the DASH ghost spawn site uses, so the real body and its ghost
+  // can never disagree about the current clamped ground line again.
+  const clamped = computeEscapePlayerRectClamped(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
+  const rect = clamped.rect;
   // DEBUG-only trace fields (also useful for the DEBUG panel) — never read
   // by any gameplay logic.
-  es.debugLabelTopY = labelTopY;
+  es.debugLabelTopY = clamped.labelTopY;
   es.debugSpriteBottomY = rect.dy + rect.drawH;
 
   // NEXT ROUND PART M: draw any live lateral-DASH afterimages BEHIND the
@@ -11005,7 +11155,11 @@ function renderEscapeDecoy() {
   if (!imgReady(frame.img)) return;
   const cx = state.centerX + p.strafeOffset + d.side * DECOY_SCREEN_OFFSET_PX;
   const bottomY = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
-  const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, 1);
+  // DIAGNOSIS ROUND (spec section 9): was the raw computeEscapePlayerDrawRect()
+  // with the UNCLAMPED bottomY above — see computeEscapePlayerRectClamped()'s
+  // own comment for why that rendered the decoy's tire ~39px south of the
+  // real body's own (label-clamped) tire-contact line on the same frame.
+  const rect = computeEscapePlayerRectClamped(cx, bottomY, frame, es.depthPos, 1).rect;
   // BUGFIX ROUND (spec sections 17-18): fades against visualUntil (its own
   // shortened lifespan), fade window halved to 200ms to match — keeps the
   // same proportion of the visible lifetime spent fading as before.
