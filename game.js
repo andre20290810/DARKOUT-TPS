@@ -2773,8 +2773,17 @@ const loadingBarFillEl = document.getElementById('loading-bar-fill');
 const loadingPctEl = document.getElementById('loading-pct');
 const loadingStatusEl = document.getElementById('loading-status');
 const loadingEtaEl = document.getElementById('loading-eta');
-const loadingWalkSpriteEl = document.getElementById('loading-walk-sprite');
+const loadingWalkSpriteEl = document.getElementById('loading-walk-sprite'); // BOOT FLOW ROUND: no longer in the DOM (see startLoadingWalkAnimation()'s own comment) — always null now, every read of it is guarded
 const modeSelectScreenEl = document.getElementById('mode-select-screen');
+// BOOT FLOW ROUND: official title/intro video + the new TAP TO START gate
+// — see index.html's #loading-screen for the full element layout and its
+// own comments, and showTapToStartPrompt()/handleTapToStart() below for
+// the behavior.
+const introVideoEl = document.getElementById('intro-video');
+const loadingGaugeWrapEl = document.getElementById('loading-gauge-wrap');
+const loadingErrorBoxEl = document.getElementById('loading-error-box');
+const loadingReloadBtnEl = document.getElementById('loading-reload-btn');
+const tapToStartBtnEl = document.getElementById('tap-to-start-btn');
 
 // 6TH ROUND PART 3: LOADING-screen-only walk animation. Reuses the SAME
 // real player north-walk Image objects the game itself draws from
@@ -2798,6 +2807,12 @@ const LOADING_WALK_JITTER_MS = 70;
 let loadingWalkTimerHandle = null;
 let loadingWalkFrameIndex = 0;
 function startLoadingWalkAnimation() {
+  // BOOT FLOW ROUND: #loading-walk-sprite no longer exists in the DOM (the
+  // real intro video replaces this simulated walk-loop) — kept callable
+  // rather than deleted (never invoked at boot any more, see the old call
+  // site's own comment), but guarded so a stray call (e.g. from automated
+  // testing) can't throw on a null element.
+  if (!loadingWalkSpriteEl) return;
   if (loadingWalkTimerHandle !== null) return;
   const step = () => {
     loadingWalkFrameIndex = (loadingWalkFrameIndex + 1) % ASSETS.player.walk.length;
@@ -2934,6 +2949,17 @@ function checkAssetsReady(now) {
   const pct = total > 0 ? Math.round((loaded / total) * 100) : 100;
   loadingBarFillEl.style.width = pct + '%';
   loadingPctEl.textContent = String(pct);
+  // BOOT FLOW ROUND: a genuine (img.complete && naturalWidth===0, i.e. the
+  // browser gave up, not just "still loading") required-asset failure must
+  // never be allowed to silently sit stuck below 100% forever with only a
+  // console.error nobody sees — show ONE clean LOAD ERROR + RELOAD overlay
+  // (never stacked/duplicated — showLoadError() itself is idempotent) and
+  // never let this function report ready, which is what keeps TAP TO START
+  // from EVER appearing in this case (spec's explicit requirement).
+  if (failedPaths.length > 0) {
+    showLoadError();
+    return false;
+  }
   const etaSec = estimateRemainingSeconds(now, loaded, total);
   if (loaded >= total) {
     loadingEtaEl.textContent = '';
@@ -2949,6 +2975,110 @@ function checkAssetsReady(now) {
     loadingEtaEl.textContent = secDisplay + ' SEC REMAINING';
   }
   return loaded >= total;
+}
+
+// BOOT FLOW ROUND: single unified LOAD ERROR display — idempotent (a
+// second/third failing image on the same load just re-triggers this
+// harmlessly, never stacking a second overlay or a second RELOAD button;
+// spec explicitly bans exactly that "重複表示" that reportedly happened
+// before). Forces TAP TO START back to hidden every call, closing off the
+// one path that could otherwise let the two coexist (e.g. if a LATE image
+// somehow failed after 100% had already been reached and TAP TO START
+// shown — defensive, even though checkAssetsReady()'s own early-return
+// makes that combination unreachable in practice today).
+function showLoadError() {
+  if (!loadingErrorBoxEl) return;
+  tapToStartBtnEl.hidden = true;
+  if (loadingErrorBoxEl.hidden === false) return; // already showing
+  loadingErrorBoxEl.hidden = false;
+  if (DEBUG_MODE) r10DebugLog('LOAD ERROR: required asset(s) failed to load');
+}
+if (loadingReloadBtnEl) {
+  loadingReloadBtnEl.addEventListener('click', () => { window.location.reload(); });
+}
+
+// ---------------------------------------------------------------------
+// BOOT FLOW ROUND: official title/intro video — see index.html's
+// #intro-video comment for the element itself. Two-phase playback:
+//   (1) LOADING < 100%: clamped to a short 0.0-1.5s SEGMENT LOOP, driven by
+//       requestAnimationFrame so the loop-back only ever happens once real
+//       playback genuinely crosses the boundary (never a fixed-interval
+//       currentTime rewrite, which is what would make it visibly judder).
+//   (2) LOADING === 100%: released into a normal native full-length
+//       loop (browser-handled, zero further JS per frame).
+// ---------------------------------------------------------------------
+const INTRO_VIDEO_LOOP_END_SEC = 1.5;
+let introVideoFullLoopActive = false;
+function tickIntroVideoSegmentLoop() {
+  requestAnimationFrame(tickIntroVideoSegmentLoop);
+  if (!introVideoEl || introVideoFullLoopActive) return;
+  if (introVideoEl.currentTime >= INTRO_VIDEO_LOOP_END_SEC) {
+    introVideoEl.currentTime = 0;
+  }
+}
+// Called once at boot (see the bottom of this file). play() before any
+// user gesture only succeeds because the element is muted+playsinline
+// (see index.html) — this is exactly what iOS Safari's autoplay policy
+// permits without a gesture; genuine audio unlock happens completely
+// separately, at TAP TO START (handleTapToStart() below).
+function initIntroVideo() {
+  if (!introVideoEl) return;
+  const p = introVideoEl.play();
+  if (p && p.catch) {
+    p.catch((err) => {
+      if (DEBUG_MODE) r10DebugLog('INTRO VIDEO PLAY REJECTED: ' + (err && err.name ? err.name : String(err)));
+    });
+  }
+  requestAnimationFrame(tickIntroVideoSegmentLoop);
+}
+// spec explicitly allows (and expects) one visible jump back to 0 exactly
+// at this transition, then native loop="" takes over from there.
+function switchIntroVideoToFullLoop() {
+  if (!introVideoEl) return;
+  introVideoFullLoopActive = true;
+  introVideoEl.loop = true;
+  introVideoEl.currentTime = 0;
+  const p = introVideoEl.play();
+  if (p && p.catch) p.catch(() => {});
+}
+
+// BOOT FLOW ROUND: LOADING-100% transition — releases the video's 0-1.5s
+// clamp into a full loop and reveals TAP TO START, WITHOUT touching
+// modeSelectScreenEl at all (that only happens once the user actually taps
+// — see handleTapToStart()). The gauge cluster fades out via CSS
+// (.fade-out), never abruptly disappearing.
+function showTapToStartPrompt() {
+  switchIntroVideoToFullLoop();
+  if (loadingGaugeWrapEl) loadingGaugeWrapEl.classList.add('fade-out');
+  if (tapToStartBtnEl) tapToStartBtnEl.hidden = false;
+}
+
+// BOOT FLOW ROUND: the new, sole audio-unlock gesture for the whole app —
+// see this function's own call site (a plain 'click' listener on
+// #tap-to-start-btn, added below) for why gamepad input can never reach
+// this at all (never wired into pollGamepad()'s button handling, so a
+// gamepad press alone can never substitute for a real tap/click here,
+// satisfying the explicit "Gamepadボタンだけで最初のaudio unlockを突破
+// しない" requirement). tapToStartConsumed makes the whole handler body a
+// no-op on any repeat tap (spec: no multi-play of video/BGM/audio-unlock).
+let tapToStartConsumed = false;
+function handleTapToStart() {
+  if (!state.assetsReady || tapToStartConsumed) return;
+  tapToStartConsumed = true;
+  state.tapToStartDone = true;
+  // Real user gesture, synchronous with the click — exactly where iOS
+  // Safari requires audio unlock to happen. Reuses the SAME existing,
+  // idempotent tryStartBgm() handleModeSelect() already calls later (that
+  // second call is a guaranteed no-op once bgmStarted latches true here,
+  // never a second overlapping playback).
+  tryStartBgm();
+  loadingScreenEl.hidden = true;
+  modeSelectScreenEl.hidden = false;
+  state.gamepadSettleUntil = performance.now() + GAMEPAD_SETTLE_MS;
+  if (DEBUG_MODE) r10DebugLog('TAP TO START');
+}
+if (tapToStartBtnEl) {
+  tapToStartBtnEl.addEventListener('click', handleTapToStart);
 }
 
 // ---------------------------------------------------------------------
@@ -3309,6 +3439,12 @@ const state = {
   // gesture AFTER that (never before), which is also the single unified
   // trigger for BGM playback (see handleFirstGesture()).
   assetsReady: false,
+  // BOOT FLOW ROUND: true only once the user has genuinely tapped TAP TO
+  // START (handleTapToStart()) — gates pollGamepad()'s own mode-select
+  // gamepad-confirm block below (see that block's own comment) so a
+  // gamepad button press during the TAP TO START screen can never skip
+  // past it and reach INPUT MODE SELECT on its own.
+  tapToStartDone: false,
   gameStarted: false,
   // 24TH ROUND item 4: which mode-select button (0=CONTROLLER, 1=TOUCH) a
   // connected gamepad's D-PAD UP/DOWN or LEFT STICK Y is currently pointed
@@ -3930,7 +4066,18 @@ function pollGamepad(now) {
     // either) and the settle window is re-armed for defense-in-depth
     // against the next frame too, then this frame returns neutral input,
     // never reaching the gpFire/DASH lines below.
-    if (!state.gameStarted && state.assetsReady) {
+    // BOOT FLOW ROUND: added `&& state.tapToStartDone` — without it, ANY
+    // gamepad button press during the new TAP TO START screen (assetsReady
+    // is already true there, same as at INPUT MODE SELECT) would fall
+    // straight into this block and call handleModeSelect() directly,
+    // letting a gamepad alone skip past TAP TO START entirely. That is
+    // exactly what the spec explicitly forbids (audio unlock must come
+    // from a real tap/click, never a gamepad button) — this screen's own
+    // TAP TO START button is deliberately never wired into pollGamepad()
+    // at all, and this added condition is what stops this EXISTING,
+    // broader "any button while assets are ready and not yet started"
+    // block from reaching it indirectly.
+    if (!state.gameStarted && state.assetsReady && state.tapToStartDone) {
       // 29TH ROUND item 9: root cause of "最初はGamepadで操作できるが、途中で
       // 効かなくなる" on the INPUT MODE SELECT screen — #mode-btn-controller
       // and #mode-btn-touch are real <button> elements. The SAME DOM-focus
@@ -12187,14 +12334,23 @@ function frame(ts) {
   if (!state.assetsReady) {
     if (checkAssetsReady(ts)) {
       state.assetsReady = true;
-      loadingScreenEl.hidden = true;
-      modeSelectScreenEl.hidden = false;
+      // BOOT FLOW ROUND: LOADING reaching 100% no longer jumps straight to
+      // INPUT MODE SELECT — it now reveals TAP TO START first (spec's
+      // explicit "100%→TAP TO START待機を挟んでください"), still inside
+      // the SAME #loading-screen (never hidden here any more). See
+      // showTapToStartPrompt()/handleTapToStart() for the rest of this
+      // new step; modeSelectScreenEl stays hidden until the user actually
+      // taps.
+      showTapToStartPrompt();
       // PART 18: explicit flush at the exact ready transition — any
       // gamepad button already held through loading must require a fresh
       // release+press before it can register as anything, never fire as a
       // stale edge the instant gating lifts (see GAMEPAD_SETTLE_MS/
       // pollGamepad()'s own settle-window, reused here for the same
-      // purpose at this different trigger point).
+      // purpose at this different trigger point). handleTapToStart()
+      // below re-arms this a second time at the LATER mode-select
+      // transition, since that's the point gamepad UI nav actually starts
+      // reading input (see pollGamepad()'s own state.tapToStartDone gate).
       state.gamepadSettleUntil = ts + GAMEPAD_SETTLE_MS;
     }
     return;
@@ -12609,11 +12765,11 @@ document.addEventListener('visibilitychange', () => {
 // sync with spawnEnemy() by hand.
 spawnEnemy(AUTO_SEQUENCE[0]);
 
-// 6TH ROUND PART 3/14: the LOADING-screen walk animation starts
-// immediately (the loading screen itself is visible from first paint) and
-// is stopped the instant the player actually picks a mode — it never runs
-// concurrently with real gameplay and never touches state.player/state.enemy.
-startLoadingWalkAnimation();
+// BOOT FLOW ROUND: no longer called — the real intro video (#intro-video)
+// now provides the LOADING screen's atmosphere in its place (see
+// startLoadingWalkAnimation()'s own comment). initIntroVideo() below is
+// this round's equivalent boot-time kickoff.
+initIntroVideo();
 
 // 12TH ROUND (items 6-9): panel visibility is now set once, earlier, by
 // setDebugPanelVisible(state.debugPanelVisible) right after it's defined
@@ -12642,6 +12798,11 @@ window.__darkoutTps = {
   // added 6th round: LOADING gate diagnostics, mode-select, i18n, ETA —
   // exposed for automated testing only.
   checkAssetsReady, REQUIRED_IMAGES, handleModeSelect,
+  // BOOT FLOW ROUND: exposed for automated testing only.
+  handleTapToStart, showTapToStartPrompt, showLoadError, initIntroVideo,
+  switchIntroVideoToFullLoop, INTRO_VIDEO_LOOP_END_SEC,
+  get introVideoFullLoopActive() { return introVideoFullLoopActive; },
+  get tapToStartConsumed() { return tapToStartConsumed; },
   get uiLang() { return uiLang; }, applyUiLang,
   CONTROLLER_STORE_URL,
   startLoadingWalkAnimation, stopLoadingWalkAnimation,

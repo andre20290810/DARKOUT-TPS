@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>DARKOUT 2</title>
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 
@@ -61,14 +61,46 @@
        positioned just ahead of the walk sprite (see style.css) — no new
        image asset. -->
   <div id="loading-screen">
-    <div id="loading-title">DARK OUT 2</div>
-    <div id="loading-walk-stage">
-      <div id="loading-spotlight"></div>
-      <img id="loading-walk-sprite" src="assets/player/player_north_walk_1.png" alt="">
+    <!-- BOOT FLOW ROUND: official title/intro video, plays full-screen from
+         the very first frame — see game.js's intro-video segment-loop logic
+         for why currentTime is driven manually during LOADING (0.0-1.5s
+         only) and switched to a native full-length loop() once assets hit
+         100%. muted+playsinline+autoplay is what lets iOS Safari (and every
+         other mobile browser's autoplay policy) start the VISUAL immediately
+         with zero user gesture — audio unlock is handled entirely separately,
+         at TAP TO START (see #tap-to-start-btn below), never here. poster is
+         the video's own first frame (assets/video/loading_intro_poster.jpg)
+         so there is never a black flash before the video's own data arrives. -->
+    <video id="intro-video" muted playsinline autoplay preload="auto" poster="assets/video/loading_intro_poster.jpg?v=1">
+      <source src="assets/video/loading_intro.mp4?v=1" type="video/mp4">
+    </video>
+    <div id="loading-gauge-wrap">
+      <div id="loading-title">DARK OUT 2</div>
+      <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
+      <div id="loading-status">LOADING ASSETS... <span id="loading-pct">0</span>%</div>
+      <div id="loading-eta">CALCULATING...</div>
     </div>
-    <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
-    <div id="loading-status">LOADING ASSETS... <span id="loading-pct">0</span>%</div>
-    <div id="loading-eta">CALCULATING...</div>
+    <!-- BOOT FLOW ROUND: a single, unified LOAD ERROR display — shown ONLY
+         when checkAssetsReady() finds a genuine (not merely slow/pending)
+         required-asset failure, and never alongside TAP TO START (see
+         showLoadError() in game.js: it forces tap-to-start-btn back to
+         hidden the instant it appears, closing off the one path that used
+         to let these two overlap). -->
+    <div id="loading-error-box" hidden>
+      <div id="loading-error-title" data-en="LOAD ERROR" data-ja="読み込みエラー">LOAD ERROR</div>
+      <div id="loading-error-text" data-en="Some required files failed to load. Please check your connection and reload." data-ja="必須ファイルの読み込みに失敗しました。通信環境をご確認の上、再読み込みしてください。">Some required files failed to load. Please check your connection and reload.</div>
+      <button type="button" tabindex="-1" id="loading-reload-btn" data-en="RELOAD" data-ja="再読み込み">RELOAD</button>
+    </div>
+    <!-- BOOT FLOW ROUND: appears ONLY once LOADING genuinely reaches 100%
+         (see the state.assetsReady transition in frame()) — never before.
+         This is the new, sole audio-unlock gesture for the whole app (see
+         handleTapToStart() in game.js); CONTROLLER/TOUCH PANEL selection
+         below no longer needs to double as that gesture, though it still
+         harmlessly retries the same idempotent tryStartBgm() as defense in
+         depth. Deliberately a plain click/pointer target only — never wired
+         into pollGamepad()'s button handling, so a gamepad press alone can
+         never skip past it (spec's own explicit requirement). -->
+    <button type="button" tabindex="-1" id="tap-to-start-btn" hidden data-en="TAP TO START" data-ja="タップしてスタート">TAP TO START</button>
   </div>
 
   <!-- 6TH ROUND PART 7/8/9/10/11/12: replaces the old "TAP TO START"
@@ -345,6 +377,6 @@
 
 </div>
 
-<script src="game.js?v=1"></script>
+<script src="game.js?v=2"></script>
 </body>
 </html>
