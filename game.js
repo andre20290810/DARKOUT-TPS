@@ -612,6 +612,11 @@ const CLAW_STALK_SPEED = 40; // world-z units/sec of autonomous idle approach
 // applied to the 0.3s DEFENSE-HIT->CLAW counter windup delay itself (that
 // duration is a fixed constant, untouched by HP — spec explicitly bans
 // shortening it).
+// EMERGENCY FIX ROUND: DEFENSE-pose approach speed multiplier — see its
+// one call site (the 'defense'+counterArmed branch below) for the full
+// rationale. Deliberately NOT folded into gabrielAdamApproachSpeed() itself,
+// which is also the shared idle-stalk speed that must stay unchanged.
+const GABRIEL_ADAM_DEFENSE_APPROACH_SPEED_MULT = 2.0;
 function gabrielAdamApproachSpeed(e) {
   const hpFrac = e.maxHp > 0 ? e.hp / e.maxHp : 1;
   const lowHp = hpFrac < 0.5;
@@ -4535,6 +4540,37 @@ function setStageTheme(theme) {
   if (themeLabelEl) themeLabelEl.textContent = THEMES[theme].label;
 }
 
+// EMERGENCY FIX ROUND: root cause of the reported infinite white-TRANSITION
+// loop. setGameMode() is called from TWO fundamentally different kinds of
+// caller — genuine MANUAL Pause Menu mode switches (the .gamemode-btn click
+// handler below), and purely DEFENSIVE/idempotent internal calls that just
+// want to guarantee state.gameMode is correct (e.g. beginCombatIntro()'s
+// own `setGameMode('combat')`, called on EVERY single COMBAT_INTRO start,
+// automatic or not). This function used to call applyManualRunOverride()
+// unconditionally at the end — which meant EVERY beginCombatIntro() call
+// (including fully automatic ones, e.g. DRONE->DRONE intro pacing) ALSO
+// forced state.run.phase from the 'COMBAT_INTRO' beginCombatIntro() had
+// JUST set back to 'COMBAT' directly (applyManualRunOverride()'s own
+// gameMode==='combat' branch), skipping the entire empty-stage/reveal/
+// BATTLE-banner cinematic, AND set manualOverrideActive=true, AND left
+// state.enemy.hp=0 with deathState still 'gone' from the PREVIOUS kill
+// (beginCombatIntro() itself only sets hp=0 as a hidden placeholder —
+// spawnEnemy(), which resets deathState to 'alive', doesn't run until the
+// LATER reveal point). Since phase now falsely reads 'COMBAT', normal
+// gameplay ticks (including updateEnemy()) ran immediately, and
+// updateEnemyCore()'s death-check (`e.deathState !== 'alive'` + `now >=
+// e.deathUntil`, both still true from the OLD kill) fired onEnemyDefeated()
+// AGAIN on the very same already-dead enemy — re-triggering CLEAR SEQUENCE.
+// Confirmed via real-time (non-paused) Playwright trace: DEBUG log showed
+// "COMBAT_INTRO start, enemy=drone" immediately followed by "drone
+// defeated" a few ms later, over and over, forever (manualOverrideActive
+// being stuck true also made decideNextRunStep() no-op on alternating
+// cycles, but the SAME stale-deathState re-trigger persisted regardless of
+// that flag's value — it was never the sole cause). Fix: setGameMode() is
+// now a pure setter again, exactly as its name says — it NEVER touches
+// state.run.phase/manualOverrideActive itself. Only the actual manual
+// Pause Menu entry point (the .gamemode-btn click handler) calls
+// applyManualRunOverride() explicitly, right after setGameMode().
 function setGameMode(mode) {
   state.gameMode = mode;
   document.body.classList.toggle('escape-mode', mode === 'escape');
@@ -4548,17 +4584,6 @@ function setGameMode(mode) {
     state.clearSequence.active = false;
     state.clearSequence.phase = 'idle';
   }
-  // BUGFIX ROUND (spec section 9-11, Bug D): manually switching GAME MODE
-  // from the Pause Menu used to leave state.run.phase completely stale
-  // (e.g. still 'COMBAT'/'COMBAT_INTRO' after switching to ESCAPE), which
-  // left the automatic RUN FLOW dispatch fighting the manual choice and,
-  // per the confirmed real-device report, produced a spurious GAME OVER
-  // shortly after Resume even though PLAYER HP was still positive. Forcing
-  // state.run.phase to match the freshly-selected mode (same helper used by
-  // selectEnemy()) keeps run.phase/gameMode/timer/clearSequence consistent
-  // with the manual choice and stops any in-flight transitional phase from
-  // overwriting it on a later tick.
-  applyManualRunOverride(performance.now());
 }
 
 document.querySelectorAll('.theme-btn').forEach((btn) => {
@@ -4571,7 +4596,14 @@ document.querySelectorAll('.theme-btn').forEach((btn) => {
   });
 });
 document.querySelectorAll('.gamemode-btn').forEach((btn) => {
-  btn.addEventListener('click', () => setGameMode(btn.dataset.gamemode));
+  btn.addEventListener('click', () => {
+    // EMERGENCY FIX ROUND: this is the ONE genuine manual Pause Menu mode
+    // switch — applyManualRunOverride() belongs HERE, explicitly, never
+    // inside setGameMode() itself (see that function's own comment for why
+    // that used to cause an infinite white-TRANSITION loop).
+    setGameMode(btn.dataset.gamemode);
+    applyManualRunOverride(performance.now());
+  });
 });
 // PART 10/11 (4th round): ENEMY SELECT — extends the existing BOSS TEST
 // panel (previously ROID1/ROID2/GABRIEL only) with AUTO + all 6 requested
@@ -7407,6 +7439,25 @@ function applyManualRunOverride(now) {
   // difficulty at all.
   state.player.invincibleUntil = Math.max(state.player.invincibleUntil, now + 1200);
   if (state.enemy.attackState === 'idle') state.enemy.nextIdleCheckAt = now + 2000;
+  // EMERGENCY FIX ROUND: defensive safety net — a manual override can land
+  // directly in COMBAT/ESCAPE without going through spawnEnemy() (e.g. a
+  // bare GAME MODE switch with no ENEMY change). If state.enemy happened to
+  // be mid-death (deathState !== 'alive') at that exact moment, leaving it
+  // as-is would let the very next gameplay tick immediately re-run
+  // updateEnemyCore()'s death-check on the SAME already-dead enemy and
+  // re-fire onEnemyDefeated() — the confirmed mechanism behind the reported
+  // infinite white-TRANSITION loop (see setGameMode()'s own comment for the
+  // full root-cause story; this is the second, independent path that could
+  // reach the same symptom). Also clears any leftover CLEAR SEQUENCE so a
+  // manual jump can never resume/resolve a transition that belonged to
+  // whatever was happening before it.
+  if (state.enemy.deathState !== 'alive') {
+    state.enemy.deathState = 'alive';
+    state.enemy.hp = state.enemy.maxHp;
+  }
+  state.clearSequence.active = false;
+  state.clearSequence.phase = 'idle';
+  state.clearSequence.reason = null;
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: MANUAL OVERRIDE applied, phase=' + r.phase + ' gameMode=' + state.gameMode);
 }
 
@@ -7874,7 +7925,16 @@ function updateEnemyCore(dt, now) {
       if (e.counterArmed) {
         const zMinCounter = e.type === 'gabriel' ? GABRIEL_Z_MIN : ADAM_Z_MIN;
         if (e.z > zMinCounter) {
-          e.z = Math.max(zMinCounter, e.z - gabrielAdamApproachSpeed(e) * dt);
+          // EMERGENCY FIX ROUND: DEFENSE-pose approach speed doubled per
+          // explicit request ("防御画像を表示しながら接近する速度を現状の
+          // 約2倍に") — applied ONLY at this one call site (the multiplier
+          // wraps gabrielAdamApproachSpeed()'s own return value, never
+          // edits that shared function), so the normal 'idle' stalk-approach
+          // tick at this function's OTHER call site is completely
+          // unaffected — max approach distance, defense/invulnerability
+          // judgment, CLAW counter, attack power, HP, and every other
+          // attack's own speed are all untouched.
+          e.z = Math.max(zMinCounter, e.z - gabrielAdamApproachSpeed(e) * GABRIEL_ADAM_DEFENSE_APPROACH_SPEED_MULT * dt);
         }
         if (e.z <= zMinCounter) {
           e.attackState = 'counterApproach';
@@ -11829,18 +11889,31 @@ const COMBAT_ONLY_ENEMY_TYPES = { drone: true, adamSphere: true };
 // comment for the root-caused silent-no-op bug this fixes.
 function decideNextRunStep(now, reason) {
   if (state.progress.distanceRemaining <= 0) return; // enterEscapeComplete() already fired from tickRunDistance()
-  if (state.run.manualOverrideActive) {
-    // BUGFIX ROUND (spec sections 9-13): a Pause Menu manual MODE/ENEMY
-    // selection is still in effect — the automatic sequencer must not pick
-    // a new enemy or start an EVACUATION_WARNING out from under it. The
-    // flag is one-shot: it was set by the manual-selection handlers
-    // (selectEnemy()/setGameMode()'s pause-menu callers) and is cleared
-    // here so the NEXT natural encounter after this one resumes normal
-    // automatic progression.
-    state.run.manualOverrideActive = false;
-    if (DEBUG_MODE) r10DebugLog('RUN FLOW: decideNextRunStep skipped (manualOverrideActive)');
-    return;
-  }
+  // EMERGENCY FIX ROUND: this used to unconditionally SKIP (no-op) the
+  // first decideNextRunStep() call after any manual Pause Menu override,
+  // on the theory that it might be a stale, leftover transition from
+  // BEFORE the manual pick trying to overwrite it (the original Bug C
+  // mechanism: a clearSequence already in flight when Pause opened would
+  // still resolve on its own timer after Resume and re-run pickNextEnemy(),
+  // stomping the just-selected enemy). That leftover-transition risk is now
+  // eliminated at its OWN source instead — applyManualRunOverride() (called
+  // by every manual entry point) unconditionally deactivates state.
+  // clearSequence the instant the override happens, so a stale PRE-existing
+  // sequence can no longer exist to resolve later at all. With that fixed,
+  // this skip became actively harmful: decideNextRunStep() is ALSO the only
+  // thing that advances the run past a manually-selected enemy's OWN
+  // legitimate death, and manualOverrideActive stays true until the first
+  // call after selection — meaning a manually-selected enemy's real defeat
+  // was being silently swallowed here, leaving state.run.phase stuck at
+  // 'COMBAT' with a dead-but-never-advanced enemy whose stale deathState
+  // then re-fired onEnemyDefeated() every subsequent frame (confirmed via
+  // real-time Playwright trace: "decideNextRunStep skipped" immediately
+  // followed by the SAME enemy "defeated" again, forever) — the second,
+  // independent path to the reported infinite white-TRANSITION loop.
+  // manualOverrideActive is kept as a DEBUG-panel-only diagnostic field now
+  // (see r10CollectSnapshot()'s runFlow.manualSelectionActive) — it no
+  // longer gates any behavior here.
+  state.run.manualOverrideActive = false;
   if (reason === 'combat') {
     if (state.run.isFinalCombat) {
       // FINAL BATTLE resolved (defeated or timed out) -> back on the bike
@@ -12059,6 +12132,24 @@ function beginEscapeStretch(now) {
   state.escape.depthPos = 0;
   state.escape.dashScalePulse = 1;
   hideRunBanner();
+  // EMERGENCY FIX ROUND: root cause of the reported "COMBAT->ESCAPE後、白
+  // TRANSITIONが再発火する" — ESCAPE reuses the SAME state.enemy object as
+  // its own pursuit enemy (see updateEscapeEnemyPursuit()), but this
+  // function never reset it. The enemy that JUST died in COMBAT to trigger
+  // this whole EVACUATION_WARNING->MOUNT_TRANSITION->ESCAPE chain still had
+  // deathState:'gone' and a stale (already-past) deathUntil timestamp —
+  // ESCAPE's own updateEnemy() call (it runs there too, unlike plain LAB/
+  // ARMORED, per spec) immediately re-ran updateEnemyCore()'s death-check
+  // against that same stale state and re-fired onEnemyDefeated() a few ms
+  // into the fresh ESCAPE stretch, re-triggering CLEAR SEQUENCE. Confirmed
+  // via real-time Playwright trace: "RUN FLOW: ESCAPE stretch begins"
+  // immediately followed by the same enemy "defeated" again. spawnEnemy()
+  // is the SAME reset every other real entry point already uses — reusing
+  // it here revives the enemy fresh (alive, full HP, idle attack state) for
+  // its new role as the ESCAPE pursuer, exactly as intended by design
+  // (COMBAT_ONLY_ENEMY_TYPES deliberately excludes roid1/roid2/gabriel/adam
+  // from ever reaching this function in the first place).
+  spawnEnemy(state.enemy.type);
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: ESCAPE stretch begins');
 }
 
