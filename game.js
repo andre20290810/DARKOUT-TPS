@@ -843,6 +843,11 @@ const AIM_SCREEN_SAFE_MARGIN_PX = 26;
 // (see getAimPoint()) so the crosshair visibly sits inside the lit disc's
 // edge rather than exactly riding its boundary line.
 const AIM_LIGHT_CLAMP_MARGIN_PX = 6;
+// BUGFIX ROUND (spec sections 21-28): gap kept between the AIM/SPOTLIGHT
+// south boundary and the player sprite's own drawn top edge, so the
+// crosshair visibly stops just short of the player rather than exactly
+// riding its edge — see getCombatAimSouthLimit()'s own comment.
+const AIM_PLAYER_MARGIN_PX = 14;
 
 // 7TH ROUND PART 11: CONTROLLER-only AIM sensitivity, adjustable from
 // PAUSE (see #aim-sens-row in index.html / the click handlers below).
@@ -978,6 +983,21 @@ const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
 // as real input (this is the same class of bug ACTION-GAME's own gamepad
 // work already had to solve — see that project's "settle window" fix).
 const GAMEPAD_SETTLE_MS = 350;
+// GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT: rear-left/rear-right must behave
+// as a pure ALIAS of physical LB(4)/RB(5) — never a separate action — per
+// explicit spec ("do NOT guess Web Gamepad API button indices... build a
+// DEBUG facility using navigator.getGamepads() first"). This environment
+// has no physical Nova Lite 2 attached (a cloud sandbox — see the
+// completion report), so these stay `null` (undiscovered/disabled) rather
+// than a guessed index: with both null, logicalLB/logicalRB below reduce to
+// exactly the existing physical-only behavior (byte-identical to before
+// this round), so shipping this with nulls changes nothing for every
+// existing controller (including the original GameSir Nova Lite). Once a
+// real device confirms independent indices via the new GAMEPAD/BACK LEFT/
+// BACK RIGHT DEBUG fields (see pollGamepad()), fill in the two indices
+// here — nothing else needs to change.
+const GAMEPAD_BACK_LEFT_INDEX = null;
+const GAMEPAD_BACK_RIGHT_INDEX = null;
 // 15TH ROUND (items 29-34): FOCUS's activation moved off LB (which was
 // double-booked with RELOAD — see edge(4)'s own comment below) onto a
 // RIGHT-STICK-CLICK (R3, standard-mapping button 11) HOLD, so a quick tap
@@ -1382,6 +1402,23 @@ const ENEMY_LANE_TRACK_MULT = {
   adam: 0.55,
 };
 
+// BUGFIX ROUND (spec section 2): DRONE was reading as a stationary/
+// near-stationary "turret" on real device. Root cause: DRONE's e.laneTarget
+// (see updateEnemyFacing()) was driven ENTIRELY by clamp(diff*0.12,-70,70)
+// where diff is the player's own screen-X offset — i.e. DRONE was always
+// just re-centering on wherever the player already stood (a target that
+// tracks you IS a target that looks stationary relative to your own aim).
+// Fix: DRONE now gets its own independent, continuous WEST<->CENTER<->EAST
+// sinusoidal patrol driving e.laneTarget instead, completely decoupled from
+// player position ("must NOT fully home on player's X position" — spec's
+// own wording) — same ±70 lane-unit range already confirmed safe/on-screen
+// for the old player-tracking clamp, just now a pure function of time via
+// Math.sin(), so it's smooth and continuous with no reversal snap. Every
+// other enemy type's laneTarget logic (including its own attack-sway
+// layered on top for ROID1/ROID2) is completely untouched.
+const DRONE_PATROL_LANE_AMPLITUDE_PX = 70;
+const DRONE_PATROL_PERIOD_MS = 6000; // one full west->center->east->center->west sweep
+
 // 11TH ROUND (items 15-16, 34): investigated first — before this round,
 // EVERY non-claw type (roid1/roid2/adamSphere/drone) shared byte-identical
 // idle-recheck timing (the ONLY thing that actually controls "how often a
@@ -1605,6 +1642,19 @@ const r10DebugState = DEBUG_MODE ? {
   // actually written to the log ('INPUT', 'COVER', 'RELOADING', 'NO AMMO',
   // 'COOLDOWN', or 'FIRED').
   lastFireLogReason: null,
+  // GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT: written every poll from
+  // pollGamepad() (DEBUG_MODE-gated there) — see r10CollectSnapshot()'s
+  // `gamepadRaw`/`chord` groups for how the panel/COPY DEBUG read this.
+  // rawButtonStates is the EMPIRICAL DISCOVERY facility itself (spec's own
+  // explicit requirement, "never guess indices") — every button's raw
+  // pressed/value, refreshed every poll, so a real-device tester can watch
+  // which index changes when the rear-left/rear-right buttons are
+  // physically pressed and fill in GAMEPAD_BACK_LEFT/RIGHT_INDEX above.
+  rawButtonStates: [],
+  gamepadId: '-', gamepadMapping: '-', gamepadButtonCount: 0,
+  lbPhysicalPressed: false, rbPhysicalPressed: false,
+  lbLogicalPressed: false, rbLogicalPressed: false,
+  lbRbChordActive: false, lbRbChordConsumedAction: '-',
 } : null;
 
 // Event-driven only (FIRE input, shot created/rejected, hit, miss, damage
@@ -1660,8 +1710,41 @@ function r10CollectSnapshot(ts) {
       roid1Defeated: state.history.roid1Defeated, roid2Defeated: state.history.roid2Defeated,
       adamSphereDefeated: state.history.adamSphereDefeated, gabrielClearedWell: state.history.gabrielClearedWell,
       finalBattleQueued: state.history.finalBattleQueued,
-      endingBgmCurrentTime: endingBgmAudioEl ? Number(endingBgmAudioEl.currentTime.toFixed(1)) : 0 },
+      endingBgmCurrentTime: endingBgmAudioEl ? Number(endingBgmAudioEl.currentTime.toFixed(1)) : 0,
+      // BUGFIX ROUND (spec section 29): AUTO FLOW vs MANUAL OVERRIDE +
+      // GAME OVER diagnostic fields.
+      gameMode: state.gameMode,
+      manualSelectionActive: state.run.manualOverrideActive,
+      manualSelectedMode: state.enemySelect === 'auto' ? 'auto' : state.gameMode,
+      manualSelectedEnemy: state.enemySelect,
+      currentEnemy: e.type,
+      nextEnemy: state.run.introEnemyType,
+      previousEnemyType: state.history.previousEnemy || '-',
+      playerHp: p.hp,
+      clearSequencePhase: state.clearSequence.phase,
+      gameOverTriggered: state.run.gameOverTriggered,
+      gameOverReason: state.run.gameOverReason || '-',
+      lastTransition: state.run.lastTransition || '-',
+      lastTransitionAt: Math.round(state.run.lastTransitionAt || 0) },
     clearSeq: { active: state.clearSequence.active, phase: state.clearSequence.phase, reason: state.clearSequence.reason || '-' },
+    // BUGFIX ROUND (spec section 29): AIM boundary diagnostics — the single
+    // getCombatAimSouthLimit() shared source of truth, plus what AIM/FOCUS
+    // actually resolved to this frame, so any future "aim overlapping
+    // player" regression is immediately visible in DEBUG rather than
+    // needing a fresh repro.
+    aim: (() => {
+      const southLimit = getCombatAimSouthLimit();
+      const rect = computePlayerDrawRect();
+      const pt = getAimPoint();
+      return {
+        aimX: Math.round(pt.x), aimY: Math.round(pt.y),
+        aimSouthLimit: Math.round(southLimit),
+        playerDrawRectTop: Math.round(rect.topY),
+        aimClamped: pt.y >= southLimit - 0.5,
+        focusTarget: p.autoAimActive ? Math.round(p.aimLiveX) + ',' + Math.round(p.aimLiveY) : '-',
+        focusValid: p.autoAimActive ? pt.y <= southLimit + 0.5 : true,
+      };
+    })(),
     player: { x: Math.round(p.strafeOffset), facing: p.facing, hp: p.hp, maxHp: PLAYER_MAX_HP,
       cover: isPlayerInCover(), coverFacing: p.coverFacing, dash: dashActive,
       // 10TH ROUND (item 56): move direction/walk frame/dash direction + which
@@ -1829,6 +1912,23 @@ function r10CollectSnapshot(ts) {
       touchGestureAt: Math.round(state.touchGestureReceivedAt), audioUnlockedAt: Math.round(state.audioUnlockedAt),
       bgmPlayAttempts: state.bgmPlayAttempts, lastBgmPlayErrorName: state.lastBgmPlayErrorName,
       lastBgmPlayErrorAt: Math.round(state.lastBgmPlayErrorAt),
+      // GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT (spec item 12): mapping,
+      // buttonCount, and the empirical raw-button dump — the actual
+      // discovery facility a real-device tester reads to identify the rear
+      // buttons' indices.
+      mapping: d.gamepadMapping, buttonCount: d.gamepadButtonCount,
+      rawButtons: d.rawButtonStates.map((rb) => rb.i + ':' + (rb.pressed ? 'P' : '-') + (rb.value ? '(' + rb.value + ')' : '')).join(' '),
+    },
+    // GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT: LB/RB physical-vs-logical +
+    // rear-button detection + chord fields, spec item 12.
+    lbRb: {
+      lbPhysicalIndex: 4, lbPhysicalPressed: d.lbPhysicalPressed, lbLogicalPressed: d.lbLogicalPressed,
+      rbPhysicalIndex: 5, rbPhysicalPressed: d.rbPhysicalPressed, rbLogicalPressed: d.rbLogicalPressed,
+      backLeftDetected: GAMEPAD_BACK_LEFT_INDEX != null, backLeftIndex: GAMEPAD_BACK_LEFT_INDEX,
+      backLeftPressed: GAMEPAD_BACK_LEFT_INDEX != null && !!(d.rawButtonStates[GAMEPAD_BACK_LEFT_INDEX] && d.rawButtonStates[GAMEPAD_BACK_LEFT_INDEX].pressed),
+      backRightDetected: GAMEPAD_BACK_RIGHT_INDEX != null, backRightIndex: GAMEPAD_BACK_RIGHT_INDEX,
+      backRightPressed: GAMEPAD_BACK_RIGHT_INDEX != null && !!(d.rawButtonStates[GAMEPAD_BACK_RIGHT_INDEX] && d.rawButtonStates[GAMEPAD_BACK_RIGHT_INDEX].pressed),
+      chordActive: d.lbRbChordActive, chordConsumedAction: d.lbRbChordConsumedAction,
     },
     // ADDENDUM item 9: the FULL ring buffer (up to 60 entries), oldest
     // first — COPY DEBUG must never truncate this, unlike the on-screen
@@ -1853,7 +1953,13 @@ function r10UpdateDebugPanel(ts) {
     ' dir=' + s.runFlow.evacuateDirection +
     '\n prevEnemy=' + s.runFlow.previousEnemy + ' result=' + s.runFlow.previousBattleResult +
     ' drone=' + s.runFlow.droneDefeatCount + '/' + s.runFlow.droneIntroTarget +
-    ' defeated=[' + s.runFlow.defeatedEnemies + ']';
+    ' defeated=[' + s.runFlow.defeatedEnemies + ']' +
+    // BUGFIX ROUND (spec section 29): AUTO FLOW vs MANUAL OVERRIDE + GAME
+    // OVER fields, on-screen (not just COPY DEBUG's clipboard text).
+    '\n manual=' + s.runFlow.manualSelectionActive + '(' + s.runFlow.manualSelectedMode + '/' + s.runFlow.manualSelectedEnemy + ')' +
+    ' cur=' + s.runFlow.currentEnemy + ' next=' + s.runFlow.nextEnemy +
+    '\n gameOver=' + s.runFlow.gameOverTriggered + '(' + s.runFlow.gameOverReason + ')' +
+    ' lastTr=' + s.runFlow.lastTransition;
 
   r10DbgPlayerEl.textContent = 'PLAYER x=' + s.player.x + ' facing=' + s.player.facing +
     ' hp=' + s.player.hp + '/' + s.player.maxHp +
@@ -1890,7 +1996,11 @@ function r10UpdateDebugPanel(ts) {
 
   // 30TH ROUND item 29: FOCUS/ESCAPE DECOY/DRONE WAVE — all new this round.
   r10DbgFocusEl.textContent = 'FOCUS effectiveHit=' + s.focus.effectiveHit + ' aimColor=' + s.focus.aimColor +
-    ' target=' + s.focus.targetX + ',' + s.focus.targetY + ' distMult=' + s.focus.distMult;
+    ' target=' + s.focus.targetX + ',' + s.focus.targetY + ' distMult=' + s.focus.distMult +
+    // BUGFIX ROUND (spec section 29): AIM south-boundary diagnostics —
+    // shares this row rather than adding a new DOM element.
+    '\n AIM=' + s.aim.aimX + ',' + s.aim.aimY + ' southLimit=' + s.aim.aimSouthLimit +
+    ' playerTop=' + s.aim.playerDrawRectTop + ' clamped=' + s.aim.aimClamped + ' focusValid=' + s.aim.focusValid;
   r10DbgDecoyEl.textContent = 'ESCAPE DECOY applicable=' + s.decoy.applicable + ' active=' + s.decoy.active +
     ' side=' + s.decoy.side + ' remainMs=' + s.decoy.remainMs;
   r10DbgDroneWaveEl.textContent = 'DRONE WAVE active=' + s.droneWave.active + ' wave2Triggered=' + s.droneWave.wave2Triggered +
@@ -1908,7 +2018,16 @@ function r10UpdateDebugPanel(ts) {
     '\n poll=' + s.gamepad.pollingActive + ' uiIn=' + s.gamepad.uiInputEnabled + ' playIn=' + s.gamepad.gameplayInputEnabled +
     ' settle=' + s.gamepad.settleActive +
     '\n lastBtn=' + s.gamepad.lastButton + '@' + s.gamepad.lastInputAt +
-    ' touch@' + s.gamepad.touchGestureAt + ' audio@' + s.gamepad.audioUnlockedAt;
+    ' touch@' + s.gamepad.touchGestureAt + ' audio@' + s.gamepad.audioUnlockedAt +
+    // GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT: mapping/buttonCount + LB/RB
+    // physical-vs-logical + rear-button detection + chord, spec item 12.
+    '\n mapping=' + s.gamepad.mapping + ' buttons=' + s.gamepad.buttonCount +
+    '\n LB phys=' + s.lbRb.lbPhysicalPressed + ' log=' + s.lbRb.lbLogicalPressed +
+    ' RB phys=' + s.lbRb.rbPhysicalPressed + ' log=' + s.lbRb.rbLogicalPressed +
+    '\n BACK-L det=' + s.lbRb.backLeftDetected + '@' + s.lbRb.backLeftIndex + '=' + s.lbRb.backLeftPressed +
+    ' BACK-R det=' + s.lbRb.backRightDetected + '@' + s.lbRb.backRightIndex + '=' + s.lbRb.backRightPressed +
+    '\n CHORD active=' + s.lbRb.chordActive + ' consumed=' + s.lbRb.chordConsumedAction +
+    '\n rawButtons: ' + s.gamepad.rawButtons;
 
   const lines = s.log.slice(-16).reverse().map((en) => en.t.toFixed(0) + ' ' + en.text);
   r10DbgLogEl.textContent = lines.join('\n');
@@ -1943,6 +2062,19 @@ function r10FormatDebugText(s) {
     ' adamSphereDefeated=' + s.runFlow.adamSphereDefeated + ' gabrielClearedWell=' + s.runFlow.gabrielClearedWell);
   lines.push('finalBattleQueued: ' + s.runFlow.finalBattleQueued);
   lines.push('endingBgmCurrentTime: ' + s.runFlow.endingBgmCurrentTime + 's');
+  // BUGFIX ROUND (spec section 29): AUTO FLOW vs MANUAL OVERRIDE + GAME
+  // OVER diagnostic fields.
+  lines.push('gameMode: ' + s.runFlow.gameMode + ' manualSelectionActive: ' + s.runFlow.manualSelectionActive);
+  lines.push('manualSelectedMode: ' + s.runFlow.manualSelectedMode + ' manualSelectedEnemy: ' + s.runFlow.manualSelectedEnemy);
+  lines.push('currentEnemy: ' + s.runFlow.currentEnemy + ' nextEnemy: ' + s.runFlow.nextEnemy);
+  lines.push('playerHp: ' + s.runFlow.playerHp + ' clearSequencePhase: ' + s.runFlow.clearSequencePhase);
+  lines.push('gameOverTriggered: ' + s.runFlow.gameOverTriggered + ' gameOverReason: ' + s.runFlow.gameOverReason);
+  lines.push('lastTransition: ' + s.runFlow.lastTransition + ' (' + s.runFlow.lastTransitionAt + ')');
+  lines.push('');
+  lines.push('AIM BOUNDARY');
+  lines.push('aim: ' + s.aim.aimX + ',' + s.aim.aimY + ' southLimit: ' + s.aim.aimSouthLimit);
+  lines.push('playerDrawRectTop: ' + s.aim.playerDrawRectTop + ' aimClamped: ' + s.aim.aimClamped);
+  lines.push('focusTarget: ' + s.aim.focusTarget + ' focusValid: ' + s.aim.focusValid);
   lines.push('');
   lines.push('PLAYER');
   lines.push('position: x=' + s.player.x);
@@ -2054,6 +2186,17 @@ function r10FormatDebugText(s) {
   lines.push('bgmPlayAttempts: ' + s.gamepad.bgmPlayAttempts);
   lines.push('lastBgmPlayErrorName: ' + s.gamepad.lastBgmPlayErrorName);
   lines.push('lastBgmPlayErrorAt: ' + s.gamepad.lastBgmPlayErrorAt);
+  lines.push('mapping: ' + s.gamepad.mapping + ' buttonCount: ' + s.gamepad.buttonCount);
+  lines.push('');
+  lines.push('GAMESIR NOVA LITE 2 REAR-BUTTON');
+  lines.push('LB physicalIndex=4 physicalPressed=' + s.lbRb.lbPhysicalPressed + ' logicalPressed=' + s.lbRb.lbLogicalPressed);
+  lines.push('RB physicalIndex=5 physicalPressed=' + s.lbRb.rbPhysicalPressed + ' logicalPressed=' + s.lbRb.rbLogicalPressed);
+  lines.push('BACK LEFT: detected=' + s.lbRb.backLeftDetected + ' index=' + s.lbRb.backLeftIndex + ' pressed=' + s.lbRb.backLeftPressed + ' alias=LB');
+  lines.push('BACK RIGHT: detected=' + s.lbRb.backRightDetected + ' index=' + s.lbRb.backRightIndex + ' pressed=' + s.lbRb.backRightPressed + ' alias=RB');
+  lines.push('CHORD: logicalLB=' + s.lbRb.lbLogicalPressed + ' logicalRB=' + s.lbRb.rbLogicalPressed +
+    ' lbRbChord=' + s.lbRb.chordActive + ' consumedAction=' + s.lbRb.chordConsumedAction);
+  lines.push('RAW BUTTON STATES (empirical discovery — press rear-left/rear-right and see which index changes):');
+  lines.push(s.gamepad.rawButtons || '(no gamepad connected)');
   lines.push('');
   lines.push('=== EVENT LOG (' + s.log.length + ' entries) ===');
   if (s.log.length === 0) {
@@ -3053,7 +3196,12 @@ const state = {
     // -1 (west) or 1 (east); x/y are recomputed every frame in
     // updateEscapeDecoy() so it visually tracks alongside the player at a
     // fixed lateral screen offset rather than a static world point.
-    decoy: { active: false, side: 0, x: 0, y: 0, until: 0 },
+    // BUGFIX ROUND (spec sections 17-18): visualUntil is a SEPARATE, purely
+    // cosmetic timer added alongside the existing `until` — the decoy's own
+    // gameplay-effect (LOCK-tracking target-override) duration, read via
+    // `active`/`until` by playerOrDecoyMarkerPos() below, is completely
+    // untouched by this. Only renderEscapeDecoy() reads visualUntil.
+    decoy: { active: false, side: 0, x: 0, y: 0, until: 0, visualUntil: 0 },
     // METROPOLIS COLLAPSE state — see the COLLAPSE_* constants and
     // updateEscapeCollapse()/renderCollapseObstacles() for the full design
     // rationale. phase: 'idle'|'quake'|'obstacles'|'recover'. 26TH ROUND
@@ -3231,6 +3379,22 @@ const state = {
     isFinalCombat: false,
     enemyRevealed: false, // COMBAT_INTRO: false during the ~2s empty-stage beat, true once the enemy has materialized
     endingBgmStarted: false,
+    // BUGFIX ROUND (spec sections 9-13): true for exactly one
+    // decideNextRunStep() call after a Pause Menu manual MODE/ENEMY
+    // override — see selectEnemy()/the pause-menu gamemode handler for
+    // where this is set, and decideNextRunStep() for where it's consumed.
+    manualOverrideActive: false,
+    // BUGFIX ROUND (spec section 8/29): set by triggerGameOver() itself —
+    // surfaced in the DEBUG panel and the required GAME OVER TRIGGER log.
+    gameOverTriggered: false,
+    gameOverReason: null,
+    // BUGFIX ROUND (spec section 29): last named RUN FLOW transition + when,
+    // for the DEBUG panel — written by markRunTransition() at each of the
+    // handful of decision points most relevant to the reported bugs
+    // (manual override, decideNextRunStep()'s auto-progression branches,
+    // GAME OVER). Diagnostic only, never read by gameplay logic.
+    lastTransition: null,
+    lastTransitionAt: 0,
   },
 
   // RUN FLOW: overall run progress, expressed as "distance to the exit"
@@ -3681,6 +3845,40 @@ function pollGamepad(now) {
     const prev = state.prevButtons;
     const pressed = (i) => !!(b[i] && b[i].pressed);
     const edge = (i) => pressed(i) && !prev[i];
+    // GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT: single normalization point
+    // (spec's own explicit requirement — "never scattered as separate
+    // back-button conditionals throughout gameplay logic"). logicalLB/RB OR
+    // the physical button with its rear-button alias (GAMEPAD_BACK_LEFT/
+    // RIGHT_INDEX — both null in this build, see that constant's own
+    // comment, which makes this reduce to plain pressed(4)/pressed(5) with
+    // zero behavior change until real indices are confirmed and filled in).
+    // logicalEdge uses the SAME prev[] array every other edge() call reads
+    // (both raw indices' previous states), integrating into the existing
+    // prevButtons/settle/re-arm machinery rather than a parallel tracker,
+    // and its OR-before-compare shape is what prevents a double-edge when
+    // physical and rear are held together (spec item 8): the instant EITHER
+    // one is already down, "was pressed" is already true, so the other
+    // coming down later never produces a second rising edge.
+    const logicalPressed = (physicalIdx, backIdx) => pressed(physicalIdx) || (backIdx != null && pressed(backIdx));
+    const logicalWasPressed = (physicalIdx, backIdx) => !!prev[physicalIdx] || (backIdx != null && !!prev[backIdx]);
+    const logicalEdge = (physicalIdx, backIdx) => logicalPressed(physicalIdx, backIdx) && !logicalWasPressed(physicalIdx, backIdx);
+    const logicalLB = logicalPressed(4, GAMEPAD_BACK_LEFT_INDEX);
+    const logicalRB = logicalPressed(5, GAMEPAD_BACK_RIGHT_INDEX);
+    const logicalEdgeLB = logicalEdge(4, GAMEPAD_BACK_LEFT_INDEX);
+    const logicalEdgeRB = logicalEdge(5, GAMEPAD_BACK_RIGHT_INDEX);
+    // GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT (spec item 12): required
+    // DEBUG MODE fields, refreshed every real (non-settling) poll.
+    if (DEBUG_MODE) {
+      const d = r10DebugState;
+      d.gamepadId = gp.id || '-';
+      d.gamepadMapping = gp.mapping || '(non-standard)';
+      d.gamepadButtonCount = b.length;
+      d.rawButtonStates = Array.from(b, (btn, i) => ({ i, pressed: !!(btn && btn.pressed), value: btn && typeof btn.value === 'number' ? Number(btn.value.toFixed(2)) : 0 }));
+      d.lbPhysicalPressed = pressed(4);
+      d.rbPhysicalPressed = pressed(5);
+      d.lbLogicalPressed = logicalLB;
+      d.rbLogicalPressed = logicalRB;
+    }
     // 29TH ROUND item 11: X RESUME consume/re-arm — once X (button 2) closes
     // PAUSE, this clears itself only once button 2 is physically released
     // (never on a timer), so a single X press can never ALSO register as a
@@ -3889,11 +4087,12 @@ function pollGamepad(now) {
       // COLLAPSE_JUMP_COMBO_WINDOW_MS still registers as JUMP regardless of
       // which of the two physically lands first.
       const es = state.escape;
-      if (edge(4)) es.lbDownAt = now || 0;
-      if (edge(5)) es.rbDownAt = now || 0;
+      if (logicalEdgeLB) es.lbDownAt = now || 0;
+      if (logicalEdgeRB) es.rbDownAt = now || 0;
       if (es.lbDownAt && es.rbDownAt && Math.abs(es.lbDownAt - es.rbDownAt) <= COLLAPSE_JUMP_COMBO_WINDOW_MS) {
         es.actions.jump = true;
         es.lbDownAt = 0; es.rbDownAt = 0;
+        if (DEBUG_MODE) { r10DebugState.lbRbChordActive = true; r10DebugState.lbRbChordConsumedAction = 'JUMP'; }
       } else {
         // 30TH ROUND items 19-21: RB alone = EAST DECOY, LB alone = WEST
         // DECOY — but only once fired NEITHER can still turn into the
@@ -3906,8 +4105,14 @@ function pollGamepad(now) {
         // to 0 immediately below once the window elapses (whether decoy
         // fired or the press was released), so this can only fire once per
         // physical press — no separate "already fired" flag needed.
-        if (es.lbDownAt && (now || 0) - es.lbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.actions.westDecoy = true;
-        if (es.rbDownAt && (now || 0) - es.rbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.actions.eastDecoy = true;
+        if (es.lbDownAt && (now || 0) - es.lbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) {
+          es.actions.westDecoy = true;
+          if (DEBUG_MODE) { r10DebugState.lbRbChordActive = false; r10DebugState.lbRbChordConsumedAction = 'WEST_DECOY'; }
+        }
+        if (es.rbDownAt && (now || 0) - es.rbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) {
+          es.actions.eastDecoy = true;
+          if (DEBUG_MODE) { r10DebugState.lbRbChordActive = false; r10DebugState.lbRbChordConsumedAction = 'EAST_DECOY'; }
+        }
       }
       if (es.lbDownAt && (now || 0) - es.lbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.lbDownAt = 0;
       if (es.rbDownAt && (now || 0) - es.rbDownAt > COLLAPSE_JUMP_COMBO_WINDOW_MS) es.rbDownAt = 0;
@@ -4006,7 +4211,7 @@ function pollGamepad(now) {
     gpAim.x = applyAimCurve(gp.axes[2] || 0);
     gpAim.y = applyAimCurve(gp.axes[3] || 0);
 
-    gpFire = pressed(5);                            // RB = FIRE
+    gpFire = logicalRB;                             // RB (or GameSir Nova Lite 2 rear-right alias) = FIRE
     // 15TH ROUND (items 29-34): FOCUS is now a RIGHT-STICK-CLICK (R3,
     // button 11) HOLD — pressed(11) alone is a raw instantaneous read, so
     // r3HoldStartAt tracks the REAL wall-clock moment R3 was first pressed
@@ -4034,7 +4239,7 @@ function pollGamepad(now) {
     // PURELY a RELOAD trigger with no second duty at all (the 10TH ROUND's
     // "LB is held for FOCUS but an edge for RELOAD, not mutually exclusive"
     // note no longer applies — there is nothing left to be exclusive with).
-    if (edge(4)) state.actions.reload = true;         // LB = RELOAD (primary)
+    if (logicalEdgeLB) state.actions.reload = true;   // LB (or GameSir Nova Lite 2 rear-left alias) = RELOAD (primary)
     if (edge(10)) state.actions.reload = true;        // L3 = RELOAD (legacy, kept working)
     // 4th round: Start/Menu (standard mapping button 9) toggles PAUSE —
     // previously unused. Touch's own on-screen PAUSE button is unaffected.
@@ -4196,6 +4401,17 @@ function setGameMode(mode) {
     state.clearSequence.active = false;
     state.clearSequence.phase = 'idle';
   }
+  // BUGFIX ROUND (spec section 9-11, Bug D): manually switching GAME MODE
+  // from the Pause Menu used to leave state.run.phase completely stale
+  // (e.g. still 'COMBAT'/'COMBAT_INTRO' after switching to ESCAPE), which
+  // left the automatic RUN FLOW dispatch fighting the manual choice and,
+  // per the confirmed real-device report, produced a spurious GAME OVER
+  // shortly after Resume even though PLAYER HP was still positive. Forcing
+  // state.run.phase to match the freshly-selected mode (same helper used by
+  // selectEnemy()) keeps run.phase/gameMode/timer/clearSequence consistent
+  // with the manual choice and stops any in-flight transitional phase from
+  // overwriting it on a later tick.
+  applyManualRunOverride(performance.now());
 }
 
 document.querySelectorAll('.theme-btn').forEach((btn) => {
@@ -4669,15 +4885,20 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
   const p = state.player;
   const strafeOffsetAtFrameStart = p.strafeOffset;
 
-  // 30TH ROUND item 4: while genuinely continuous-firing (isPlayerActively
-  // Firing(), computed once in frame() before this call — reads only state
-  // already settled before this frame's own fireWeapon() runs, so it can
-  // never see stale mid-frame data), LEFT STICK/D-PAD MOVE (both strafe
-  // below and the forward/back walk further down) is locked — RIGHT STICK
-  // AIM+SPOTLIGHT is untouched (computed separately in frame(), never routed
-  // through moveX/moveY), and DASH actions are also untouched (evasive tech,
-  // not the "running while firing" case the spec targets).
-  if (moveLocked) { moveX = 0; moveY = 0; }
+  // BUGFIX ROUND (spec sections 3-4) SUPERSEDES 30TH ROUND item 4's old
+  // "continuous FIRE locks ALL movement" rule below — the new explicit spec
+  // is the opposite relationship for EAST/WEST: "横方向の移動は射撃可能"
+  // (lateral move+fire must both work simultaneously), so moveX must never
+  // be zeroed by moveLocked any more. NORTH/SOUTH keeps its old-round
+  // "can't walk depth while continuously firing" FEEL, but is now
+  // implemented as the mirror rule ("depth move BLOCKS fire", enforced in
+  // fireWeapon() via state.input.moveY, not "fire blocks depth move" here)
+  // so a player who starts walking N/S while holding RB keeps walking (WALK
+  // sprite intact, spec section 4) and simply stops generating shots,
+  // rather than freezing in place mid-stride. moveLocked (isPlayerActively
+  // Firing()) is therefore unused for movement now — kept as a parameter
+  // only so the frame() call site needs no signature change.
+  void moveLocked;
 
   // WEST/EAST strafe (continuous, D-PAD/touch)
   p.strafeOffset += moveX * STRAFE_SPEED * dt;
@@ -4866,7 +5087,14 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     const baseX = state.centerX + p.strafeOffset;
     const baseY = state.horizonY + state.cssH * 0.06;
     const targetLiveX = clamp(hitPt.x - baseX - p.aimManualOffsetX, -AIM_RANGE, AIM_RANGE);
-    const targetLiveY = clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE);
+    // BUGFIX ROUND (spec section 26): FOCUS must never pull AIM/SPOTLIGHT to
+    // a target that resolves in front of the player — clamped here against
+    // the SAME getCombatAimSouthLimit() every other AIM consumer reads, on
+    // top of (not instead of) getAimPoint()'s own final render-time clamp,
+    // so the crosshair can never even visibly APPROACH the player sprite
+    // while FOCUS is converging, not just get stopped right at the edge.
+    const maxTargetLiveY = getCombatAimSouthLimit() - baseY - p.aimManualOffsetY;
+    const targetLiveY = Math.min(clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE), maxTargetLiveY);
     const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
     p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
     p.aimLiveY += (targetLiveY - p.aimLiveY) * approachT;
@@ -5100,11 +5328,18 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     if (imgReady(frameNow.img)) {
       const ghostCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
       const ghostRect = computeEscapePlayerDrawRect(ghostCx, bottomYNow, frameNow, es.depthPos, es.dashScalePulse);
-      es.afterimages.push({
+      // BUGFIX ROUND (spec section 16): a fast double-tap (two DASH presses
+      // within ESCAPE_AFTERIMAGE_MS of each other) used to leave BOTH old
+      // and new ghosts in the array simultaneously (push() never cleared
+      // it) — exactly the reported "2+ overlapping ghosts" bug. Single-slot
+      // now, matching how state.escape.decoy already works: a new dash
+      // always fully replaces whatever ghost was still fading, so at most
+      // one can ever be on screen.
+      es.afterimages = [{
         img: frameNow.img, dx: ghostRect.dx, dy: ghostRect.dy, drawW: ghostRect.drawW, drawH: ghostRect.drawH,
         until: now + ESCAPE_AFTERIMAGE_MS, angleRad: afterimageAngleRad,
         anchorX: ghostCx, anchorY: bottomYNow, // 30TH ROUND item 11: real tire/ground-contact pivot point
-      });
+      }];
     }
     p.strafeOffset = newStrafeOffset;
     p.invincibleUntil = now + ESCAPE_DASH_BLINK_MS;
@@ -5952,8 +6187,13 @@ function playerMarkerPos() {
 function updateEscapeDecoy(dt, now, escActions) {
   const es = state.escape;
   const d = es.decoy;
-  if (escActions.westDecoy) { d.active = true; d.side = -1; d.until = now + DECOY_DURATION_MS; }
-  if (escActions.eastDecoy) { d.active = true; d.side = 1; d.until = now + DECOY_DURATION_MS; }
+  // BUGFIX ROUND (spec sections 17-18): visualUntil is HALF of the real
+  // gameplay effect duration ("表示時間を約50%短縮... ロックオン誘導効果の
+  // 時間は変更しない") — d.until/d.active (read by playerOrDecoyMarkerPos()
+  // for the actual target-override) still gets the full, unchanged
+  // DECOY_DURATION_MS.
+  if (escActions.westDecoy) { d.active = true; d.side = -1; d.until = now + DECOY_DURATION_MS; d.visualUntil = now + DECOY_DURATION_MS / 2; }
+  if (escActions.eastDecoy) { d.active = true; d.side = 1; d.until = now + DECOY_DURATION_MS; d.visualUntil = now + DECOY_DURATION_MS / 2; }
   if (d.active && now >= d.until) { d.active = false; }
   if (d.active) {
     const m = playerMarkerPos();
@@ -6033,7 +6273,14 @@ function updateEnemyFacing(dt, now) {
     }
   }
 
-  e.laneTarget = clamp(diff * 0.12, -70, 70);
+  if (e.type === 'drone') {
+    // BUGFIX ROUND (spec section 2): pure time-driven patrol, never a
+    // function of player position — see DRONE_PATROL_*'s own comment.
+    const patrolPhase = (now % DRONE_PATROL_PERIOD_MS) / DRONE_PATROL_PERIOD_MS;
+    e.laneTarget = Math.sin(patrolPhase * Math.PI * 2) * DRONE_PATROL_LANE_AMPLITUDE_PX;
+  } else {
+    e.laneTarget = clamp(diff * 0.12, -70, 70);
+  }
   // 12TH ROUND (items 36-40): this diff-driven laneTarget/lane pair was
   // ALREADY real PLAYER-X-axis tracking for every enemy type (this function
   // runs unconditionally for all 6 in updateEnemy()) — what was missing was
@@ -6957,12 +7204,72 @@ function spawnEnemy(type) {
 // see ENEMY_IMPLEMENTED, investigated up front: none of the three have any
 // asset/AI/code in this repo) is refused with an on-screen notice rather
 // than fabricating a fight against an enemy that doesn't exist.
+// BUGFIX ROUND (spec sections 9-13): AUTO FLOW vs MANUAL OVERRIDE. Root
+// cause of "Pause MenuでROID2を選んだのにDRONEが出る" / "Pause Menuから
+// ROID1 ESCAPEを選ぶと突然GAME OVER": selectEnemy()/setGameMode() used to
+// write state.enemySelect/state.autoMode/state.gameMode directly and
+// nothing else — state.run.phase was left completely untouched. If the
+// automatic RUN FLOW happened to still be mid-COMBAT_INTRO (or any other
+// transitional phase) at that moment, its own still-running update
+// function (updateCombatIntroPhase() etc.) would spawn/overwrite the
+// enemy AGAIN on a later tick, silently reverting the manual choice — and
+// separately, state.gameMode being manually flipped to 'escape' while
+// state.run.phase stayed 'COMBAT'/'COMBAT_INTRO' left COMBAT-only timers/
+// checks (state.combat.timeLeftSec, the GAME OVER check's own assumptions)
+// running against a mode they were never designed to see, producing
+// spurious GAME OVERs. Fix: every manual entry point now calls this to
+// force state.run.phase to match the CURRENT state.gameMode directly (no
+// transitional phase survives a manual override) and marks
+// manualOverrideActive so decideNextRunStep() lets this manual pick stand
+// for its own encounter instead of immediately auto-advancing over it.
+// BUGFIX ROUND (spec section 29): stamps the DEBUG-only "last named RUN
+// FLOW transition" fields — diagnostic only, never read by gameplay logic.
+function markRunTransition(label, now) {
+  state.run.lastTransition = label;
+  state.run.lastTransitionAt = now;
+}
+
+function applyManualRunOverride(now) {
+  markRunTransition('MANUAL_OVERRIDE:' + state.gameMode, now);
+  const r = state.run;
+  r.manualOverrideActive = true;
+  r.isFinalCombat = false;
+  r.enemyRevealed = true; // no COMBAT_INTRO empty-stage/reveal beat for a manual jump
+  hideRunBanner();
+  state.combatQuake.shakeX = 0; state.combatQuake.shakeY = 0; // in case EVACUATION_WARNING's shake was mid-flight
+  if (state.gameMode === 'escape') {
+    r.phase = 'ESCAPE';
+  } else {
+    r.phase = 'COMBAT';
+    state.combat.timeLeftSec = COMBAT_TIME_LIMIT_SEC;
+    resetAimToCombatCenter(); // spec section 1: manual COMBAT entry skips COMBAT_INTRO entirely, so this is its only re-center point
+  }
+  r.phaseStartedAt = now;
+  // Section 9 investigation (manual ESCAPE+ROID1 -> unexpected GAME OVER
+  // shortly after Resume, HP still positive at the time of the report):
+  // spawnEnemy() (already called by selectEnemy() before this runs) resets
+  // e.attackState/nextIdleCheckAt fresh, so a stale PRE-pause attack timer
+  // is not the cause. What IS still true: the instant Resume happens, the
+  // freshly-spawned pursuit enemy is immediately live and (per
+  // updateEscapeEnemyPursuit()'s own now%PERIOD phase math) can start at
+  // ANY point in its near/far sweep — including already at its CLOSEST
+  // pursuit distance — with no equivalent of the automatic flow's
+  // MOUNT_TRANSITION cinematic beat to give the player a moment to get
+  // their bearings first. A short, one-shot invincibility/attack-hold grace
+  // window closes that gap without changing normal (non-manual) ESCAPE
+  // difficulty at all.
+  state.player.invincibleUntil = Math.max(state.player.invincibleUntil, now + 1200);
+  if (state.enemy.attackState === 'idle') state.enemy.nextIdleCheckAt = now + 2000;
+  if (DEBUG_MODE) r10DebugLog('RUN FLOW: MANUAL OVERRIDE applied, phase=' + r.phase + ' gameMode=' + state.gameMode);
+}
+
 function selectEnemy(type) {
   if (type === 'auto') {
     state.enemySelect = 'auto';
     state.autoMode.active = true;
     state.autoMode.index = 0;
     spawnEnemy(AUTO_SEQUENCE[0]);
+    applyManualRunOverride(performance.now());
     return;
   }
   if (!ENEMY_IMPLEMENTED[type]) {
@@ -6972,6 +7279,7 @@ function selectEnemy(type) {
   state.enemySelect = type;
   state.autoMode.active = false;
   spawnEnemy(type);
+  applyManualRunOverride(performance.now());
 }
 
 // PART 12: called once an enemy's death effect finishes while AUTO MODE is
@@ -8232,6 +8540,26 @@ function computePlayerDrawRect() {
   return { cx, bottomY, topY: bottomY - h, w, h };
 }
 
+// BUGFIX ROUND (spec sections 21-28): single shared source of truth for
+// "how far south (toward the camera/player) AIM/SPOTLIGHT/FOCUS/FIRE are
+// allowed to reach" — Canvas convention here is larger Y = further south =
+// closer to the player (see computePlayerDrawRect()'s own bottomY/topY),
+// so "never on top of the player" means never south of the player
+// sprite's OWN top edge. Recomputed fresh from computePlayerDrawRect()
+// every call (never a fixed canvasHeight*const) so it automatically tracks
+// whatever NORTH/SOUTH depth movement already did to the player's drawn
+// size/position this exact frame — moving NORTH shrinks+raises the sprite
+// (topY moves further north, i.e. smaller/more negative-ish), which
+// naturally WIDENS the AIM-reachable area; moving SOUTH does the reverse
+// and tightens it. getAimPoint(), getFlashlightCenter(), the FOCUS target
+// (updatePlayer()'s autoAimActive branch, via getEffectiveHitPoint()) and
+// fireWeapon()'s own independent shot-target safety check all read this
+// SAME function — never a separately-computed boundary anywhere else.
+function getCombatAimSouthLimit() {
+  const rect = computePlayerDrawRect();
+  return rect.topY - AIM_PLAYER_MARGIN_PX;
+}
+
 function fireWeapon(now) {
   const p = state.player;
   // 8TH ROUND: FIRE diagnostics — fireWeapon() is called every frame
@@ -8276,6 +8604,28 @@ function fireWeapon(now) {
     }
     return;
   }
+  // BUGFIX ROUND (spec sections 3-4): NORTH/SOUTH (depth, moveY) movement
+  // forbids firing entirely; EAST/WEST (lateral, moveX) movement — and
+  // standing still — both permit it. Checked directly against the raw
+  // input axis (not p.depthPos/p.scale, which ease toward a target and
+  // would let a shot slip through during the brief lag after the stick
+  // returns to neutral) so this can never disagree frame-to-frame with
+  // what actually drove that frame's movement. Since this returns before
+  // p.lastShotAt is ever stamped, renderPlayer()'s existing sprite-priority
+  // chain (FIRE pose checked before WALK pose) naturally falls through to
+  // the WALK sprite on its own — no separate visual-side fix needed for
+  // "logic and visuals must match exactly".
+  if (state.input.moveY !== 0) {
+    if (DEBUG_MODE) {
+      r10DebugState.fireRejectCount++;
+      r10DebugState.fireRejectReason = 'MOVING_DEPTH';
+      if (r10DebugState.lastFireLogReason !== 'MOVING_DEPTH') {
+        r10DebugLog('FIRE BLOCKED: MOVING_DEPTH');
+        r10DebugState.lastFireLogReason = 'MOVING_DEPTH';
+      }
+    }
+    return;
+  }
   if (p.reloading || p.ammo <= 0) {
     if (DEBUG_MODE) {
       r10DebugState.fireRejectCount++;
@@ -8298,15 +8648,34 @@ function fireWeapon(now) {
     }
     return;
   }
-  if (DEBUG_MODE) r10DebugState.lastFireLogReason = 'FIRED';
-  p.fireCooldownUntil = now + FIRE_COOLDOWN_MS;
-  p.ammo -= 1;
-  p.lastShotAt = now; // 7TH ROUND PART 15 — drives renderPlayer()'s synced fire-pose pulse
-
   const rect = computePlayerDrawRect();
   const muzzleX = rect.cx;
   const muzzleY = rect.topY + rect.h * MUZZLE_HEIGHT_FRAC;
   const aim = getAimPoint();
+  // BUGFIX ROUND (spec section 27): independent shot-generation safety
+  // check, on top of (not instead of) getAimPoint()'s own final clamp —
+  // reads the SAME shared getCombatAimSouthLimit() so this can never
+  // disagree with what the crosshair itself is doing. In normal play
+  // getAimPoint() already guarantees aim.y can't resolve south of the
+  // limit, so this should never actually trigger — it exists so that IF
+  // any future caller ever bypasses that clamp, shot generation is still
+  // independently blocked rather than silently damaging something in
+  // front of the player.
+  if (aim.y > getCombatAimSouthLimit()) {
+    if (DEBUG_MODE) {
+      r10DebugState.fireRejectCount++;
+      r10DebugState.fireRejectReason = 'TARGET_BEHIND_PLAYER';
+      if (r10DebugState.lastFireLogReason !== 'TARGET_BEHIND_PLAYER') {
+        r10DebugLog('FIRE BLOCKED: TARGET_BEHIND_PLAYER');
+        r10DebugState.lastFireLogReason = 'TARGET_BEHIND_PLAYER';
+      }
+    }
+    return;
+  }
+  if (DEBUG_MODE) r10DebugState.lastFireLogReason = 'FIRED';
+  p.fireCooldownUntil = now + FIRE_COOLDOWN_MS;
+  p.ammo -= 1;
+  p.lastShotAt = now; // 7TH ROUND PART 15 — drives renderPlayer()'s synced fire-pose pulse
 
   spawnParticle({ type: 'muzzle', x: muzzleX, y: muzzleY, born: now, until: now + 45 });
   const bullet = spawnBullet({ x1: muzzleX, y1: muzzleY, x2: aim.x, y2: aim.y, firedAt: now, resolveAt: now + BULLET_TRAVEL_MS });
@@ -8753,7 +9122,11 @@ function getFlashlightCenter() {
   const rawY = state.horizonY + state.cssH * 0.06 + p.aimManualOffsetY + p.lightPersistY;
   return {
     x: clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX),
-    y: clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX),
+    // BUGFIX ROUND (spec section 25): SPOTLIGHT must stop at the EXACT same
+    // south boundary as AIM (getCombatAimSouthLimit(), the single shared
+    // source of truth) so the two can never desync at the one place — near
+    // the player — where a mismatch would be most visible.
+    y: Math.min(clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX), getCombatAimSouthLimit()),
   };
 }
 
@@ -8793,6 +9166,14 @@ function getAimPoint() {
     x = light.x + dx * k;
     y = light.y + dy * k;
   }
+  // BUGFIX ROUND (spec sections 21-28): FINAL, unconditional safety clamp —
+  // applied AFTER every other adjustment above (screen-edge margin, LIGHT-
+  // circle containment) so nothing upstream can ever reintroduce a y south
+  // of the player. This is what makes "in front of the player" a genuinely
+  // unreachable GAME-SPACE coordinate, not just a draw-order trick that
+  // hides an otherwise-still-valid south-of-limit value (spec explicitly
+  // forbids the latter).
+  y = Math.min(y, getCombatAimSouthLimit());
   return { x, y };
 }
 
@@ -8854,6 +9235,18 @@ function renderStructure(s, theme) {
       break;
     }
     case 'grating': {
+      // BUGFIX ROUND (spec section 12): this is the SECOND render path
+      // producing the reported "small vertical tick marks" on ESCAPE's
+      // front row — floor-height short vertical bars (moveTo/lineTo pairs
+      // below), drawn at almost the SAME CORRIDOR_FLOOR_Y as floorSeam's
+      // own plain line, which is exactly the "| | | | |" pattern
+      // real-device testing found sitting on top of/right next to the
+      // intended plain "──────" line. 'grating' is a SHARED (not
+      // escape-exclusive) structure kind also used by LAB/ARMORED, where
+      // it was never reported as a problem (busier scenes absorb it — same
+      // reasoning as the earlier 'pipe' LAB-only gate above) — so only
+      // ESCAPE is gated off here, LAB/ARMORED grating is untouched.
+      if (state.theme === 'escape') break;
       const crawlZg = (state.timeSec * AMBIENT_FLOOR_CRAWL_SPEED) % AMBIENT_FLOOR_CRAWL_SPACING.grating;
       const gz = s.z - crawlZg;
       const l = project(-half * 0.7, CORRIDOR_FLOOR_Y * 0.98, gz);
@@ -9098,19 +9491,17 @@ function renderStructure(s, theme) {
       break;
     }
     case 'escapeStrip': {
-      if (state.theme !== 'escape') break;
-      if (Math.sin(state.timeSec * 4 + s.phase) <= -0.2) break;
-      const l = project(-half * 0.85, CORRIDOR_FLOOR_Y * 0.995, s.z);
-      const r = project(-half * 0.7, CORRIDOR_FLOOR_Y * 0.995, s.z);
-      const l2 = project(half * 0.7, CORRIDOR_FLOOR_Y * 0.995, s.z);
-      const r2 = project(half * 0.85, CORRIDOR_FLOOR_Y * 0.995, s.z);
-      ctx.save();
-      ctx.strokeStyle = theme.warn;
-      ctx.globalAlpha = Math.min(1, l.scale * 1.6);
-      ctx.lineWidth = Math.max(1, 3 * l.scale);
-      ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(r.x, r.y); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(l2.x, l2.y); ctx.lineTo(r2.x, r2.y); ctx.stroke();
-      ctx.restore();
+      // BUGFIX ROUND (spec section 12): this repeated pair of short
+      // blinking edge dashes (drawn at every 'escapeStrip' spacing instance
+      // down the corridor, on/off per-instance via the sin(phase) gate
+      // above) is exactly what real-device testing read as small vertical
+      // "tick marks" (| | | | |) instead of the plain continuous front-row
+      // line — floorSeam (its own case above, never theme-gated, so it
+      // already renders in ESCAPE too) is the intended plain horizontal
+      // line (──────) and needs no changes. Intentionally disabled rather
+      // than deleted outright — the STRUCTURE_KINDS spacing entry and this
+      // case are left in place (no-op) so no other code that iterates
+      // structures by kind needs to change.
       break;
     }
   }
@@ -10383,7 +10774,12 @@ function renderMissileProjectiles(zFilter) {
 // itself, just the player's own thrown decoy.
 function renderEscapeDecoy() {
   const d = state.escape.decoy;
-  if (!d.active) return;
+  // BUGFIX ROUND (spec sections 17-18): gated on visualUntil (half the real
+  // effect duration), NOT d.active/d.until any more — the target-override
+  // gameplay effect (d.active) keeps running its own full, unchanged
+  // duration in the background via playerOrDecoyMarkerPos(); only how long
+  // the decoy IMAGE stays on screen is shortened.
+  if (!d.active || performance.now() >= d.visualUntil) return;
   // FOLLOWUP HOTFIX: complete redesign per explicit spec — the old yellow
   // rotated-square "UI diamond" marker is gone entirely (no LOCK-marker
   // symbol, no diamond, no yellow anything). A DECOY must read as the
@@ -10403,7 +10799,10 @@ function renderEscapeDecoy() {
   const cx = state.centerX + p.strafeOffset + d.side * DECOY_SCREEN_OFFSET_PX;
   const bottomY = state.cssH * 1.02 - es.depthPos * ESCAPE_DEPTH_SCREEN_RANGE_PX;
   const rect = computeEscapePlayerDrawRect(cx, bottomY, frame, es.depthPos, 1);
-  const fadeAlpha = clamp((d.until - now) / 400, 0, 1);
+  // BUGFIX ROUND (spec sections 17-18): fades against visualUntil (its own
+  // shortened lifespan), fade window halved to 200ms to match — keeps the
+  // same proportion of the visible lifetime spent fading as before.
+  const fadeAlpha = clamp((d.visualUntil - now) / 200, 0, 1);
   ctx.save();
   ctx.globalAlpha = 0.45 * fadeAlpha;
   ctx.drawImage(frame.img, rect.dx, rect.dy, rect.drawW, rect.drawH);
@@ -11071,7 +11470,23 @@ function clearSequenceResolve(now) {
   state.clearSequence.phase = 'idle';
   state.clearSequence.reason = null;
   if (DEBUG_MODE) r10DebugLog('CLEAR SEQUENCE COMPLETE (' + reason + ')');
-  decideNextRunStep(now);
+  // BUGFIX ROUND: decideNextRunStep() used to re-derive "was this a COMBAT
+  // or ESCAPE encounter" by re-checking state.run.phase === 'COMBAT'/
+  // 'ESCAPE' at call time. Root-caused via a paused-state Playwright trace
+  // (see the completion report) that this is NOT reliable: by the time this
+  // resolve fires, state.run.phase can have already drifted away from what
+  // was true when triggerClearSequence(reason) was actually called (e.g. a
+  // manual Pause Menu override, or simply this same resolve firing before
+  // a previous transition's own phase write has settled) — when phase
+  // doesn't exactly match, decideNextRunStep() SILENTLY NO-OPS (neither
+  // branch's condition holds), permanently stranding the run in whatever
+  // phase it was already in with clearSequence now idle and nothing left
+  // to advance it. This is the confirmed root cause of "EVACUATE後に
+  // ESCAPEへ行かずCOMBAT継続"-class bugs. Fix: pass the ORIGINAL reason
+  // through directly — captured at triggerClearSequence() time and never
+  // re-derived — so this decision can never drift from what actually
+  // happened.
+  decideNextRunStep(now, reason);
 }
 
 function updateClearSequence(now) {
@@ -11250,28 +11665,57 @@ function onEnemyDefeated(now, defeated) {
   triggerClearSequence(now, 'combat');
 }
 
+// BUGFIX ROUND (spec section 6): DRONE and ADAM SPHERE never lead into an
+// ESCAPE stretch — their own COMBAT ends straight into the NEXT COMBAT,
+// regardless of what pickNextEnemy()'s own introContinue would otherwise
+// say. ROID1/ROID2/GABRIEL/ADAM are unaffected (their defeat can still lead
+// to EVACUATION_WARNING as before).
+const COMBAT_ONLY_ENEMY_TYPES = { drone: true, adamSphere: true };
+
 // The sequencer — called once CLEAR SEQUENCE's own gate/whiteout cutscene
 // finishes (from clearSequenceResolve()), for BOTH the 'combat' reason
 // (encounter over) and the 'escape' reason (an ESCAPE stretch's own SURVIVE
 // timer ran out). Decides what state.run.phase happens next.
-function decideNextRunStep(now) {
+// BUGFIX ROUND: `reason` is now passed in directly from clearSequenceResolve()
+// (captured at the original triggerClearSequence() call) instead of being
+// re-derived from state.run.phase here — see clearSequenceResolve()'s own
+// comment for the root-caused silent-no-op bug this fixes.
+function decideNextRunStep(now, reason) {
   if (state.progress.distanceRemaining <= 0) return; // enterEscapeComplete() already fired from tickRunDistance()
-  if (state.run.phase === 'COMBAT') {
+  if (state.run.manualOverrideActive) {
+    // BUGFIX ROUND (spec sections 9-13): a Pause Menu manual MODE/ENEMY
+    // selection is still in effect — the automatic sequencer must not pick
+    // a new enemy or start an EVACUATION_WARNING out from under it. The
+    // flag is one-shot: it was set by the manual-selection handlers
+    // (selectEnemy()/setGameMode()'s pause-menu callers) and is cleared
+    // here so the NEXT natural encounter after this one resumes normal
+    // automatic progression.
+    state.run.manualOverrideActive = false;
+    if (DEBUG_MODE) r10DebugLog('RUN FLOW: decideNextRunStep skipped (manualOverrideActive)');
+    return;
+  }
+  if (reason === 'combat') {
     if (state.run.isFinalCombat) {
       // FINAL BATTLE resolved (defeated or timed out) -> back on the bike
       // for the last stretch to 0m.
+      markRunTransition('AUTO:finalCombat->EVACUATION_WARNING', now);
       beginEvacuationWarning(now);
       return;
     }
+    const justDefeatedType = state.history.previousEnemy;
+    const combatOnly = COMBAT_ONLY_ENEMY_TYPES[justDefeatedType];
     const next = pickNextEnemy();
-    if (next.introContinue) {
+    if (next.introContinue || combatOnly) {
+      markRunTransition('AUTO:combat->COMBAT_INTRO(' + next.type + (combatOnly ? ',combatOnly' : '') + ')', now);
       beginCombatIntro(now, next.type, false);
     } else {
+      markRunTransition('AUTO:combat->EVACUATION_WARNING', now);
       beginEvacuationWarning(now);
     }
     return;
   }
-  if (state.run.phase === 'ESCAPE') {
+  if (reason === 'escape') {
+    markRunTransition('AUTO:escape->DISMOUNT_TRANSITION', now);
     beginDismountTransition(now);
   }
 }
@@ -11333,7 +11777,25 @@ function updateCombatIntroPhase(now) {
   state.combat.timeLeftSec = COMBAT_TIME_LIMIT_SEC;
   r.phase = 'COMBAT';
   r.phaseStartedAt = now;
+  resetAimToCombatCenter();
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: COMBAT begins (' + r.introEnemyType + ')');
+}
+// BUGFIX ROUND (spec section 1): COMBAT start must re-center AIM+SPOTLIGHT
+// every time, never carrying over the previous battle's crosshair
+// position. Root cause: p.aimLiveX/Y and p.lightPersistX/Y are explicitly
+// PERSISTENT (see getAimPoint()/getFlashlightCenter()'s own comments —
+// "never recentering") and nothing ever reset them at a COMBAT boundary
+// before this fix, so wherever the player last aimed in the PREVIOUS fight
+// was still exactly where AIM/SPOTLIGHT sat the instant the NEXT one
+// began. Called at every real entry into COMBAT (the normal COMBAT_INTRO
+// path above, and applyManualRunOverride()'s manual-COMBAT path) so
+// neither path can be missed.
+function resetAimToCombatCenter() {
+  const p = state.player;
+  p.aimLiveX = 0; p.aimLiveY = 0;
+  p.lightPersistX = 0; p.lightPersistY = 0;
+  p.aimManualOffsetX = 0; p.aimManualOffsetY = 0;
+  if (DEBUG_MODE) r10DebugLog('AIM: re-centered for COMBAT start');
 }
 function renderCombatIntroOverlay(now) {
   const r = state.run;
@@ -11605,12 +12067,28 @@ if (resultArtistBtnEl) resultArtistBtnEl.addEventListener('click', () => { state
 // GAME OVER — see its own trigger site in frame() for why this exists (no
 // prior implementation to "maintain"; built fresh this round, unified
 // across COMBAT and ESCAPE per spec section 21).
-function triggerGameOver(now) {
+// BUGFIX ROUND (spec sections 7-8): audited every call site in the file —
+// this is the ONLY one (grep-confirmed), and it is already gated on
+// state.player.hp<=0 at its single call site in frame(). reason defaults to
+// PLAYER_HP_ZERO since that IS the only real trigger path today; the
+// parameter exists so any future call site is forced to state its own
+// justification explicitly rather than silently reusing this default.
+function triggerGameOver(now, reason) {
   const r = state.run;
   r.phase = 'GAME_OVER';
   r.phaseStartedAt = now;
+  r.gameOverTriggered = true;
+  r.gameOverReason = reason || 'PLAYER_HP_ZERO';
+  markRunTransition('GAME_OVER:' + r.gameOverReason, now);
   showRunBanner('GAME OVER', '');
-  if (DEBUG_MODE) r10DebugLog('RUN FLOW: GAME OVER (mode=' + state.gameMode + ', score=' + state.score + ')');
+  if (DEBUG_MODE) {
+    r10DebugLog('GAME OVER TRIGGER: reason=' + r.gameOverReason +
+      ' hp=' + state.player.hp +
+      ' runPhase=' + r.phase +
+      ' gameMode=' + state.gameMode +
+      ' enemy=' + state.enemy.type +
+      ' manualSelectionActive=' + r.manualOverrideActive);
+  }
 }
 function updateGameOverPhase(now) {
   if (now - state.run.phaseStartedAt < 1500) return;
@@ -11637,7 +12115,15 @@ function updateRunFlow(now) {
 function renderRunFlowOverlay(now) {
   const phase = state.run.phase;
   if (phase === 'COMBAT_INTRO') renderCombatIntroOverlay(now);
-  else if (phase === 'EVACUATION_WARNING') renderEvacuationArrow(now);
+  // BUGFIX ROUND (spec section 19): the red triangle/arrow direction
+  // indicator is removed from EVACUATION_WARNING's overlay — renderEvacuation
+  // Arrow() itself is kept defined (unused) rather than deleted, since
+  // state.run.evacuateDirection is still genuinely used for logic (MOUNT_
+  // TRANSITION's walk direction). The "EVACUATE"/"EVACUATE FROM THIS
+  // FORTRESS" text banner is driven entirely separately by updateEvacuation
+  // WarningPhase() via the DOM (runFlowBannerTitleEl/SubEl), so it is
+  // completely unaffected by this — text stays, only the canvas triangle
+  // stops being drawn.
   else if (phase === 'MOUNT_TRANSITION') renderMountTransitionOverlay(now);
   else if (phase === 'DISMOUNT_TRANSITION') renderDismountTransitionOverlay(now);
 }
@@ -11880,7 +12366,7 @@ function frame(ts) {
     // per run (never re-fires once RESULT/ENDING/GAME_OVER already owns
     // the phase).
     if (state.player.hp <= 0 && state.run.phase !== 'GAME_OVER' && state.run.phase !== 'ENDING' && state.run.phase !== 'RESULT') {
-      triggerGameOver(ts);
+      triggerGameOver(ts, 'PLAYER_HP_ZERO');
     }
   }
 
@@ -12263,6 +12749,7 @@ window.__darkoutTps = {
   CORRIDOR_HALF_WIDTH, CORRIDOR_CEIL_Y, CORRIDOR_FLOOR_Y,
   // RUN FLOW SYSTEM — exposed for automated testing/DEBUG only.
   updateRunFlow, renderRunFlowOverlay, decideNextRunStep, onEnemyDefeated,
+  resetAimToCombatCenter, applyManualRunOverride, getCombatAimSouthLimit,
   pickNextEnemy, pickFinalBattleEnemy, tickRunDistance,
   beginCombatIntro, beginEvacuationWarning, beginMountTransition,
   beginEscapeStretch, beginDismountTransition, enterEscapeComplete,
