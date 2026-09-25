@@ -226,7 +226,19 @@ const ESCAPE_DASH_SCALE_PULSE_DECAY_RATE = 6;
 // round's explicit "通常MOVEとの差が明確な緊急回避に" instruction. Still
 // well short of the STRAFE_MAX_OFFSET screen-edge clamp already applied in
 // updateEscapePlayer(), so it can never fling the player off-screen.
-const ESCAPE_STRAFE_DASH_DISTANCE_PX = 110; // was 65 (11th round), 32.5 (8th round), 130 originally
+// 6TH ADJUSTMENT ROUND (spec section 7, user-approved after STOP report):
+// real-device report was "瞬間移動感が乏しい" — measured root cause was the
+// player sprite's own rendered width (158.8px at 1280x720) EXCEEDING the old
+// 110px dash distance, so the pre-dash and post-dash body silhouettes
+// visibly overlapped (48.8px, ~31% of body width) and the jump read as a
+// blur rather than a teleport. 165px (current x1.5) is the smallest of the
+// 3 candidates presented that fully separates the two silhouettes at
+// 1280x720 (drawW 158.8px -> ~6.2px clear gap) while staying under half the
+// per-side lateral range even on the narrowest tested mobile viewport
+// (844x390: 165/253.2 = 65.2%) — the larger x2.0 candidate (220px) was
+// explicitly rejected by the user for consuming 86.9% of that same mobile
+// range in a single dash.
+const ESCAPE_STRAFE_DASH_DISTANCE_PX = 165; // was 110 (6th adjustment round), 65 (11th round), 32.5 (8th round), 130 originally
 const ESCAPE_SOUTH_DASH_DISTANCE_Z = 340;    // was 260 (11th round) — A, accelerate further in the direction of travel
 const ESCAPE_NORTH_BACKSTEP_DISTANCE_Z = 260; // was 200 (11th round) — Y, brief backstep against the direction of travel
 // 11TH ROUND (items 6-8): DASH is now a true INSTANT teleport — the full
@@ -262,6 +274,15 @@ const ESCAPE_DASH_BLINK_CYCLES = 1; // exact number of "visible -> invisible" fl
 // 27TH ROUND item 8: real-play feedback said these faded too fast to read
 // as a real dash trail — extended by ~0.2s per spec (was 220).
 const ESCAPE_AFTERIMAGE_MS = 420;
+// 6TH ADJUSTMENT ROUND (spec section 8, user-approved after investigation):
+// real-device report was "残像が目立たず瞬間移動を認識しにくい" — root cause
+// (measured) was the ghost fading from the very first frame it appeared
+// (globalAlpha already decaying at spawn), giving it no moment of clearly-
+// readable presence before it started dissolving. Splits the SAME total
+// ESCAPE_AFTERIMAGE_MS lifetime into a HOLD window (clearly visible, no
+// fade) followed by the fade-out, instead of fading the whole window — see
+// renderEscapePlayer()'s own afterimage loop for how this is applied.
+const ESCAPE_AFTERIMAGE_HOLD_MS = 200;
 // NEXT ROUND PART N: normal (non-DASH) EAST/WEST movement leans the whole
 // bike sprite up to this many degrees toward the travel direction, and
 // ESCAPE_LEAN_SMOOTH_RATE controls how quickly it eases toward/away from
@@ -401,6 +422,18 @@ const COLLAPSE_JUMP_COMBO_WINDOW_MS = 140; // LB+RB "natural simultaneous press"
 // RED_MS+SNIPER_LOCK_YELLOW_MS is well under this), short enough that it
 // can't be thrown once and forgotten for the whole encounter.
 const DECOY_DURATION_MS = 2200;
+// 6TH ADJUSTMENT ROUND (spec section 9): real-device report was "表示時間が
+// 長すぎる" — the OLD split (900ms clearly visible, THEN 200ms fade, out of
+// the existing 1100ms total visual window below) is inverted to "~0.2s
+// clearly visible, THEN a slow fade over the rest" per spec's own explicit
+// "appear -> ~0.2s clear -> slow fade -> disappear" shape. Reuses the SAME
+// existing DECOY_DURATION_MS/2 (1100ms) total visual window a previous
+// round already established — only where the hold ends and the fade begins
+// within it changes, no new total duration invented. Gameplay effect
+// duration (d.until, playerOrDecoyMarkerPos()'s target-override) is a
+// completely separate field and is untouched by this — see
+// updateEscapeDecoy()'s own comment.
+const DECOY_VISUAL_HOLD_MS = 200;
 // Lateral screen-space offset (px) from the player's own live marker — big
 // enough that a locked-on shot aimed at the decoy is a genuinely different
 // point from wherever the player has actually moved to, never a rounding-
@@ -450,7 +483,6 @@ const RUN_COMBAT_DISTANCE_PER_SEC = 6; // slow, time-based COMBAT progression (s
 const RUN_ESCAPE_DISTANCE_PER_WORLDZ = 0.10;
 const RUN_INTRO_EMPTY_MS = 2000; // spec section 3: "約2秒間、敵がいない状態"
 const RUN_INTRO_REVEAL_MS = 700; // light-burst materialize beat
-const RUN_INTRO_BATTLE_MS = 900; // enemy-name / "BATTLE" banner hold
 const RUN_WARNING_MS = 1300; // EVACUATION_WARNING: "WARNING" + shake beat
 const RUN_EVACUATE_TEXT_MS = 1500; // EVACUATION_WARNING: "EVACUATE FROM THIS FORTRESS" + direction arrow beat
 const RUN_MOUNT_WALK_MS = 900; // MOUNT_TRANSITION: on-foot walk toward the evac direction
@@ -782,6 +814,37 @@ const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
 // this circle (see getAimPoint()) so the crosshair can never leave the lit
 // area at all, not just visually — see item 52's own comment there.
 const FLASHLIGHT_BASE_RADIUS = 47.25;
+// 6TH ADJUSTMENT ROUND (spec section 5, Option B, user-approved after STOP
+// report): the exact darkness-overlay curve renderFlashlightMask() paints
+// via its radial gradient, pulled out into named constants so a second
+// consumer (flashlightOverlayAlphaAt() below, used to darken the PLAYER
+// sprite to match the SAME curve enemy/barrels already get — both draw
+// BEFORE this mask, see frame()'s own draw-order comments) can never drift
+// out of sync with the actual gradient stops used here. Changing these 3
+// numbers changes BOTH at once.
+const FLASHLIGHT_MASK_BASE_ALPHA = 0.90;   // overlay opacity fully outside the light
+const FLASHLIGHT_MASK_MID_STOP = 0.7;      // gradient stop position (fraction of radius)
+const FLASHLIGHT_MASK_MID_ERASE = 0.85;    // erase strength at that stop
+// Analytic point-sample equivalent of the darkCanvas radial-gradient +
+// destination-out punch above — same 3 stops (0 -> fully erased/lit, 0.7 ->
+// FLASHLIGHT_MASK_MID_ERASE, 1(edge)+ -> not erased/full FLASHLIGHT_MASK_
+// BASE_ALPHA darkness), linearly interpolated exactly as Canvas2D interpolates
+// a radial gradient between stops. Returns the darkness overlay alpha (0 =
+// fully lit, FLASHLIGHT_MASK_BASE_ALPHA = fully dark) a real point on the
+// mask would receive — used by renderPlayer() to darken the player's own
+// sprite (via the SAME silhouette-clipped tint technique drawRedTintedSprite()
+// already uses) to the SAME curve enemy/barrels get from the real mask,
+// instead of moving renderPlayer() itself before renderFlashlightMask()
+// (rejected in the STOP report — see its own comment there for the
+// concrete regression risk to missile/boss-attack/bullet draw order).
+function flashlightOverlayAlphaAt(x, y) {
+  const center = getFlashlightCenter();
+  const t = Math.min(Math.hypot(x - center.x, y - center.y) / FLASHLIGHT_BASE_RADIUS, 1);
+  const erase = t <= FLASHLIGHT_MASK_MID_STOP
+    ? 1 - (1 - FLASHLIGHT_MASK_MID_ERASE) * (t / FLASHLIGHT_MASK_MID_STOP)
+    : FLASHLIGHT_MASK_MID_ERASE * (1 - (t - FLASHLIGHT_MASK_MID_STOP) / (1 - FLASHLIGHT_MASK_MID_STOP));
+  return FLASHLIGHT_MASK_BASE_ALPHA * (1 - erase);
+}
 // 30TH ROUND item 5: LIGHT_RANGE/AIM_RANGE used to be fixed at 152px no
 // matter the viewport, so on a real landscape canvas (e.g. 844px wide) the
 // reticle/spotlight could only ever reach ~152px from its resting point —
@@ -937,6 +1000,12 @@ const PLAYER_HIT_FLASH_MS = 160;
 // judgment, not player-sprite distance checks — so render size and
 // gameplay judgment are already fully decoupled by construction).
 const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
+// 6TH ADJUSTMENT ROUND (spec section 2): real-device report — SOUTH DASH
+// (the backstep dash pose, usingSouthDashPose in renderPlayer()) reads too
+// large. Applied ONLY to that one pose's own target height; every other
+// pose (SOUTH WALK, NORTH/EAST/WEST, FIRE, COVER, ESCAPE) still targets the
+// unmultiplied standing height and is unaffected.
+const SOUTH_DASH_SCALE_MULT = 0.90;
 // 7TH ROUND PART 14/15/16: FIRE no longer swaps to the separate
 // player_north_fire.png art (which has its own baked-in flash drawn at a
 // DIFFERENT screen position than the procedural muzzle particle, and read
@@ -1737,31 +1806,24 @@ function r10CollectSnapshot(ts) {
       lastTransition: state.run.lastTransition || '-',
       lastTransitionAt: Math.round(state.run.lastTransitionAt || 0) },
     clearSeq: { active: state.clearSequence.active, phase: state.clearSequence.phase, reason: state.clearSequence.reason || '-' },
-    // BUGFIX ROUND (spec section 29): AIM boundary diagnostics — the single
-    // getCombatAimSouthLimit() shared source of truth, plus what AIM/FOCUS
-    // actually resolved to this frame, so any future "aim overlapping
-    // player" regression is immediately visible in DEBUG rather than
-    // needing a fresh repro.
+    // 6TH ADJUSTMENT ROUND (spec sections 3/4/6): AIM's coordinate is no
+    // longer clamped by the player's body at all (aimX/aimY here can
+    // legitimately fall anywhere on screen) — this group now reports
+    // crosshair render VISIBILITY (isPointOverPlayerBody(), the same check
+    // renderAimReticle() itself uses) as its own separate field, so a real-
+    // device report can distinguish "AIM coordinate" from "crosshair drawn
+    // this frame" at a glance.
     aim: (() => {
-      // AIM OPERATING-AREA ROUND: southLimit is now a function of aimX (2D
-      // body-avoidance column, not a whole-screen horizontal line) — must be
-      // evaluated AFTER pt is known, at pt's own x, or this diagnostic would
-      // itself show a stale/wrong value. bodyBounds added so a future
-      // real-device report can directly show the body column being tested
-      // against, not just the resolved pass/fail.
       const rect = computePlayerDrawRect();
       const bodyBounds = computePlayerVisualBounds();
       const pt = getAimPoint();
-      const southLimit = getCombatAimSouthLimit(pt.x);
       return {
         aimX: Math.round(pt.x), aimY: Math.round(pt.y),
-        aimSouthLimit: Math.round(southLimit),
         playerDrawRectTop: Math.round(rect.topY),
-        bodyLeft: Math.round(bodyBounds.left), bodyRight: Math.round(bodyBounds.right), bodyTop: Math.round(bodyBounds.top),
-        aimInBodyColumn: pt.x >= bodyBounds.left - AIM_PLAYER_MARGIN_PX && pt.x <= bodyBounds.right + AIM_PLAYER_MARGIN_PX,
-        aimClamped: pt.y >= southLimit - 0.5,
+        bodyLeft: Math.round(bodyBounds.left), bodyRight: Math.round(bodyBounds.right),
+        bodyTop: Math.round(bodyBounds.top), bodyBottom: Math.round(bodyBounds.bottom),
+        crosshairHiddenByBody: isPointOverPlayerBody(pt.x, pt.y, AIM_PLAYER_MARGIN_PX),
         focusTarget: p.autoAimActive ? Math.round(p.aimLiveX) + ',' + Math.round(p.aimLiveY) : '-',
-        focusValid: p.autoAimActive ? pt.y <= southLimit + 0.5 : true,
       };
     })(),
     player: { x: Math.round(p.strafeOffset), facing: p.facing, hp: p.hp, maxHp: PLAYER_MAX_HP,
@@ -2047,10 +2109,12 @@ function r10UpdateDebugPanel(ts) {
   // 30TH ROUND item 29: FOCUS/ESCAPE DECOY/DRONE WAVE — all new this round.
   r10DbgFocusEl.textContent = 'FOCUS effectiveHit=' + s.focus.effectiveHit + ' aimColor=' + s.focus.aimColor +
     ' target=' + s.focus.targetX + ',' + s.focus.targetY + ' distMult=' + s.focus.distMult +
-    // BUGFIX ROUND (spec section 29): AIM south-boundary diagnostics —
-    // shares this row rather than adding a new DOM element.
-    '\n AIM=' + s.aim.aimX + ',' + s.aim.aimY + ' southLimit=' + s.aim.aimSouthLimit +
-    ' playerTop=' + s.aim.playerDrawRectTop + ' clamped=' + s.aim.aimClamped + ' focusValid=' + s.aim.focusValid;
+    // 6TH ADJUSTMENT ROUND: AIM diagnostics — shares this row rather than
+    // adding a new DOM element. No more southLimit/clamped (AIM's
+    // coordinate is unrestricted now); crosshairHidden reflects the
+    // render-only body-overlap visibility check instead.
+    '\n AIM=' + s.aim.aimX + ',' + s.aim.aimY +
+    ' playerTop=' + s.aim.playerDrawRectTop + ' crosshairHiddenByBody=' + s.aim.crosshairHiddenByBody;
   r10DbgDecoyEl.textContent = 'ESCAPE DECOY applicable=' + s.decoy.applicable + ' active=' + s.decoy.active +
     ' side=' + s.decoy.side + ' remainMs=' + s.decoy.remainMs;
   r10DbgDroneWaveEl.textContent = 'DRONE WAVE active=' + s.droneWave.active + ' wave2Triggered=' + s.droneWave.wave2Triggered +
@@ -2121,17 +2185,15 @@ function r10FormatDebugText(s) {
   lines.push('gameOverTriggered: ' + s.runFlow.gameOverTriggered + ' gameOverReason: ' + s.runFlow.gameOverReason);
   lines.push('lastTransition: ' + s.runFlow.lastTransition + ' (' + s.runFlow.lastTransitionAt + ')');
   lines.push('');
-  lines.push('AIM BOUNDARY');
-  lines.push('aim: ' + s.aim.aimX + ',' + s.aim.aimY + ' southLimit: ' + s.aim.aimSouthLimit);
-  lines.push('playerDrawRectTop: ' + s.aim.playerDrawRectTop + ' aimClamped: ' + s.aim.aimClamped);
-  // AIM OPERATING-AREA ROUND: the 2D body-avoidance column now being tested
-  // against — bodyLeft/bodyRight are the real alpha-measured visible body
-  // edges (+/-AIM_PLAYER_MARGIN_PX), not the full sprite bounding box.
-  // aimInBodyColumn distinguishes "clamped because aimX is over the body"
-  // from "not currently restricted at all" (aimClamped alone can no longer
-  // tell them apart now that southLimit varies with x).
-  lines.push('bodyColumn: ' + s.aim.bodyLeft + '..' + s.aim.bodyRight + ' bodyTop: ' + s.aim.bodyTop + ' aimInBodyColumn: ' + s.aim.aimInBodyColumn);
-  lines.push('focusTarget: ' + s.aim.focusTarget + ' focusValid: ' + s.aim.focusValid);
+  lines.push('AIM (coordinate unrestricted by player/enemy/barrel — 6TH ADJUSTMENT ROUND)');
+  lines.push('aim: ' + s.aim.aimX + ',' + s.aim.aimY);
+  lines.push('playerDrawRectTop: ' + s.aim.playerDrawRectTop);
+  // 6TH ADJUSTMENT ROUND: bodyLeft/Right/Top/Bottom are the real alpha-
+  // measured visible body rect (+/-AIM_PLAYER_MARGIN_PX) — used ONLY to
+  // decide crosshairHiddenByBody (render visibility), never to clamp AIM.
+  lines.push('bodyRect: x[' + s.aim.bodyLeft + '..' + s.aim.bodyRight + '] y[' + s.aim.bodyTop + '..' + s.aim.bodyBottom + ']');
+  lines.push('crosshairHiddenByBody: ' + s.aim.crosshairHiddenByBody);
+  lines.push('focusTarget: ' + s.aim.focusTarget);
   lines.push('');
   lines.push('PLAYER');
   lines.push('position: x=' + s.player.x);
@@ -2637,10 +2699,21 @@ const ASSETS = {
     // south/north/east poses already use for this exact "differently-
     // padded source photos must read as one consistent on-screen body
     // size/foot position" problem, see computeBodyVisualScale()).
+    // 6TH ADJUSTMENT ROUND (spec section 1): 3 new user-supplied photos
+    // replace the previous SOUTH WALK set — registered under new v2
+    // filenames (assets/player/player_walk_south_v2_0{1,2,3}.png), the old
+    // player_walk_south_0{1,2,3}.png left on disk untouched/unreferenced,
+    // per spec's "安全な方法を選択" (reversible: nothing else in the
+    // codebase referenced the old filenames — confirmed via a full-repo
+    // grep before this change). bodyTopFrac/bodyBottomFrac/bodyCenterXFrac
+    // are real alpha-channel measurements of these exact 3 files (full
+    // per-pixel scan, alpha>10 threshold; bodyCenterXFrac is the alpha-
+    // weighted X centroid, the same convention every other coverSpriteFrame()
+    // entry in this file already uses) — not guessed.
     southWalkFrames: [
-      coverSpriteFrame('assets/player/player_walk_south_01.png', 0.0113, 0.9452, 0.5067),
-      coverSpriteFrame('assets/player/player_walk_south_02.png', 0.0207, 0.9900, 0.5062),
-      coverSpriteFrame('assets/player/player_walk_south_03.png', 0.0000, 0.9735, 0.4999),
+      coverSpriteFrame('assets/player/player_walk_south_v2_01.png', 0.0299, 0.9710, 0.5086),
+      coverSpriteFrame('assets/player/player_walk_south_v2_02.png', 0.0232, 0.9701, 0.5019),
+      coverSpriteFrame('assets/player/player_walk_south_v2_03.png', 0.0307, 0.9760, 0.5032),
     ],
     // 10TH ROUND (items 1-2): re-investigated assets/player/ — there is
     // still only ONE south-facing player image on disk
@@ -4030,6 +4103,39 @@ function pollGamepad(now) {
     const settling = (now || 0) < state.gamepadSettleUntil;
 
     if (settling) {
+      // 6TH ADJUSTMENT ROUND (spec section 10): real-device root cause of
+      // "Controller A does not respond on TAP TO START" — many browsers
+      // (this file's own comment above, "GAMEPAD INPUT", already documents
+      // this for Safari) do not report a gamepad as connected via
+      // navigator.getGamepads() at all until the user's FIRST button press
+      // on it, meaning that exact press is very often also the one that
+      // adopts the pad and starts this settle window. Because the snapshot
+      // below re-syncs prevButtons to whatever is CURRENTLY held on every
+      // settling frame, a press that is still down when settling ends reads
+      // as already-old (edge() sees pressed=true, prev=true -> no edge) and
+      // is silently swallowed — the player's one intentional press is lost,
+      // and nothing else on this screen can ever generate a second edge
+      // until they physically release and press again (which they have no
+      // reason to know is needed). Scoped fix: ONLY on the pre-game TAP TO
+      // START gate specifically (never during real gameplay, where the
+      // settle window's noise protection below is left fully intact) — ANY
+      // button currently held during settling is honored immediately as a
+      // real TAP TO START input, using the raw instantaneous state rather
+      // than edge detection, since there is no meaningful "previous frame"
+      // for this gate to compare against yet anyway.
+      if (!state.gameStarted && state.assetsReady && !state.tapToStartDone) {
+        let anyPressed = false;
+        for (let i = 0; i < b.length; i++) { if (b[i] && b[i].pressed) { anyPressed = true; break; } }
+        if (anyPressed) {
+          const triggerSnapshot = new Array(b.length);
+          for (let i = 0; i < b.length; i++) triggerSnapshot[i] = !!(b[i] && b[i].pressed);
+          state.prevButtons = triggerSnapshot;
+          if (DEBUG_MODE) r10DebugLog('GAMEPAD UI INPUT (during settle) -> TAP TO START');
+          handleTapToStart();
+          state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
+          return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
+        }
+      }
       // 5TH ROUND: settle window — keep re-syncing prevButtons to the
       // CURRENT raw state every frame (so whatever the pad happens to be
       // doing while it calibrates never becomes a false rising edge once
@@ -5358,19 +5464,11 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     const baseX = state.centerX + p.strafeOffset;
     const baseY = state.horizonY + state.cssH * 0.06;
     const targetLiveX = clamp(hitPt.x - baseX - p.aimManualOffsetX, -AIM_RANGE, AIM_RANGE);
-    // BUGFIX ROUND (spec section 26): FOCUS must never pull AIM/SPOTLIGHT to
-    // a target that resolves in front of the player — clamped here against
-    // the SAME getCombatAimSouthLimit() every other AIM consumer reads, on
-    // top of (not instead of) getAimPoint()'s own final render-time clamp,
-    // so the crosshair can never even visibly APPROACH the player sprite
-    // while FOCUS is converging, not just get stopped right at the edge.
-    // AIM OPERATING-AREA ROUND: evaluated at the target's OWN x (hitPt.x —
-    // where FOCUS is actually pulling AIM toward), not a stale/central x,
-    // so FOCUS is only held back when the enemy's real hit point genuinely
-    // falls within the player's own body column — see
-    // getCombatAimSouthLimit()'s own comment.
-    const maxTargetLiveY = getCombatAimSouthLimit(hitPt.x) - baseY - p.aimManualOffsetY;
-    const targetLiveY = Math.min(clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE), maxTargetLiveY);
+    // 6TH ADJUSTMENT ROUND (spec sections 3/6): the body-avoidance clamp
+    // that used to cap targetLiveY here (getCombatAimSouthLimit()) is
+    // removed — FOCUS converges on the enemy's real effective-hit point
+    // with no object-collision restriction, exactly like manual AIM.
+    const targetLiveY = clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE);
     const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
     p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
     p.aimLiveY += (targetLiveY - p.aimLiveY) * approachT;
@@ -5393,26 +5491,11 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // branch for "stick released".
     p.aimLiveX = clamp(p.aimLiveX + state.input.aimX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
     p.aimLiveY = clamp(p.aimLiveY + state.input.aimY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
-    // AIM OPERATING-AREA ROUND: clamp the ACCUMULATOR itself against the
-    // body-avoidance boundary at aimLiveX's CURRENT (just-updated) x — not
-    // only the read-only getAimPoint() clamp — so p.aimLiveY can never
-    // secretly keep growing south while held "behind" the body-column at
-    // the current x. Root cause of a real jump found during Visual QA: a
-    // pure diagonal sweep (e.g. upper-left to lower-right) moves x and y
-    // together continuously; without this, y kept accumulating unseen
-    // while x happened to be crossing the body column, and the instant x
-    // cleared the column on the far side, the display would suddenly
-    // reveal that whole hidden south backlog in a single frame — a visible
-    // snap even though nothing about the player's own stick input jumped.
-    // Clamping the accumulator in lockstep with x every frame means it is
-    // never holding a value that isn't already legal for the CURRENT x, so
-    // there is nothing left to "reveal" once x moves on.
-    {
-      const aimBaseX = state.centerX + p.strafeOffset;
-      const aimBaseY = state.horizonY + state.cssH * 0.06;
-      const aimResolvedX = clamp(aimBaseX + p.aimManualOffsetX + p.aimLiveX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX);
-      p.aimLiveY = Math.min(p.aimLiveY, getCombatAimSouthLimit(aimResolvedX) - aimBaseY - p.aimManualOffsetY);
-    }
+    // 6TH ADJUSTMENT ROUND (spec sections 3/6): the body-avoidance
+    // accumulator clamp that used to sit here is removed along with the
+    // rest of the coordinate-level south-limit system — see
+    // getAimPoint()'s own comment. p.aimLiveY is once again bounded only
+    // by +/-AIM_RANGE above.
     // 26TH ROUND item 10: SPOTLIGHT now moves at the SAME speed/range as
     // AIM (AIM_MOVE_SPEED_PX_S/AIM_RANGE, not the old separate
     // LIGHT_MOVE_SPEED_PX_S/LIGHT_RANGE — spec explicitly bans "SPOTLIGHTだけ
@@ -5428,17 +5511,8 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // already uses.
     p.lightPersistX = clamp(p.lightPersistX + state.input.lightX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
     p.lightPersistY = clamp(p.lightPersistY + state.input.lightY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
-    // AIM OPERATING-AREA ROUND: same accumulator clamp as p.aimLiveY just
-    // above, applied to SPOTLIGHT's own persistent offset — see that
-    // comment. Uses getFlashlightCenter()'s own base (horizonY-based, same
-    // formula) so this lines up with what getFlashlightCenter() will
-    // actually resolve to.
-    {
-      const lightBaseX = state.centerX + p.strafeOffset;
-      const lightBaseY = state.horizonY + state.cssH * 0.06;
-      const lightResolvedX = clamp(lightBaseX + p.aimManualOffsetX + p.lightPersistX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX);
-      p.lightPersistY = Math.min(p.lightPersistY, getCombatAimSouthLimit(lightResolvedX) - lightBaseY - p.aimManualOffsetY);
-    }
+    // 6TH ADJUSTMENT ROUND: SPOTLIGHT's own body-avoidance accumulator
+    // clamp is removed too — see p.aimLiveY's identical comment above.
   }
   // PART 6 (3rd round): persistent manual AIM trim — LT+D-PAD up/down
   // moves height only (X untouched), RT+D-PAD left/right moves horizontal
@@ -5471,14 +5545,13 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // cadence.
     if (moveY > 0.05) {
       p.southWalkTimer += dt;
-      // DIAGNOSIS ROUND (spec section 6): was `(p.southWalkFrame + 1) % 3`,
-      // cycling 0->1->2->0... i.e. frames 1->2->3->1->2->3 (southWalkFrames[1]
-      // = player_walk_south_02.png, the "2枚目" spec explicitly says to stop
-      // using). Now alternates ONLY between index 0 and index 2 (1st/3rd
-      // photos) — index 1 is never assigned. Only this frame-index sequence
-      // changed; the per-frame timer/cadence (0.07s) and every other WALK
-      // direction (p.walkFrame above) are untouched.
-      if (p.southWalkTimer > 0.07) { p.southWalkTimer = 0; p.southWalkFrame = p.southWalkFrame === 0 ? 2 : 0; }
+      // 6TH ADJUSTMENT ROUND (spec section 1): the previous round's
+      // 0/2-only alternation (skipping index 1, "2枚目") is explicitly
+      // superseded — spec now asks for the plain forward cycle through all
+      // 3 NEW photos: 1->2->3->1->2->3... (index 0->1->2->0). Only this
+      // frame-index sequence changed; the per-frame timer/cadence (0.07s)
+      // and every other WALK direction (p.walkFrame above) are untouched.
+      if (p.southWalkTimer > 0.07) { p.southWalkTimer = 0; p.southWalkFrame = (p.southWalkFrame + 1) % 3; }
     }
     // 9TH ROUND (items 7-8): track REAL south movement (D-PAD DOWN/LEFT
     // STICK DOWN, moveY>0 per the same sign convention applyForwardDelta()
@@ -6204,6 +6277,24 @@ function renderCollapseObstacles(zFilter) {
         ctx.ellipse(warnProj.x, warnProj.y, warnW / 2, warnH / 2, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
+        // 6TH ADJUSTMENT ROUND (spec section 14): a literal "WARNING!!" cue,
+        // added on top of the existing ground marker above — deliberately
+        // reuses that marker's own warnProj/warnScale/fadeIn/pulse (the SAME
+        // ob.worldX/ob.z source of truth spawnCollapseObstacles() already
+        // derives the real landing point from) instead of computing its own
+        // position or timing, so the two can never drift apart. Placed just
+        // above the ellipse so the pair reads as one landing-site telegraph,
+        // not a screen-wide generic alert.
+        if (warnScale > 0.05) {
+          ctx.save();
+          ctx.globalAlpha = fadeIn * pulse;
+          ctx.font = `bold ${Math.round(15 * warnScale + 8)}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle = 'rgba(255,120,90,0.95)';
+          ctx.fillText('WARNING!!', warnProj.x, warnProj.y - warnH / 2 - 4);
+          ctx.restore();
+        }
       }
     }
     if (ob.state === 'pending') continue; // not fallen yet — nothing else to draw
@@ -8942,102 +9033,53 @@ function computePlayerDrawRect() {
   return { cx, bottomY, topY: bottomY - h, w, h };
 }
 
-// AIM OPERATING-AREA ROUND: real, alpha-channel-measured opaque bounds of
-// ASSETS.player.aim (384x340 native) — the same source computePlayerDrawRect()
-// already uses for w/h. ~46% of the image's WIDTH is transparent padding
-// (measured via a full alpha-channel scan, not a guess), so treating the
-// whole bounding box as off-limits — as the previous single horizontal-line
-// southLimit effectively did — banned AIM from a much wider band than the
-// player's actual visible body. Only this real, visible column is now the
-// forbidden zone.
+// AIM OPERATING-AREA ROUND, repurposed 6TH ADJUSTMENT ROUND (spec section
+// 4): real, alpha-channel-measured opaque bounds of ASSETS.player.aim
+// (384x340 native) — the same source computePlayerDrawRect() already uses
+// for w/h. ~46% of the image's WIDTH is transparent padding (measured via a
+// full alpha-channel scan, not a guess). No longer used to CLAMP the AIM
+// coordinate (that restriction is removed — see getAimPoint()'s own
+// comment); now the single source of truth for the crosshair's own render-
+// only VISIBILITY check in renderAimReticle() — only this real, visible
+// rectangle hides the "+" glyph, never the full sprite bounding box.
 const AIM_PLAYER_BODY_LEFT_FRAC = 0.349;
 const AIM_PLAYER_BODY_RIGHT_FRAC = 0.685;
 const AIM_PLAYER_BODY_TOP_FRAC = 0.006;
+const AIM_PLAYER_BODY_BOTTOM_FRAC = 0.988;
 function computePlayerVisualBounds() {
   const rect = computePlayerDrawRect();
   return {
     left: rect.cx - rect.w * (0.5 - AIM_PLAYER_BODY_LEFT_FRAC),
     right: rect.cx - rect.w * (0.5 - AIM_PLAYER_BODY_RIGHT_FRAC),
     top: rect.topY + rect.h * AIM_PLAYER_BODY_TOP_FRAC,
+    bottom: rect.topY + rect.h * AIM_PLAYER_BODY_BOTTOM_FRAC,
     cx: rect.cx,
   };
 }
-
-// AIM OPERATING-AREA ROUND: replaces the old single horizontal-line south
-// limit (a full-screen-width "nothing south of the player's top edge is
-// ever reachable" clamp) with a 2D avoidance column matching the player's
-// REAL visible body only (see computePlayerVisualBounds() above) — per
-// explicit spec: the south limit is NOT "AIM's own initial Y" and NOT "ban
-// everything south of the player" — it is "don't let the crosshair render
-// on top of the player's own visible body." Takes the X the caller is
-// actually about to place AIM/SPOTLIGHT/a target at: if that X falls
-// within the player's real body column (+/- AIM_PLAYER_MARGIN_PX), the
-// legal south boundary is the body's real top edge (same as before); if X
-// is clearly to the left/right of the body, there is no body-avoidance
-// restriction at all here (the caller's own screen-edge-margin clamp still
-// applies elsewhere, unrelated to the player). This never moves X and only
-// ever caps Y, so a stick input that isn't itself aimed at the body keeps
-// registering normally — a diagonal sweep naturally clears the column and
-// keeps going south the instant X exits [left,right], with no teleport:
-// the instant X is out of range, this simply stops constraining Y at all,
-// it never relocates an already-resolved point. getAimPoint(),
-// getFlashlightCenter(), the FOCUS target (updatePlayer()'s autoAimActive
-// branch) and fireWeapon()'s own shot-target safety check all read this
-// SAME function, each passing ITS OWN x (never a shared/stale one), so
-// SPOTLIGHT's own south clamp can no longer sit pinned on a stale global
-// line while AIM tries to move past it (root cause of "AIM only reaches
-// +/-41px sideways", diagnosed and fixed this round — see
-// getFlashlightCenter()'s own comment) — recomputed fresh every call, so
-// NORTH/SOUTH depth movement (which changes computePlayerDrawRect()'s own
-// size/position) still automatically widens/tightens this exactly as
-// before.
-// AIM OPERATING-AREA ROUND (Visual QA follow-up): a HARD on/off step at the
-// column edge — while correct at rest, produced a genuine single-frame snap
-// during a continuous diagonal sweep (measured via a real updatePlayer()
-// simulation: up to ~250px in one frame crossing INTO the column, several
-// times the normal ~87px/frame stick-speed step) — exactly the "ガクッと
-// 不自然に座標が変わらない" case flagged as a requirement. Root cause: Y's
-// own accumulator (p.aimLiveY, clamped every frame at the CURRENT x — see
-// updatePlayer()'s own comment) is free to build up close to the wide-open
-// limit right up until the instant x crosses the column edge, at which
-// point the legal ceiling drops all at once. AIM_PLAYER_RAMP_PX turns that
-// single-frame drop into a smooth linear taper spread over this many
-// pixels of x on EITHER side of the column, so a sweep crossing it at
-// normal speed is reined in gradually over several frames — never a
-// visible jump — while directly over the body (x inside [left,right]) the
-// limit is still exactly the hard b.top boundary, with zero extra
-// tolerance, so "never overlaps" is completely unaffected by the ramp.
-// Tuned so the corrective Y-delta the ramp imposes on any single frame
-// never exceeds roughly one normal AIM_MOVE_SPEED_PX_S step even at max
-// stick speed: (openLimit-restrictedLimit range, ~400-450px at a typical
-// desktop viewport) spread across enough x-distance that crossing it at
-// the fastest possible per-frame x-speed still only trims Y by about one
-// frame's worth of normal movement at a time — verified via a real
-// updatePlayer() simulation (see completion report) across all 5 required
-// diagonal sweep directions. Scaled by resize() with the SAME
-// AIM_RANGE/AIM_RANGE_BASELINE_PX ratio AIM_MOVE_SPEED_PX_S already uses
-// (not a fixed pixel count): a narrow mobile-landscape viewport was found
-// to leave NO x position that ever reaches the fully-open south limit at
-// all with a fixed 420px ramp (the ramp zones from both sides of the body
-// column overlapped nearly the whole screen width) — the per-frame stick
-// speed itself is smaller on a smaller canvas, so the ramp needs to
-// shrink by the same proportion to stay "roughly one normal step wide",
-// not a constant pixel count. Declared near AIM_RANGE/LIGHT_RANGE (top of
-// file), not here, since resize() assigns it on its very first (module-
-// load-time) call, before execution would otherwise reach this point.
-function getCombatAimSouthLimit(x) {
+// 6TH ADJUSTMENT ROUND (spec section 4): true iff (x,y) falls inside the
+// player's real visible body rectangle (+/- a small margin so the
+// crosshair glyph's own drawn radius, not just its center point, never
+// visibly clips the body edge) — the single shared check renderAimReticle()
+// uses to decide whether to skip drawing the "+" this frame. Pure
+// visibility: never touches AIM's own (x,y), FOCUS, or FIRE target
+// judgment (spec section 4's explicit "無効化してはいけません").
+function isPointOverPlayerBody(x, y, marginPx) {
   const b = computePlayerVisualBounds();
-  const left = b.left - AIM_PLAYER_MARGIN_PX;
-  const right = b.right + AIM_PLAYER_MARGIN_PX;
-  const restrictedLimit = b.top - AIM_PLAYER_MARGIN_PX;
-  const openLimit = state.cssH - AIM_SCREEN_SAFE_MARGIN_PX;
-  let distOutside;
-  if (x < left) distOutside = left - x;
-  else if (x > right) distOutside = x - right;
-  else distOutside = 0;
-  const t = clamp(distOutside / AIM_PLAYER_RAMP_PX, 0, 1);
-  return restrictedLimit + (openLimit - restrictedLimit) * t;
+  return x >= b.left - marginPx && x <= b.right + marginPx
+    && y >= b.top - marginPx && y <= b.bottom + marginPx;
 }
+
+// 6TH ADJUSTMENT ROUND (spec sections 3/5/6): getCombatAimSouthLimit() —
+// the 2D player-body-avoidance clamp on AIM's own COORDINATE, added the
+// previous round — is removed entirely per explicit real-device feedback
+// ("物体にぶつかったからAIM座標が止まる、という操作にはしません"). AIM/
+// SPOTLIGHT/FOCUS/FIRE all now use only the plain screen-edge-margin clamp
+// (see getAimPoint()/getFlashlightCenter()) — never a player/enemy/barrel
+// collision of any kind. Not visually overlapping the player is handled
+// purely as crosshair render visibility now — see isPointOverPlayerBody()
+// above and renderAimReticle()'s own comment. AIM_PLAYER_RAMP_PX/
+// AIM_PLAYER_MARGIN_PX and their resize() scaling are still used (as the
+// visibility check's own margin), just no longer for a coordinate clamp.
 
 function fireWeapon(now) {
   const p = state.player;
@@ -9131,26 +9173,14 @@ function fireWeapon(now) {
   const muzzleX = rect.cx;
   const muzzleY = rect.topY + rect.h * MUZZLE_HEIGHT_FRAC;
   const aim = getAimPoint();
-  // BUGFIX ROUND (spec section 27): independent shot-generation safety
-  // check, on top of (not instead of) getAimPoint()'s own final clamp —
-  // reads the SAME shared getCombatAimSouthLimit() so this can never
-  // disagree with what the crosshair itself is doing. In normal play
-  // getAimPoint() already guarantees aim.y can't resolve south of the
-  // limit, so this should never actually trigger — it exists so that IF
-  // any future caller ever bypasses that clamp, shot generation is still
-  // independently blocked rather than silently damaging something in
-  // front of the player.
-  if (aim.y > getCombatAimSouthLimit(aim.x)) {
-    if (DEBUG_MODE) {
-      r10DebugState.fireRejectCount++;
-      r10DebugState.fireRejectReason = 'TARGET_BEHIND_PLAYER';
-      if (r10DebugState.lastFireLogReason !== 'TARGET_BEHIND_PLAYER') {
-        r10DebugLog('FIRE BLOCKED: TARGET_BEHIND_PLAYER');
-        r10DebugState.lastFireLogReason = 'TARGET_BEHIND_PLAYER';
-      }
-    }
-    return;
-  }
+  // 6TH ADJUSTMENT ROUND (spec sections 3/4/6): the TARGET_BEHIND_PLAYER
+  // safety check that used to live here is removed along with the rest of
+  // the coordinate-level body-avoidance system — AIM's effective point is
+  // no longer restricted by the player's position at all (only the
+  // crosshair's own render VISIBILITY is, see renderAimReticle()'s own
+  // comment), so FIRE now always targets wherever AIM actually resolved
+  // to, exactly like FOCUS/effective-hit judgment — spec section 4's
+  // explicit "FIRE target判定まで無効化してはいけません".
   if (DEBUG_MODE) r10DebugState.lastFireLogReason = 'FIRED';
   p.fireCooldownUntil = now + FIRE_COOLDOWN_MS;
   p.ammo -= 1;
@@ -9599,29 +9629,18 @@ function getFlashlightCenter() {
   // mismatch would be most obvious.
   const rawX = state.centerX + p.strafeOffset + p.aimManualOffsetX + p.lightPersistX;
   const rawY = state.horizonY + state.cssH * 0.06 + p.aimManualOffsetY + p.lightPersistY;
-  const lightX = clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX);
+  // 6TH ADJUSTMENT ROUND (spec sections 3/5/6): real-device report — the
+  // body-avoidance south clamp (getCombatAimSouthLimit(), added the
+  // previous round) made AIM/SPOTLIGHT feel unusable ("物体にぶつかったから
+  // AIM座標が止まる" is explicitly banned now). SPOTLIGHT's center is back
+  // to a plain screen-edge-margin clamp only — no player/enemy/barrel
+  // collision of any kind. It still shares the EXACT same base+offset
+  // stack as getAimPoint() (immediately above), so AIM CENTER and SPOTLIGHT
+  // CENTER still land on the same point in every input state — see section
+  // 6's "座標系が再び分離しないように" requirement.
   return {
-    x: lightX,
-    // BUGFIX ROUND (spec section 25): SPOTLIGHT must stop at the EXACT same
-    // south boundary as AIM (getCombatAimSouthLimit(), the single shared
-    // source of truth) so the two can never desync at the one place — near
-    // the player — where a mismatch would be most visible.
-    // AIM OPERATING-AREA ROUND: root cause of "AIM can only reach +/-41px
-    // sideways" — this call used to pass NO x, so SPOTLIGHT's own south
-    // clamp always used the (then-scalar) whole-screen line, pinning
-    // light.y to that line's Y the instant lightY tried to go south of it —
-    // regardless of light.x. getAimPoint()'s OWN south clamp then measured
-    // distance against THIS stuck light center, so its light-containment
-    // circle (FLASHLIGHT_BASE_RADIUS, intentionally left unchanged this
-    // round) dragged the resolved AIM point back toward that stuck point in
-    // BOTH x and y the moment AIM's raw target strayed far from it — the
-    // actual mechanism restricting AIM sideways, not the south-limit itself.
-    // Passing lightX here means SPOTLIGHT's own south clamp now uses the
-    // SAME per-x body-avoidance check AIM does, so light.y is free to
-    // follow lightX south of the old line whenever lightX itself is clear
-    // of the player's body — SPOTLIGHT properly tracks AIM instead of
-    // anchoring it.
-    y: Math.min(clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX), getCombatAimSouthLimit(lightX)),
+    x: clamp(rawX, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX),
+    y: clamp(rawY, AIM_SCREEN_SAFE_MARGIN_PX, state.cssH - AIM_SCREEN_SAFE_MARGIN_PX),
   };
 }
 
@@ -9661,19 +9680,19 @@ function getAimPoint() {
     x = light.x + dx * k;
     y = light.y + dy * k;
   }
-  // BUGFIX ROUND (spec sections 21-28): FINAL, unconditional safety clamp —
-  // applied AFTER every other adjustment above (screen-edge margin, LIGHT-
-  // circle containment) so nothing upstream can ever reintroduce a y south
-  // of the player. This is what makes "in front of the player" a genuinely
-  // unreachable GAME-SPACE coordinate, not just a draw-order trick that
-  // hides an otherwise-still-valid south-of-limit value (spec explicitly
-  // forbids the latter).
-  // AIM OPERATING-AREA ROUND: passes the FINAL resolved x (after the LIGHT-
-  // circle adjustment above) — see getCombatAimSouthLimit()'s own comment.
-  // X itself is never touched here; only Y can ever be pulled north, so a
-  // stick input whose X component is already clear of the player's body
-  // keeps registering exactly as moved, with no separate "unstick" case.
-  y = Math.min(y, getCombatAimSouthLimit(x));
+  // 6TH ADJUSTMENT ROUND (spec sections 3/6): the body-avoidance south
+  // clamp that used to sit here (getCombatAimSouthLimit()) is REMOVED —
+  // real-device report was that "AIM coordinate stops when it hits the
+  // player" reads as broken/unusable, and spec explicitly bans any
+  // object-collision restriction on the AIM COORDINATE itself now. AIM's
+  // internal (x, y) is once again limited ONLY by the screen-edge margin
+  // (above) and the LIGHT-circle containment (just above this comment) —
+  // never by the player/enemy/barrel silhouette. Not overlapping the
+  // player VISUALLY is now handled purely as crosshair render visibility
+  // (see renderAimReticle()'s own comment) — this effective aim point is
+  // deliberately left reachable "behind" the player so FOCUS/FIRE target
+  // judgment is never silently disabled (spec section 4's explicit
+  // requirement).
   return { x, y };
 }
 
@@ -10611,7 +10630,16 @@ function renderPlayer(theme) {
     // ASSETS.player.dashSouthFrame's measured metadata — this is what
     // makes SOUTH DASH<->SOUTH WALK read as the same on-screen body size
     // and foot position instead of jumping on transition.
-    const standingBodyHeightPx = ASSETS.player.aim.naturalHeight * baseScale * p.scale;
+    // 6TH ADJUSTMENT ROUND (spec section 2): real-device report was SOUTH
+    // DASH reading too large — SOUTH_DASH_SCALE_MULT (0.90) is applied ONLY
+    // here, on top of the standing-height target, so SOUTH DASH alone
+    // renders ~10% smaller; SOUTH WALK/NORTH/EAST/WEST/FIRE/COVER all
+    // target the exact same unmultiplied standingBodyHeightPx elsewhere in
+    // this function and are completely unaffected. bodyBottomFrac still
+    // anchors the (now-smaller) sprite's foot to the same screen point, so
+    // the reduction reads as "smaller body, same ground contact", not a
+    // vertical jump.
+    const standingBodyHeightPx = ASSETS.player.aim.naturalHeight * baseScale * p.scale * SOUTH_DASH_SCALE_MULT;
     const frame = ASSETS.player.dashSouthFrame;
     const bodyScale = computeBodyVisualScale(frame, standingBodyHeightPx);
     drawW = frame.img.naturalWidth * bodyScale;
@@ -10689,7 +10717,26 @@ function renderPlayer(theme) {
     ctx.drawImage(img, dx, dy, drawW, drawH);
     ctx.restore();
   } else {
-    ctx.drawImage(img, dx, dy, drawW, drawH);
+    // 6TH ADJUSTMENT ROUND (spec section 5, Option B, user-approved after
+    // STOP report): darken the player's own sprite to the SAME curve
+    // enemy/barrels already get from renderFlashlightMask() (they draw
+    // BEFORE the mask; PLAYER draws after it — see that STOP report for why
+    // moving renderPlayer() itself was rejected as too high-regression-risk).
+    // flashlightOverlayAlphaAt() is the analytic equivalent of the real
+    // mask's gradient, sampled at the sprite's own on-screen center — a
+    // single value for the whole sprite (not a true per-pixel gradient like
+    // the real mask gets), which is the deliberate minimal-scope choice
+    // here: enough to stop the player reading as a flat, unlit sticker
+    // pasted over the scene, without inventing a new PLAYER-only lighting
+    // effect. Scoped to this plain draw path only — STEALTH/COVER/hit-flash
+    // above already carry their own distinct, pre-existing dim/tint
+    // treatments and are left untouched.
+    const tintAlpha = flashlightOverlayAlphaAt(dx + drawW / 2, dy + drawH / 2);
+    if (tintAlpha > 0.01) {
+      drawColorTintedSprite(img, dx, dy, drawW, drawH, '0,0,0', tintAlpha);
+    } else {
+      ctx.drawImage(img, dx, dy, drawW, drawH);
+    }
   }
 }
 
@@ -10848,11 +10895,22 @@ function renderEscapePlayer() {
   if (es.afterimages.length) {
     es.afterimages = es.afterimages.filter((a) => now < a.until);
     for (const a of es.afterimages) {
-      const spawnMs = a.until - now <= ESCAPE_AFTERIMAGE_MS ? ESCAPE_AFTERIMAGE_MS : ESCAPE_AFTERIMAGE_MS * 0.7;
-      const lifeFrac = Math.max(0, Math.min(1, (a.until - now) / spawnMs));
+      // 6TH ADJUSTMENT ROUND (spec section 8): HOLD at full peak alpha for
+      // the first ESCAPE_AFTERIMAGE_HOLD_MS (clearly, solidly visible — no
+      // fade at all during this window), THEN fade smoothly to 0 over the
+      // remaining ESCAPE_AFTERIMAGE_MS - ESCAPE_AFTERIMAGE_HOLD_MS. Replaces
+      // the old single linear ramp across the whole lifetime, which was
+      // already fading the instant the ghost appeared.
+      const elapsedMs = Math.max(0, ESCAPE_AFTERIMAGE_MS - (a.until - now));
+      const fadeWindowMs = ESCAPE_AFTERIMAGE_MS - ESCAPE_AFTERIMAGE_HOLD_MS;
+      const lifeFrac = elapsedMs <= ESCAPE_AFTERIMAGE_HOLD_MS
+        ? 1
+        : Math.max(0, 1 - (elapsedMs - ESCAPE_AFTERIMAGE_HOLD_MS) / fadeWindowMs);
       // 27TH ROUND item 8: peak alpha lowered (0.45 -> 0.28) per spec
       // ("もっと透け感を出して") — more see-through, still clearly visible
-      // as a ghost trail rather than a solid duplicate sprite.
+      // as a ghost trail rather than a solid duplicate sprite. 6TH
+      // ADJUSTMENT ROUND: kept unchanged pending Visual QA against the new
+      // hold+fade curve above — see completion report for the measurement.
       ctx.globalAlpha = lifeFrac * 0.28;
       if (a.angleRad) {
         // 30TH ROUND item 11: pivot on the real tire/ground-contact anchor
@@ -11329,10 +11387,18 @@ function renderEscapeDecoy() {
   // own comment for why that rendered the decoy's tire ~39px south of the
   // real body's own (label-clamped) tire-contact line on the same frame.
   const rect = computeEscapePlayerRectClamped(cx, bottomY, frame, es.depthPos, 1).rect;
-  // BUGFIX ROUND (spec sections 17-18): fades against visualUntil (its own
-  // shortened lifespan), fade window halved to 200ms to match — keeps the
-  // same proportion of the visible lifetime spent fading as before.
-  const fadeAlpha = clamp((d.visualUntil - now) / 200, 0, 1);
+  // 6TH ADJUSTMENT ROUND (spec section 9): HOLD at full alpha for the first
+  // DECOY_VISUAL_HOLD_MS (clearly, solidly visible), THEN fade smoothly to 0
+  // over the rest of the same DECOY_DURATION_MS/2 visual window — same
+  // hold-then-fade shape as the DASH ghost (renderEscapePlayer()'s own
+  // afterimage loop), replacing the old "visible for 900ms, fade only in
+  // the last 200ms" split.
+  const decoyVisualDurationMs = DECOY_DURATION_MS / 2;
+  const elapsedMs = Math.max(0, decoyVisualDurationMs - (d.visualUntil - now));
+  const fadeWindowMs = decoyVisualDurationMs - DECOY_VISUAL_HOLD_MS;
+  const fadeAlpha = elapsedMs <= DECOY_VISUAL_HOLD_MS
+    ? 1
+    : Math.max(0, 1 - (elapsedMs - DECOY_VISUAL_HOLD_MS) / fadeWindowMs);
   ctx.save();
   ctx.globalAlpha = 0.45 * fadeAlpha;
   ctx.drawImage(frame.img, rect.dx, rect.dy, rect.drawW, rect.drawH);
@@ -11648,13 +11714,17 @@ function renderFlashlightMask() {
   darkCtx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
   darkCtx.globalCompositeOperation = 'source-over';
   darkCtx.clearRect(0, 0, state.cssW, state.cssH);
-  darkCtx.fillStyle = 'rgba(0,0,0,0.90)';
+  darkCtx.fillStyle = `rgba(0,0,0,${FLASHLIGHT_MASK_BASE_ALPHA})`;
   darkCtx.fillRect(0, 0, state.cssW, state.cssH);
 
+  // 6TH ADJUSTMENT ROUND: stop positions/erase strengths now read from the
+  // SAME FLASHLIGHT_MASK_* constants flashlightOverlayAlphaAt() uses (see
+  // that function's own comment) — this exact gradient and that analytic
+  // function must always agree.
   const center = getFlashlightCenter();
   const grad = darkCtx.createRadialGradient(center.x, center.y, 0, center.x, center.y, FLASHLIGHT_BASE_RADIUS);
   grad.addColorStop(0, 'rgba(0,0,0,1)');
-  grad.addColorStop(0.7, 'rgba(0,0,0,0.85)');
+  grad.addColorStop(FLASHLIGHT_MASK_MID_STOP, `rgba(0,0,0,${FLASHLIGHT_MASK_MID_ERASE})`);
   grad.addColorStop(1, 'rgba(0,0,0,0)');
   darkCtx.globalCompositeOperation = 'destination-out';
   darkCtx.fillStyle = grad;
@@ -11840,10 +11910,23 @@ function renderAimReticle() {
       Math.hypot(aim.x - rectForReticle.headX, aim.y - rectForReticle.headY) <= rectForReticle.headR;
   }
   const hot = effectiveNow && onWeakPoint;
+  const r = 6; // was 11 — PART 7: smaller crosshair
+  // 6TH ADJUSTMENT ROUND (spec section 4): AIM's own coordinate is
+  // unrestricted now (see getAimPoint()'s own comment) — a "+" that would
+  // otherwise render on top of the player's real visible body is simply
+  // SKIPPED this frame, nothing else. The coordinate keeps moving through
+  // that region exactly as input drives it (so a continued south push
+  // still reaches the far side, and it reappears immediately once aim.x/y
+  // clears the body) — this never touches aim.x/y, isEffectiveDamageNow(),
+  // FOCUS, or fireWeapon()'s own target, all of which still read the
+  // genuine getAimPoint() result regardless of whether it's drawn this
+  // frame (spec section 4's explicit "無効化してはいけません").
+  // Margin uses the glyph's own half-length (r) so the "+"'s drawn ARMS,
+  // not just its center point, never visibly clip the body edge.
+  if (isPointOverPlayerBody(aim.x, aim.y, r)) return;
   ctx.save();
   ctx.strokeStyle = hot ? 'rgba(255,214,10,0.95)' : 'rgba(255,255,255,0.9)';
   ctx.lineWidth = 1.5;
-  const r = 6; // was 11 — PART 7: smaller crosshair
   ctx.beginPath();
   ctx.moveTo(aim.x - r, aim.y); ctx.lineTo(aim.x + r, aim.y);
   ctx.moveTo(aim.x, aim.y - r); ctx.lineTo(aim.x, aim.y + r);
@@ -12303,20 +12386,23 @@ function beginCombatIntro(now, enemyType, isFinal) {
 function updateCombatIntroPhase(now) {
   const r = state.run;
   const elapsed = now - r.phaseStartedAt;
+  // 6TH ADJUSTMENT ROUND (spec section 12): the enemy-name / "BATTLE" text
+  // banner is removed entirely — COMBAT now starts as soon as the light-
+  // burst materialize reveal (renderCombatIntroOverlay(), RUN_INTRO_REVEAL_MS,
+  // untouched — still satisfies spec section 13's "gradual display") is
+  // done, instead of also holding on the old RUN_INTRO_BATTLE_MS banner
+  // window. r.phase only flips to 'COMBAT' at the very end of this function
+  // either way, and updateRunFlow()'s own phase==='COMBAT' gate is what
+  // already fully blocks updateEnemy()/fireWeapon()/all targeting for the
+  // entire COMBAT_INTRO phase (see that function's own comment) — removing
+  // the banner does not touch that gate at all.
   if (!r.enemyRevealed) {
     if (elapsed < RUN_INTRO_EMPTY_MS) return;
     r.enemyRevealed = true;
     spawnEnemy(r.introEnemyType);
-    showRunBanner((r.isFinalCombat ? 'FINAL BATTLE: ' : '') + (ENEMY_LABEL[r.introEnemyType] || r.introEnemyType), '');
     return;
   }
-  if (elapsed < RUN_INTRO_EMPTY_MS + RUN_INTRO_REVEAL_MS + RUN_INTRO_BATTLE_MS) {
-    if (elapsed >= RUN_INTRO_EMPTY_MS + RUN_INTRO_REVEAL_MS) {
-      runFlowBannerSubEl.textContent = 'BATTLE';
-    }
-    return;
-  }
-  hideRunBanner();
+  if (elapsed < RUN_INTRO_EMPTY_MS + RUN_INTRO_REVEAL_MS) return;
   state.combat.timeLeftSec = COMBAT_TIME_LIMIT_SEC;
   r.phase = 'COMBAT';
   r.phaseStartedAt = now;
@@ -13226,8 +13312,9 @@ window.__darkoutTps = {
   get controllerAimSensitivity() { return controllerAimSensitivity; },
   set controllerAimSensitivity(v) { controllerAimSensitivity = v; },
   AIM_SENSITIVITY_PRESETS, computePlayerDrawRect,
-  // AIM OPERATING-AREA ROUND: exposed for automated testing only.
-  computePlayerVisualBounds, getCombatAimSouthLimit,
+  // AIM OPERATING-AREA ROUND / 6TH ADJUSTMENT ROUND: exposed for automated
+  // testing only.
+  computePlayerVisualBounds, isPointOverPlayerBody,
   ENEMY_MAX_HP, ADAM_SPHERE_WORLD_HEIGHT, ROID_WORLD_HEIGHT,
   GABRIEL_Z_MIN, GABRIEL_NORMAL_Z_MIN, ADAM_Z_MIN,
   applyForwardDelta, ATTACK_FLASH_TYPES, fireWeapon,
@@ -13257,6 +13344,10 @@ window.__darkoutTps = {
   ESCAPE_DASH_BLINK_MS, ESCAPE_STRAFE_DASH_DISTANCE_PX,
   ESCAPE_SOUTH_DASH_DISTANCE_Z, ESCAPE_NORTH_BACKSTEP_DISTANCE_Z,
   FLASHLIGHT_BASE_RADIUS, FIRE_POSE_SCALE_BOOST,
+  // 6TH ADJUSTMENT ROUND: exposed for automated testing only.
+  flashlightOverlayAlphaAt, FLASHLIGHT_MASK_BASE_ALPHA,
+  FLASHLIGHT_MASK_MID_STOP, FLASHLIGHT_MASK_MID_ERASE,
+  ESCAPE_AFTERIMAGE_HOLD_MS, ESCAPE_AFTERIMAGE_MS,
   // 12TH ROUND: PLAYER PERSPECTIVE, world-space TARGET AREA/PROJECTILE,
   // effective-hit/FOCUS/LIGHT unification — exposed for automated testing
   // only.
@@ -13319,6 +13410,7 @@ window.__darkoutTps = {
   // 30TH ROUND items 19-22: DECOY — exposed for automated testing only.
   updateEscapeDecoy, renderEscapeDecoy, playerOrDecoyMarkerPos,
   DECOY_DURATION_MS, DECOY_SCREEN_OFFSET_PX, COLLAPSE_JUMP_COMBO_WINDOW_MS,
+  DECOY_VISUAL_HOLD_MS,
   // 30TH ROUND items 23-26 / EMERGENCY HOTFIX: lighting — exposed for
   // automated testing only.
   renderCorridor, renderStructure, structures, MIRRORED_STRUCTURE_KINDS,
@@ -13326,7 +13418,7 @@ window.__darkoutTps = {
   CORRIDOR_HALF_WIDTH, CORRIDOR_CEIL_Y, CORRIDOR_FLOOR_Y,
   // RUN FLOW SYSTEM — exposed for automated testing/DEBUG only.
   updateRunFlow, renderRunFlowOverlay, decideNextRunStep, onEnemyDefeated,
-  resetAimToCombatCenter, applyManualRunOverride, getCombatAimSouthLimit,
+  resetAimToCombatCenter, applyManualRunOverride,
   pickNextEnemy, pickFinalBattleEnemy, tickRunDistance,
   beginCombatIntro, beginEvacuationWarning, beginMountTransition,
   beginEscapeStretch, beginDismountTransition, enterEscapeComplete,
