@@ -74,10 +74,14 @@
     <video id="intro-video" muted playsinline autoplay preload="auto" poster="assets/video/loading_intro_poster.jpg?v=1">
       <source src="assets/video/loading_intro.mp4?v=1" type="video/mp4">
     </video>
+    <!-- UI POLISH ROUND: the "DARK OUT 2" brand title is deliberately no
+         longer shown on the LOADING gauge itself — the real intro video
+         already carries the title/atmosphere, and a second, separate text
+         title layered on top of it read as redundant clutter (explicit
+         user request). Progress bar + percent are unchanged/still shown. -->
     <div id="loading-gauge-wrap">
-      <div id="loading-title">DARK OUT 2</div>
+      <div id="loading-status">LOADING... <span id="loading-pct">0</span>%</div>
       <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
-      <div id="loading-status">LOADING ASSETS... <span id="loading-pct">0</span>%</div>
       <div id="loading-eta">CALCULATING...</div>
     </div>
     <!-- BOOT FLOW ROUND: a single, unified LOAD ERROR display — shown ONLY
@@ -100,7 +104,19 @@
          depth. Deliberately a plain click/pointer target only — never wired
          into pollGamepad()'s button handling, so a gamepad press alone can
          never skip past it (spec's own explicit requirement). -->
-    <button type="button" tabindex="-1" id="tap-to-start-btn" hidden data-en="TAP TO START" data-ja="タップしてスタート">TAP TO START</button>
+    <!-- UI POLISH ROUND: split into a main line (keeps the existing EN/JA
+         lang-toggle behavior, unchanged — applyUiLang() still finds this
+         inner span via its own data-en/data-ja) and a fixed sub-guide line
+         underneath (deliberately NOT lang-toggle-driven — always the same
+         Japanese guide text, per explicit request, regardless of which
+         language the main line is currently showing). The outer <button>
+         stays the single click target; handleTapToStart()'s listener is
+         unchanged (still bound to #tap-to-start-btn itself, which still
+         receives the click regardless of which inner span was tapped). -->
+    <button type="button" tabindex="-1" id="tap-to-start-btn" hidden>
+      <span id="tap-to-start-main" data-en="TAP TO START" data-ja="タップしてスタート">TAP TO START</span>
+      <span id="tap-to-start-sub">画面をタップしてください</span>
+    </button>
   </div>
 
   <!-- 6TH ROUND PART 7/8/9/10/11/12: replaces the old "TAP TO START"

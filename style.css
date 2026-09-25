@@ -239,31 +239,58 @@ html, body {
 }
 #loading-reload-btn:active { background: rgba(255,255,255,0.24); }
 
-/* BOOT FLOW ROUND: TAP TO START — bottom-anchored so it never competes with
-   the video's own main subject/composition (mockup: video fills the frame,
-   this sits in the safe margin below it). Hidden by default; only ever
-   un-hidden by showTapToStartPrompt() in game.js, at the exact LOADING-100%
-   transition, never earlier. The pulse animation is purely decorative
-   (draws the eye) and carries no timing logic of its own. */
+/* BOOT FLOW ROUND / UI POLISH ROUND: TAP TO START — bottom-anchored so it
+   never competes with the video's own main subject/composition. Hidden by
+   default; only ever un-hidden by showTapToStartPrompt() in game.js, at the
+   exact LOADING-100% transition, never earlier. The pulse animation is
+   purely decorative (draws the eye) and carries no timing logic of its own.
+   UI POLISH ROUND: nudged up slightly from the previous bottom offset
+   (explicit "3ミリくらい上" request — a modest, viewport-relative bump, not
+   a large relocation), restyled toward the reference image's refined
+   near-future look (moderate weight — not thin, not heavy/black —
+   generous letter-spacing, a soft cool-white glow layered under the
+   existing grounding drop-shadow) but deliberately kept far smaller than
+   that reference's own oversized "PLEASE TAP SCREEN" — legibility over
+   spectacle. Now a flex column so the new sub-guide line stacks cleanly
+   underneath without needing a second absolutely-positioned element. */
 #tap-to-start-btn {
   position: absolute;
   left: 50%;
-  bottom: max(40px, env(safe-area-inset-bottom) + 28px);
+  bottom: max(58px, env(safe-area-inset-bottom) + 46px);
   transform: translateX(-50%);
   z-index: 1;
   background: transparent;
   border: none;
   padding: 10px 18px;
-  color: #f5f3ee;
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-shadow: 0 1px 4px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
   animation: tapToStartPulse 1.7s ease-in-out infinite;
 }
 #tap-to-start-btn[hidden] { display: none; }
+#tap-to-start-main {
+  color: #f6f7f9;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-shadow: 0 0 10px rgba(178,222,255,0.5), 0 0 3px rgba(255,255,255,0.55), 0 1px 4px rgba(0,0,0,0.9);
+}
+/* UI POLISH ROUND: sub-guide line — deliberately smaller/dimmer than the
+   main line and with no glow of its own, so it reads as a quiet assist
+   text, never competing with TAP TO START for attention. Never lang-toggle-
+   driven (see index.html's own comment on this element) — always this
+   exact Japanese guide text regardless of the EN/JA toggle state. */
+#tap-to-start-sub {
+  color: #b7c2ca;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
 @keyframes tapToStartPulse {
-  0%, 100% { opacity: 0.5; }
+  0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
 }
 
@@ -438,7 +465,18 @@ html, body {
 }
 /* 10TH ROUND (items 25-27): AMMO removed from here — it now lives in
    exactly ONE place, #ammo-hud below #focus-hud (see its own rule). */
-#stealth-readout { color: #7fd3ff; opacity: 0.85; }
+/* UI POLISH ROUND: the "STEALTH OFF"/"STEALTH ON" HUD text is now always
+   hidden (explicit request — display only, never the underlying state).
+   game.js's own stealthStateEl.textContent/stealthReadoutEl.classList.
+   toggle('active', p.stealth) writes are completely untouched (see
+   updateHud()'s own call site) — they simply now update an invisible
+   element every frame, which is a harmless no-op. This single display:none
+   covers every case (COMBAT/ESCAPE/PAUSE-resume/enemy switch/mobile touch
+   UI/Gamepad) since none of those paths do anything but write to this same
+   element; ESCAPE mode's own pre-existing display:none (see body.escape-
+   mode #stealth-readout below) becomes redundant here but is left in place
+   untouched, causing no conflict (display:none stacking is idempotent). */
+#stealth-readout { display: none; color: #7fd3ff; opacity: 0.85; }
 #stealth-readout.active #stealth-state { color: #7fffb0; font-weight: 700; }
 
 /* 28TH ROUND item 7: persistent (no auto-hide timer, unlike
