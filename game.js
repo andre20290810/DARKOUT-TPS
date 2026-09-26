@@ -831,12 +831,15 @@ const FLASHLIGHT_MASK_MID_ERASE = 0.85;    // erase strength at that stop
 // BASE_ALPHA darkness), linearly interpolated exactly as Canvas2D interpolates
 // a radial gradient between stops. Returns the darkness overlay alpha (0 =
 // fully lit, FLASHLIGHT_MASK_BASE_ALPHA = fully dark) a real point on the
-// mask would receive — used by renderPlayer() to darken the player's own
-// sprite (via the SAME silhouette-clipped tint technique drawRedTintedSprite()
-// already uses) to the SAME curve enemy/barrels get from the real mask,
-// instead of moving renderPlayer() itself before renderFlashlightMask()
-// (rejected in the STOP report — see its own comment there for the
-// concrete regression risk to missile/boss-attack/bullet draw order).
+// mask would receive. 7TH ROUND (spec section 2): its one caller (renderPlayer()
+// darkening the PLAYER sprite to this same curve) was REMOVED — real-device
+// evidence showed this sat at/near full darkness for most of ordinary
+// combat (AIM/SPOTLIGHT share one coordinate, and the enemy is essentially
+// never at the player's own screen position), reading as the player
+// randomly going near-black. PLAYER must now stay unconditionally visible
+// (see renderPlayer()'s own comment). Left defined/exposed (harmless,
+// unused by gameplay code) in case a future, much more conservative
+// darkness treatment is wanted later.
 function flashlightOverlayAlphaAt(x, y) {
   const center = getFlashlightCenter();
   const t = Math.min(Math.hypot(x - center.x, y - center.y) / FLASHLIGHT_BASE_RADIUS, 1);
@@ -1242,6 +1245,58 @@ const BARREL_TOUCH_Z_MAX = 300; // was COVER_BARREL_Z_MAX — barrel must be thi
 const BARREL_COLLIDE_Z_FLOOR = 55; // PART 11: forward movement can never push an X-aligned barrel's own z below this (walking into it from the front)
 const BARREL_SPACING_Z = 420;
 const BARREL_LANE_OFFSET = 130; // world X either side of center — never blocks the center path
+
+// ---------------------------------------------------------------------
+// BARREL ROW EXPLOSION / KNOCKBACK (7TH ROUND, spec sections 4-10) —
+// environment gimmick: shooting any barrel in a ROW detonates the whole
+// row once, permanently (never re-triggers), and knocks back a qualifying
+// nearby enemy exactly one ROW deeper. No PLAYER or ENEMY damage — see
+// triggerBarrelRow()'s own comment.
+// ---------------------------------------------------------------------
+// "how close counts as near this row" — reuses BARREL_TOUCH_RADIUS_PX's
+// own sibling constant BARREL_TOUCH_Z_MAX (the existing, already-shipped
+// "close enough in world-z to interact with these barrels at all"
+// threshold COVER already uses) rather than inventing a new magic number,
+// per spec section 8's explicit "既存COVER/depth/approach thresholdから
+// 再利用可能な値があるか調査してください" — reported as this round's own
+// candidate; revisit if a different tolerance is wanted.
+const BARREL_ROW_PROXIMITY_Z = BARREL_TOUCH_Z_MAX;
+// Eased retreat-to-a-farther-z duration — reuses CLAW_RECOVERY_MS (900ms),
+// the EXISTING constant for this exact kind of motion (GABRIEL/ADAM's own
+// post-attack ease back to a farther distance), rather than a new value —
+// see updateEnemyCore()'s own knockback-gate comment.
+const BARREL_KNOCKBACK_MS = CLAW_RECOVERY_MS;
+// KNOCKBACK is never applied to these types, regardless of distance/state
+// (explicit spec requirement) — the "push back one ground depth-row"
+// gimmick doesn't apply to DRONE (airborne/flying, not a ground approach)
+// or ADAM SPHERE (out of scope for this ground gimmick per spec).
+const KNOCKBACK_EXCLUDED_TYPES = { drone: true, adamSphere: true };
+// Whitelist-only (spec section 9: "未知のstateはFALSE") — built from a full
+// enumeration of every attackState this codebase's enemy state machine
+// actually uses (grep-verified) and, for each, whether e.z is written by an
+// ABSOLUTE start-z-based interpolation this round's frame would immediately
+// overwrite (UNSAFE, excluded) or is either untouched or updated
+// incrementally from e.z's own current value (SAFE, included). See
+// updateEnemyCore()'s claw block ('approach'/'recovery'/'counterApproach'
+// use `e.z = e.clawApproachStartZ + (target - start) * eased`, confirmed
+// UNSAFE) and its sniper/sweep/barrage block (lock_red/lock_yellow/fire/
+// impact/target/sweepTelegraph/sweepFiring/barrageLockon/barrageFalling/
+// cooldown — none of these ever assign e.z at all, confirmed SAFE) for the
+// exact source this table is derived from.
+const KNOCKBACK_SAFE_ATTACK_STATES = {
+  roid1: { idle: true, lock_red: true, lock_yellow: true, fire: true, impact: true, cooldown: true,
+    sweepTelegraph: true, sweepFiring: true, barrageLockon: true, barrageFalling: true },
+  roid2: { idle: true, lock_red: true, lock_yellow: true, fire: true, impact: true, cooldown: true,
+    sweepTelegraph: true, sweepFiring: true, barrageLockon: true, barrageFalling: true },
+  gabriel: { idle: true, blink: true, telegraph: true, impact: true, cooldown: true, defense: true, counterAttack: true },
+  adam: { idle: true, blink: true, telegraph: true, impact: true, cooldown: true, defense: true, counterAttack: true },
+};
+function isKnockbackSafe(e) {
+  if (e.deathState !== 'alive') return false;
+  if (KNOCKBACK_EXCLUDED_TYPES[e.type]) return false;
+  const table = KNOCKBACK_SAFE_ATTACK_STATES[e.type];
+  return !!(table && table[e.attackState]);
+}
 
 // ---------------------------------------------------------------------
 // ENEMY ATTACK PHASE TIMINGS (PART 6/7/8) — replaces the old single
@@ -1661,8 +1716,16 @@ const distanceReadoutValueEl = document.getElementById('distance-readout-value')
 const resultScreenEl = document.getElementById('result-screen');
 const resultScoreValueEl = document.getElementById('result-score-value');
 const resultRankValueEl = document.getElementById('result-rank-value');
+const resultTimeValueEl = document.getElementById('result-time-value');
+const resultContinueValueEl = document.getElementById('result-continue-value');
 const resultQuitBtnEl = document.getElementById('result-quit-btn');
 const resultArtistBtnEl = document.getElementById('result-artist-btn');
+// 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER interactive screen.
+const gameoverScreenEl = document.getElementById('gameover-screen');
+const gameoverContinueCountValueEl = document.getElementById('gameover-continue-count-value');
+const gameoverContinueRowEl = document.getElementById('gameover-continue-row');
+const gameoverContinueBtnEl = document.getElementById('gameover-continue-btn');
+const gameoverQuitBtnEl = document.getElementById('gameover-quit-btn');
 
 const dbgFpsEl = document.getElementById('dbg-fps');
 const dbgFrameEl = document.getElementById('dbg-frametime');
@@ -1779,7 +1842,11 @@ function r10CollectSnapshot(ts) {
       evacuateDirection: state.run.evacuateDirection,
       distanceRemaining: Math.round(state.progress.distanceRemaining),
       distanceTotal: state.progress.distanceTotal,
-      combatTimeLeftSec: Math.max(0, Math.ceil(state.combat.timeLeftSec)),
+      // 7TH ROUND (spec section 13): COMBAT TIME LIMIT removed — this value
+      // still exists/resets but is no longer read as a deadline anywhere
+      // (see frame()'s own comment). Kept as a plain elapsed-style debug
+      // number, not a countdown that means anything gameplay-wise anymore.
+      combatTimeLeftSecUnused: Math.max(0, Math.ceil(state.combat.timeLeftSec)),
       score: state.score,
       defeatedEnemies: state.history.defeatedEnemies.join(',') || '-',
       encounteredEnemies: state.history.encounteredEnemies.join(',') || '-',
@@ -1804,7 +1871,26 @@ function r10CollectSnapshot(ts) {
       gameOverTriggered: state.run.gameOverTriggered,
       gameOverReason: state.run.gameOverReason || '-',
       lastTransition: state.run.lastTransition || '-',
-      lastTransitionAt: Math.round(state.run.lastTransitionAt || 0) },
+      lastTransitionAt: Math.round(state.run.lastTransitionAt || 0),
+      // 7TH ROUND 4th sub-part (spec sections 1-18): fixed ROUTE + CONTINUE
+      // + TOTAL PLAY TIME diagnostic fields.
+      routeBranch: state.run.routeBranch || '-',
+      routeSection: state.run.routeSection,
+      routeStep: state.run.routeStep,
+      // 7TH ROUND 6th sub-part (spec sections 11-12): was already computed
+      // on state.run but never surfaced in this snapshot — added so a real-
+      // device "did COMBAT happen twice" report can be checked against the
+      // actual encounterRole (e.g. distinguishing a real repeat ROID1 from
+      // the expected ROID1 -> GABRIEL sequence) without guessing from
+      // enemy appearance alone.
+      encounterRole: state.run.encounterRole || '-',
+      routeJudgementHpRatio: state.run.routeJudgementHpRatio == null ? '-' : state.run.routeJudgementHpRatio.toFixed(3),
+      continueCount: state.run.continueCount,
+      deathGameMode: state.run.deathGameMode || '-',
+      totalPlayTimeMs: Math.round(state.run.totalPlayTimeMs),
+      totalPlayTimeStr: formatClearTime(state.run.totalPlayTimeMs),
+      aFinalPreAdamTimerStartedAt: state.run.aFinalPreAdamTimerStartedAt,
+      escapeCheckpointEnemyHp: state.run.escapeCheckpointEnemyHp == null ? '-' : state.run.escapeCheckpointEnemyHp },
     clearSeq: { active: state.clearSequence.active, phase: state.clearSequence.phase, reason: state.clearSequence.reason || '-' },
     // 6TH ADJUSTMENT ROUND (spec sections 3/4/6): AIM's coordinate is no
     // longer clamped by the player's body at all (aimX/aimY here can
@@ -2061,8 +2147,16 @@ function r10UpdateDebugPanel(ts) {
     (s.clearSeq.active ? ' CLEAR=' + s.clearSeq.phase : '') +
     '\n RUN=' + s.runFlow.phase + (s.runFlow.isFinalCombat ? '[FINAL]' : '') +
     ' dist=' + s.runFlow.distanceRemaining + '/' + s.runFlow.distanceTotal +
-    ' combatT=' + s.runFlow.combatTimeLeftSec + ' score=' + s.runFlow.score +
+    ' combatT(unused)=' + s.runFlow.combatTimeLeftSecUnused + ' score=' + s.runFlow.score +
     ' dir=' + s.runFlow.evacuateDirection +
+    // 7TH ROUND 6th sub-part (spec sections 11-12): so a real-device "did
+    // COMBAT happen twice" report can be checked on the spot — cur=enemy
+    // type and mode=(state.gameMode) are already shown above/on this line;
+    // this adds the route position + encounter role, the two fields that
+    // were previously computed only in r10CollectSnapshot() and never
+    // actually reached this on-screen panel.
+    '\n ROUTE=' + s.runFlow.routeSection + '/' + s.runFlow.routeStep + ' branch=' + s.runFlow.routeBranch +
+    ' role=' + s.runFlow.encounterRole +
     '\n prevEnemy=' + s.runFlow.previousEnemy + ' result=' + s.runFlow.previousBattleResult +
     ' drone=' + s.runFlow.droneDefeatCount + '/' + s.runFlow.droneIntroTarget +
     ' defeated=[' + s.runFlow.defeatedEnemies + ']' +
@@ -2165,7 +2259,7 @@ function r10FormatDebugText(s) {
   lines.push('RUN FLOW');
   lines.push('phase: ' + s.runFlow.phase + (s.runFlow.isFinalCombat ? ' [FINAL]' : ''));
   lines.push('distance: ' + s.runFlow.distanceRemaining + '/' + s.runFlow.distanceTotal + 'm');
-  lines.push('combatTimeLeftSec: ' + s.runFlow.combatTimeLeftSec);
+  lines.push('combatTimeLeftSec (no longer a limit, 7TH ROUND section 13): ' + s.runFlow.combatTimeLeftSecUnused);
   lines.push('evacuateDirection: ' + s.runFlow.evacuateDirection);
   lines.push('score: ' + s.runFlow.score);
   lines.push('defeatedEnemies: ' + s.runFlow.defeatedEnemies);
@@ -2181,6 +2275,10 @@ function r10FormatDebugText(s) {
   lines.push('gameMode: ' + s.runFlow.gameMode + ' manualSelectionActive: ' + s.runFlow.manualSelectionActive);
   lines.push('manualSelectedMode: ' + s.runFlow.manualSelectedMode + ' manualSelectedEnemy: ' + s.runFlow.manualSelectedEnemy);
   lines.push('currentEnemy: ' + s.runFlow.currentEnemy + ' nextEnemy: ' + s.runFlow.nextEnemy);
+  // 7TH ROUND 6th sub-part (spec sections 11-12): route position + encounter
+  // role — already computed in r10CollectSnapshot() but never printed here.
+  lines.push('routeBranch: ' + s.runFlow.routeBranch + ' routeSection: ' + s.runFlow.routeSection +
+    ' routeStep: ' + s.runFlow.routeStep + ' encounterRole: ' + s.runFlow.encounterRole);
   lines.push('playerHp: ' + s.runFlow.playerHp + ' clearSequencePhase: ' + s.runFlow.clearSequencePhase);
   lines.push('gameOverTriggered: ' + s.runFlow.gameOverTriggered + ' gameOverReason: ' + s.runFlow.gameOverReason);
   lines.push('lastTransition: ' + s.runFlow.lastTransition + ' (' + s.runFlow.lastTransitionAt + ')');
@@ -2778,6 +2876,21 @@ const ASSETS = {
       loadImg('assets/gabriel/gabriel_walk_2.png'),
       loadImg('assets/gabriel/gabriel_walk_3.png'),
     ],
+    // 7TH ROUND (spec section 2): real ACTION-GAME asset (assets/boss/
+    // cinematic_pose.png there — the same "DOWN/CINEMATIC" pose ACTION-GAME
+    // itself uses for GABRIEL's intro/HP-milestone/DYING/FLASH-DOWN beats),
+    // copied read-only, byte-identical (md5-verified), no crop/generation.
+    // Only the front-facing image is wired in — DARKOUT-TPS's own GABRIEL
+    // has no true north/back-facing render state (e.facing is only ever
+    // 'east'/'west', a lean/flip on the SAME south-style art — see
+    // updateEnemyFacing()), so the back-facing companion image
+    // (gabriel_cinematic_pose_back.png, also copied to the same folder)
+    // has no corresponding use case here and is left unreferenced rather
+    // than inventing one. bodyTopFrac/bodyBottomFrac/bodyCenterXFrac are
+    // real alpha-channel measurements of this exact file (full per-pixel
+    // scan, alpha>10 threshold — same methodology every other
+    // coverSpriteFrame() entry in this file already uses).
+    cinematicPose: coverSpriteFrame('assets/gabriel/gabriel_cinematic_pose.png', 0.0006, 0.9988, 0.4720),
   },
   // 5TH ROUND PART 7: ADAM — real ACTION-GAME asset, copied read-only, same
   // as every other character here. ADAM shares GABRIEL's own attack FAMILY
@@ -3205,6 +3318,19 @@ function handleTapToStart() {
   loadingScreenEl.hidden = true;
   modeSelectScreenEl.hidden = false;
   state.gamepadSettleUntil = performance.now() + GAMEPAD_SETTLE_MS;
+  // 7TH ROUND (spec section 1): a TOUCH tap on tapToStartBtnEl (this
+  // function's other real call site, tapToStartBtnEl's own click listener
+  // right below) leaves that <button> holding DOM focus — the SAME already-
+  // diagnosed mechanism as "27TH ROUND item 10" (togglePauseMenu()'s own
+  // RESUME branch, see its comment): a focused-but-now-hidden element can
+  // keep intercepting D-PAD/stick-as-navigation input meant for this game's
+  // own poll-based gamepad reading on Android/console WebViews, all the way
+  // into MODE SELECT and beyond. The gamepad-driven path through this exact
+  // function (pollGamepad()'s own TAP-TO-START block) already blurs
+  // defensively; this was the one remaining call site that didn't.
+  if (document.activeElement && typeof document.activeElement.blur === 'function' && document.activeElement !== document.body) {
+    document.activeElement.blur();
+  }
   if (DEBUG_MODE) r10DebugLog('TAP TO START');
 }
 if (tapToStartBtnEl) {
@@ -3219,6 +3345,18 @@ const state = {
   dpr: 1,
   cssW: window.innerWidth,
   cssH: window.innerHeight,
+  // 7TH ROUND 4th sub-part (spec sections 38-45): safe, resolution-derived
+  // defaults so these are never literally `undefined` in the pathological
+  // window before resize()'s own first successful call (see its own
+  // comment) — same formula resize() itself uses, not a new/invented value.
+  // If window.innerWidth/innerHeight also happen to be degenerate at this
+  // exact instant, this is still strictly better than `undefined` (adding
+  // 0 can't poison downstream math to NaN the way undefined does), and
+  // resize()'s own bounded retry loop corrects it within a few animation
+  // frames regardless — long before LOADING/TAP TO START/mode-select can
+  // possibly finish and let real gameplay begin.
+  centerX: window.innerWidth / 2,
+  horizonY: window.innerHeight * HORIZON_Y_RATIO,
   theme: 'lab',
   // ESCAPE-exclusive GAMEPLAY mode, entirely separate from state.theme
   // above: theme is ONLY the visual corridor palette/decor (LAB/ARMORED/
@@ -3589,6 +3727,10 @@ const state = {
   // but each needs its own independent edge-detection baseline.
   resultFocus: 0,
   resultPrevStickY: 0,
+  // 7TH ROUND 4th sub-part: GAME OVER screen's own CONTINUE(0)/QUIT(1)
+  // gamepad focus — same role/pattern as resultFocus/resultPrevStickY.
+  gameOverFocus: 0,
+  gameOverPrevStickY: 0,
   // ENEMY SELECT / AUTO MODE (4th round). 'auto' cycles AUTO_SEQUENCE;
   // any other value is one specific implemented enemy type. autoMode.index
   // is AUTO_SEQUENCE's own index (only ever points at an implemented type).
@@ -3661,6 +3803,82 @@ const state = {
     // GAME OVER). Diagnostic only, never read by gameplay logic.
     lastTransition: null,
     lastTransitionAt: 0,
+    // 7TH ROUND (spec section 3): the SOURCE OF TRUTH for what narrative
+    // role the CURRENT encounter plays, when enemy.type alone is
+    // ambiguous (ADAM SPHERE is the only case today — same type, two
+    // different meanings depending on route). Set once per encounter by
+    // beginCombatIntro()'s own encounterRole parameter, read by
+    // startEnemyDeath() to pick the right death family. null for every
+    // encounter that doesn't need this distinction (i.e. everything
+    // except the route-specific ADAM SPHERE encounters) — never a
+    // per-frame/render-only flag, never re-derived from enemy.type.
+    // GABRIEL's own non-final-vs-FINAL death-style split reuses the
+    // EXISTING isFinalCombat flag directly (already the established
+    // "is this the run's last fight" signal) rather than duplicating it
+    // here — see startEnemyDeath()'s own comment.
+    encounterRole: null,
+    // 7TH ROUND 4th sub-part (spec sections 1-9): fixed ROUTE SEQUENCE
+    // state, replacing pickNextEnemy()'s random/history-driven pool as the
+    // real progression source of truth. routeBranch is the ONE-TIME,
+    // RUN-WIDE decision (null until ROUTE JUDGEMENT fires at the COMMON
+    // ROUTE's ROID1 defeat, then 'A'|'B' forever — never re-derived, never
+    // reset by CONTINUE). routeSection is the array CURRENTLY being walked
+    // ('COMMON' until the judgement's own advanceRouteStep() call crosses
+    // into the branch — kept distinct from routeBranch so the one transition
+    // frame between "judgement decided" and "actually entered the branch"
+    // is never ambiguous). routeStep indexes into whichever array
+    // routeSection names. See ROUTE_COMMON/ROUTE_A/ROUTE_B/advanceRouteStep().
+    routeBranch: null,
+    routeSection: 'COMMON',
+    routeStep: 0,
+    // Diagnostic snapshot of the HP ratio ROUTE JUDGEMENT actually used —
+    // captured once, at the instant of the COMMON ROUTE's ROID1 defeat
+    // (onEnemyDefeated()), never recomputed later. DEBUG/report evidence
+    // only, never re-read by gameplay logic.
+    routeJudgementHpRatio: null,
+    // Set by advanceRouteStep() the instant it decides the NEXT step is an
+    // ESCAPE step with a SCRIPTED pursuer type (spec section 6: the COMMON
+    // ROUTE's "ADAM SPHERE ESCAPE" step must be chased by ADAM SPHERE even
+    // though the player was just fighting DRONE, not whatever beginEscape
+    // Stretch()'s own default "reuse the enemy that was just fought" would
+    // pick) — null means "use the default reuse-previous behavior"
+    // unchanged. Consumed and cleared by beginEscapeStretch() itself.
+    pendingEscapeEnemyType: null,
+    // 7TH ROUND 4th/5th sub-part (spec sections 13-15, 5th round sections
+    // 4-11): CONTINUE. continueCount is a SINGLE RUN-WIDE counter shared by
+    // BOTH CONTINUE types (COMBAT CONTINUE via continueRun(), ESCAPE
+    // CONTINUE via continueEscapeRun()) — never reset by either, feeds
+    // RESULT RANK (see computeResultRank()), and being one shared counter
+    // already satisfies "COMBAT CONTINUE + ESCAPE CONTINUEを合算" (5th round
+    // spec section 11) with no separate summing step needed. deathGameMode
+    // records which mode (state.gameMode) the player's HP actually hit 0
+    // in — the GAME OVER screen reads this to decide which of the two
+    // CONTINUE implementations to invoke (never to decide WHETHER to offer
+    // CONTINUE at all — both modes now have a fully-defined CONTINUE).
+    continueCount: 0,
+    deathGameMode: null,
+    // 7TH ROUND 5th sub-part (spec sections 4-6): the ESCAPE CONTINUE
+    // checkpoint — the ESCAPE pursuer's OWN starting HP for the CURRENT
+    // ESCAPE stretch, captured once by beginEscapeStretch() and never
+    // overwritten by a CONTINUE restart of that same stretch (see that
+    // function's own comment). null until the first real ESCAPE entry.
+    escapeCheckpointEnemyHp: null,
+    // spec section 16: TOTAL PLAY TIME, accumulated ONLY while
+    // state.paused is false — reuses the exact same "the whole gameplay-
+    // mutating block is skipped while paused" pattern every other timer in
+    // this file already relies on (see frame()'s own `if (!state.paused)`
+    // gate) rather than a wall-clock timestamp subtraction, so a long PAUSE
+    // can never inflate this and never needs a separate resume-timestamp
+    // bookkeeping step. Never reset by CONTINUE; only ever reset at a
+    // genuine NEW RUN (page load).
+    totalPlayTimeMs: 0,
+    // 7TH ROUND 5th sub-part (spec sections 1-3): A_FINAL_PRE_ADAM's own 30s
+    // countdown — the CONFIRMED, sole trigger for its ADAM SPHERE -> ADAM
+    // transform (see checkAFinalPreAdamTransform()). Set when this
+    // encounter's real COMBAT begins (updateCombatIntroPhase()); 0 means
+    // "not currently running". Cleared back to 0 the instant it fires, so
+    // it can never re-fire for the same or a later encounter.
+    aFinalPreAdamTimerStartedAt: 0,
   },
 
   // RUN FLOW: overall run progress, expressed as "distance to the exit"
@@ -3917,13 +4135,92 @@ const BARREL_CLUSTER_OFFSETS = [
   { dLane: 14, dZ: 52 }, // "少し奥に1本"
 ];
 const barrels = [];
+// 7TH ROUND (spec section 4, "調査結果を採用します"): 1 cluster = 1 BARREL
+// ROW — reuses the EXACT existing grouping the DEBUG-only
+// r10DebugCoverClusterId() already established (clusterId = floor(barrelIndex
+// / BARREL_CLUSTER_OFFSETS.length)), never a new depth-band concept. Each
+// row's own real anchor z (the dZ:0 barrel's z, i.e. the z value the spawn
+// loop's own `z` variable held before BARREL_CLUSTER_OFFSETS was applied)
+// is stored once here — this is the "next row's real anchor worldZ" source
+// of truth spec section 7 requires, never a recomputed/guessed value.
+const barrelRows = [];
 {
   let side = -1;
   for (let z = Z_NEAR + BARREL_SPACING_Z * 0.5; z < Z_FAR; z += BARREL_SPACING_Z) {
+    const rowId = barrelRows.length;
+    const barrelIndices = [];
     for (const off of BARREL_CLUSTER_OFFSETS) {
-      barrels.push({ z: z + off.dZ, lane: side * BARREL_LANE_OFFSET + off.dLane * side });
+      barrelIndices.push(barrels.length);
+      barrels.push({ z: z + off.dZ, lane: side * BARREL_LANE_OFFSET + off.dLane * side, rowId });
     }
+    barrelRows.push({ anchorZ: z, lane: side * BARREL_LANE_OFFSET, barrelIndices, destroyed: false });
     side *= -1;
+  }
+}
+
+// 7TH ROUND: barrels[] RECYCLE every COMBAT frame (applyForwardDelta()'s own
+// "barrels recycle the exact same way structures do" loop, confirmed still
+// active in the COMBAT branch of frame() — walking forward/back during a
+// fight really does shift every b.z, wrapping through Z_RANGE). A row's
+// build-time anchorZ is therefore NOT a stable position over the life of an
+// encounter — reading it directly here would silently go stale the moment
+// the player walks far enough. This live version is the actual, current
+// worldZ source of truth (row's own dZ:0 barrel's CURRENT z), so proximity/
+// next-row math can never drift from where the barrels really are on screen.
+function rowLiveAnchorZ(row) {
+  return barrels[row.barrelIndices[0]].z;
+}
+// find the row immediately farther from the player than `fromRow` — the
+// SAME real (live) anchor worldZ values every barrel already carries, never
+// a fixed +BARREL_SPACING_Z guess (spec section 7's explicit "そのworldZを
+// source of truthとしてください"). Returns null if none exists (the row
+// currently farthest from the player has no farther row — see this round's
+// completion report for why this is a real, reachable case).
+function findNextBarrelRow(fromRow) {
+  const fromZ = rowLiveAnchorZ(fromRow);
+  let best = null, bestZ = Infinity;
+  for (const row of barrelRows) {
+    const z = rowLiveAnchorZ(row);
+    if (z <= fromZ) continue;
+    if (z < bestZ) { best = row; bestZ = z; }
+  }
+  return best;
+}
+
+// The entire BARREL ROW explosion/knockback gimmick's single entry point —
+// called once, the instant a bullet hits any still-alive barrel in a row
+// (see updateBullets()'s own new hit-test). PLAYER damage: none. ENEMY
+// damage: none (spec sections 5/10 — explicit). Effect: the row is
+// destroyed (permanently — barrelRows[].destroyed is read by
+// renderBarrels()/isPlayerInCover()/clampStrafeForBarrels()/the forward-
+// movement collision check, so a destroyed row stops rendering, stops
+// providing COVER, and stops blocking movement, all from this one shared
+// flag) and, if a single qualifying enemy is near this row, it's knocked
+// back exactly one row deeper.
+function triggerBarrelRow(row, now) {
+  if (row.destroyed) return; // BUGFIX-class guard: a row can only ever trigger once (spec section 5)
+  row.destroyed = true;
+  for (const idx of row.barrelIndices) {
+    const b = barrels[idx];
+    const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
+    spawnBlast(proj.x, proj.y, now, { scale: 0.85 * proj.scale, big: true, shockwave: false });
+  }
+  const e = state.enemy;
+  const rowZ = rowLiveAnchorZ(row);
+  if (isKnockbackSafe(e) && Math.abs(e.z - rowZ) <= BARREL_ROW_PROXIMITY_Z) {
+    const nextRow = findNextBarrelRow(row);
+    if (nextRow) {
+      e.knockbackStartZ = e.z;
+      e.knockbackTargetZ = rowLiveAnchorZ(nextRow);
+      e.knockbackUntil = now + BARREL_KNOCKBACK_MS;
+      if (DEBUG_MODE) r10DebugLog('BARREL ROW: knockback ' + e.type + ' z=' + e.z.toFixed(0) + ' -> ' + e.knockbackTargetZ.toFixed(0));
+    } else if (DEBUG_MODE) {
+      // 7TH ROUND (spec section 7): no farther row exists — explicitly NOT
+      // deciding a fallback (teleport to Z_FAR, no-op, etc.) per spec's own
+      // "次ROWが存在しない場合の挙動を勝手に決めないでください". Row still
+      // destroys/explodes normally; only the knockback push is skipped.
+      r10DebugLog('BARREL ROW: no farther row exists for anchorZ=' + rowZ.toFixed(0) + ' — knockback skipped (see report)');
+    }
   }
 }
 
@@ -3946,9 +4243,46 @@ function project(worldX, worldY, z) {
 // RESIZE
 // ---------------------------------------------------------------------
 
+// 7TH ROUND 4th sub-part (spec sections 38-45): root cause of the reported
+// real-device "AIM/LIGHT starts near top-left" bug. resize() used to
+// unconditionally trust window.innerWidth/innerHeight — on certain mobile
+// browsers/WebViews these can genuinely read 0 (or another degenerate tiny
+// value) at the exact moment resize() first runs synchronously at script
+// load (cold start, an in-app WebView wrapper still establishing its
+// viewport, or the transitional window around 'orientationchange'). When
+// that happens, state.cssW/cssH become that degenerate value, and
+// getAimPoint()/getFlashlightCenter()'s own screen-edge clamp —
+// clamp(v, AIM_SCREEN_SAFE_MARGIN_PX, state.cssW - AIM_SCREEN_SAFE_MARGIN_PX)
+// — becomes an INVERTED range once cssW < 2*AIM_SCREEN_SAFE_MARGIN_PX
+// (hi < lo). clamp()'s own Math.max(lo, Math.min(hi, v)) then forces the
+// result to EXACTLY (AIM_SCREEN_SAFE_MARGIN_PX, AIM_SCREEN_SAFE_MARGIN_PX)
+// — a fixed point in the extreme top-left — regardless of the player's
+// real aim intent. AIM_RANGE/AIM_MOVE_SPEED_PX_S also collapse toward 0 in
+// the same conditions, freezing further stick movement, matching the
+// "stuck" half of the report too. No aim-coordinate-system code (getAimPoint/
+// getFlashlightCenter/renderAimReticle/the base "centerX+strafeOffset,
+// horizonY+6%cssH" resting point they already use) needed to change at all —
+// that resting point IS the correct, resolution-independent, already-
+// designed natural center (spec section 42's own requirement); the bug was
+// purely in the DATA feeding it. Fixed by validating w/h against a sane
+// floor before trusting them, and retrying on the next animation frame
+// (bounded) until a real size is available, rather than ever writing a
+// degenerate value into state.cssW/cssH.
+const RESIZE_MIN_SANE_PX = 100; // far below any real device/window size; only ever true for a genuinely degenerate read
+const RESIZE_RETRY_MAX_ATTEMPTS = 60; // ~1s at 60fps — generous, but bounded so a permanently-broken environment doesn't retry forever
+let resizeRetryAttempts = 0;
 function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
+  if (w < RESIZE_MIN_SANE_PX || h < RESIZE_MIN_SANE_PX) {
+    if (resizeRetryAttempts < RESIZE_RETRY_MAX_ATTEMPTS) {
+      resizeRetryAttempts++;
+      if (DEBUG_MODE) r10DebugLog('RESIZE: degenerate viewport read (' + w + 'x' + h + '), retry ' + resizeRetryAttempts + '/' + RESIZE_RETRY_MAX_ATTEMPTS);
+      requestAnimationFrame(resize);
+    }
+    return; // never write a degenerate size into state.cssW/cssH/AIM_RANGE/etc
+  }
+  resizeRetryAttempts = 0;
   const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
   state.cssW = w;
   state.cssH = h;
@@ -4365,6 +4699,41 @@ function pollGamepad(now) {
       return { move: { x: 0, y: 0 }, light: { x: 0, y: 0 }, aim: { x: 0, y: 0 }, aimAdjust: { height: 0, horiz: 0 }, fire: false, focusHeld: false };
     }
 
+    // 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER screen — same
+    // navigation pattern as RESULT above (state.gameOverFocus/
+    // gameOverPrevStickY mirror resultFocus/resultPrevStickY exactly).
+    // Returns neutral input for the WHOLE phase (including the brief
+    // "GAME OVER" text hold before the CONTINUE/QUIT overlay itself
+    // actually appears — updateGameOverPhase()'s own delay), so a button
+    // mashed during that hold can never leak into gameplay; the focus-nav/
+    // activate logic itself only runs once the overlay is genuinely shown.
+    if (state.run.phase === 'GAME_OVER') {
+      if (!gameoverScreenEl.hidden) {
+        if (document.activeElement && typeof document.activeElement.blur === 'function' && document.activeElement !== document.body) {
+          document.activeElement.blur();
+        }
+        const stickY = gp.axes[1] || 0;
+        const navUpEdge = (pressed(12) && !prev[12]) || (stickY < -0.5 && !(state.gameOverPrevStickY < -0.5));
+        const navDownEdge = (pressed(13) && !prev[13]) || (stickY > 0.5 && !(state.gameOverPrevStickY > 0.5));
+        state.gameOverPrevStickY = stickY;
+        if (navUpEdge) state.gameOverFocus = 0;
+        else if (navDownEdge) state.gameOverFocus = 1;
+        updateGameOverFocusUI();
+        let goTriggered = false;
+        for (let i = 0; i < b.length; i++) {
+          if (i === 12 || i === 13) continue;
+          if (pressed(i) && !prev[i]) { goTriggered = true; break; }
+        }
+        if (goTriggered) {
+          const triggerSnapshot = new Array(b.length);
+          for (let i = 0; i < b.length; i++) triggerSnapshot[i] = pressed(i);
+          state.prevButtons = triggerSnapshot;
+          activateGameOverFocusedButton();
+        }
+      }
+      return { move: { x: 0, y: 0 }, light: { x: 0, y: 0 }, aim: { x: 0, y: 0 }, aimAdjust: { height: 0, horiz: 0 }, fire: false, focusHeld: false };
+    }
+
     // ESCAPE-EXCLUSIVE CONTROL SCHEME. This mode has its own fixed mapping
     // (X=WEST dash, B=EAST dash, Y=NORTH backstep, A=SOUTH dash, LB+RB
     // together=JUMP — see below, D-PAD+LEFT STICK unified for lateral
@@ -4651,8 +5020,13 @@ function makeVirtualStick(padEl, stickEl) {
 }
 
 const touchMove = makeVirtualStick(document.getElementById('touch-move-pad'), document.querySelector('#touch-move-pad .touch-stick'));
+// 7TH ROUND 4th sub-part (spec sections 19-20/27): unified AIM+LIGHT stick —
+// the OLD separate right-side #touch-aim-pad stick is removed entirely;
+// this ONE stick object (still named touchLight — its DOM id/position never
+// changed, only its label) now feeds BOTH state.input.aimX/Y and lightX/Y in
+// frame()'s own input merge, exactly mirroring how GAMEPAD's right stick
+// already drives both identically (see that merge's own comment).
 const touchLight = makeVirtualStick(document.getElementById('touch-light-pad'), document.querySelector('#touch-light-pad .touch-stick'));
-const touchAim = makeVirtualStick(document.getElementById('touch-aim-pad'), document.querySelector('#touch-aim-pad .touch-stick'));
 
 let touchFireHeld = false;
 let touchFocusHeld = false; // 4th round: FOCUS/AUTO AIM touch button (replaces FLASH's old slot)
@@ -4660,15 +5034,16 @@ function wireButton(id, onPress) {
   const el = document.getElementById(id);
   el.addEventListener('pointerdown', (e) => { e.preventDefault(); onPress(); });
 }
-wireButton('touch-fire', () => {});
-const fireBtnEl = document.getElementById('touch-fire');
-fireBtnEl.addEventListener('pointerdown', () => { touchFireHeld = true; });
-fireBtnEl.addEventListener('pointerup', () => { touchFireHeld = false; });
-fireBtnEl.addEventListener('pointercancel', () => { touchFireHeld = false; });
+// 7TH ROUND 4th sub-part (spec section 20): was #touch-fire, same held-
+// button mechanism, relocated/relabeled SHOT.
+wireButton('touch-shot', () => {});
+const shotBtnEl = document.getElementById('touch-shot');
+shotBtnEl.addEventListener('pointerdown', () => { touchFireHeld = true; });
+shotBtnEl.addEventListener('pointerup', () => { touchFireHeld = false; });
+shotBtnEl.addEventListener('pointercancel', () => { touchFireHeld = false; });
 wireButton('touch-reload', () => { state.actions.reload = true; });
-wireButton('touch-stealth', () => { state.actions.stealth = true; });
 // 4th round: FLASH's touch button is retired; the same slot now hosts
-// FOCUS (held, same pattern as touch-fire above — not an edge action,
+// FOCUS (held, same pattern as touch-shot above — not an edge action,
 // since AUTO AIM needs to know while the button is held, see
 // touchFocusHeld's use in updatePlayer()).
 wireButton('touch-focus', () => {});
@@ -4676,37 +5051,53 @@ const focusBtnEl = document.getElementById('touch-focus');
 focusBtnEl.addEventListener('pointerdown', () => { touchFocusHeld = true; });
 focusBtnEl.addEventListener('pointerup', () => { touchFocusHeld = false; });
 focusBtnEl.addEventListener('pointercancel', () => { touchFocusHeld = false; });
-// ESCAPE-exclusive routing: these two buttons already existed for LAB's
-// NORTH DASH/SOUTH BACKSTEP — reused (same touch slot, same label meaning
-// direction-wise) for ESCAPE's Y NORTH BACKSTEP/A SOUTH DASH, but written
-// into the SEPARATE state.escape.actions bucket, never LAB's state.actions,
-// so the two modes' dash bookkeeping can never collide.
-wireButton('touch-dash-n', () => {
-  if (state.gameMode === 'escape') state.escape.actions.northBackstep = true;
-  else state.actions.northDash = true;
+wireButton('touch-jump', () => { if (state.gameMode === 'escape') state.escape.actions.jump = true; });
+
+// 7TH ROUND 4th sub-part (spec sections 20-27): STEALTH/N-DASH/S-STEP/
+// W-DASH/E-DASH/W-DECOY/E-DECOY touch buttons are removed entirely (no
+// surviving DOM/CSS/handler — GAMEPAD's own STEALTH(LT+RT)/directional-dash/
+// decoy mapping in pollGamepad() is completely untouched). DASH and SHADOW
+// below replace all four directional-dash buttons and both decoy buttons
+// with ONE button each, reading direction from the MOVE stick's CURRENT
+// position at the moment of press and dispatching to the EXACT SAME
+// existing action flags GAMEPAD already writes — input routing only, none
+// of the underlying dash/decoy distance/i-frame/sprite/timing code changes.
+//
+// 7TH ROUND 5th sub-part (spec sections 8-9): CONFIRMED as NO-OP — a
+// centered/neutral MOVE stick + DASH/SHADOW does nothing at all (never a
+// default forward/backward/last-input/arbitrary direction). This was
+// proposed as the recommended option in the 4th sub-part's report and is
+// now the finalized spec, unchanged from that implementation.
+function touchMoveDominantDir(deadzone) {
+  const x = touchMove.x, y = touchMove.y;
+  if (Math.abs(x) < deadzone && Math.abs(y) < deadzone) return null;
+  if (Math.abs(y) >= Math.abs(x)) return y < 0 ? 'north' : 'south';
+  return x < 0 ? 'west' : 'east';
+}
+const TOUCH_DASH_DEADZONE = 0.35;
+const TOUCH_SHADOW_DEADZONE = 0.2;
+wireButton('touch-dash', () => {
+  const dir = touchMoveDominantDir(TOUCH_DASH_DEADZONE);
+  if (!dir) return; // neutral MOVE stick — no-op, see this block's own comment
+  if (state.gameMode === 'escape') {
+    if (dir === 'north') state.escape.actions.northBackstep = true;
+    else if (dir === 'south') state.escape.actions.southDash = true;
+    else if (dir === 'west') state.escape.actions.westDash = true;
+    else state.escape.actions.eastDash = true;
+  } else {
+    if (dir === 'north') state.actions.northDash = true;
+    else if (dir === 'south') state.actions.southDash = true;
+    else if (dir === 'west') state.actions.westDash = true;
+    else state.actions.eastDash = true;
+  }
 });
-wireButton('touch-dash-s', () => {
-  if (state.gameMode === 'escape') state.escape.actions.southDash = true;
-  else state.actions.southDash = true;
+wireButton('touch-shadow', () => {
+  if (state.gameMode !== 'escape') return;
+  const x = touchMove.x;
+  if (Math.abs(x) < TOUCH_SHADOW_DEADZONE) return; // neutral MOVE stick — no-op, see this block's own comment
+  if (x < 0) state.escape.actions.westDecoy = true;
+  else state.escape.actions.eastDecoy = true;
 });
-// ESCAPE-exclusive: LB/X WEST DASH and RB/B EAST DASH have no gamepad-button
-// touch equivalent anywhere in LAB (LAB's touch bar has no west/east dash
-// button at all), so two new buttons are added (index.html #touch-dash-w/
-// #touch-dash-e, class touch-escape-only — hidden unless body.escape-mode,
-// see style.css) rather than leaving WEST/EAST dash touch-inaccessible.
-wireButton('touch-dash-w', () => { if (state.gameMode === 'escape') state.escape.actions.westDash = true; });
-wireButton('touch-dash-e', () => { if (state.gameMode === 'escape') state.escape.actions.eastDash = true; });
-// NEW FEATURE: METROPOLIS COLLAPSE — touch parity for the gamepad's LB+RB
-// JUMP combo (see pollGamepad()'s ESCAPE branch for the combo-window
-// detector); touch has no two-button-combo concept, so a single dedicated
-// button fires JUMP directly, same as N-DASH/S-STEP's own single-button
-// touch equivalents for their own gamepad actions.
-wireButton('touch-dash-jump', () => { if (state.gameMode === 'escape') state.escape.actions.jump = true; });
-// 30TH ROUND items 19-22: DECOY touch parity — see index.html's own comment
-// for why these fire immediately (no gamepad chord-priority debounce needed
-// on touch, each is its own distinct physical button).
-wireButton('touch-decoy-w', () => { if (state.gameMode === 'escape') state.escape.actions.westDecoy = true; });
-wireButton('touch-decoy-e', () => { if (state.gameMode === 'escape') state.escape.actions.eastDecoy = true; });
 
 // 9TH ROUND (item 0-2): STAGE TYPE (state.theme — cosmetic world/background
 // only) and GAME MODE (state.gameMode — control scheme + win condition)
@@ -4996,6 +5387,22 @@ function handleModeSelect(mode) {
   // them on.
   setTouchControlsVisible(mode === 'touch');
   tryStartBgm();
+  // 7TH ROUND (spec section 1): root cause of "Controller選択直後、入って
+  // すぐは反応しない" — a TOUCH tap on mode-btn-controller/mode-btn-touch
+  // (this function's real call sites, see the two addEventListener() calls
+  // below) leaves that <button> holding DOM focus. This is the exact same
+  // mechanism togglePauseMenu()'s RESUME branch already diagnosed and fixed
+  // ("27TH ROUND item 10": a focused-but-now-hidden element can keep
+  // intercepting D-PAD/stick-as-navigation input meant for this game's own
+  // poll-based gamepad reading, on Android/console WebViews) — just never
+  // applied here. Left unfixed, that lingering focus can persist all the
+  // way through COMBAT_INTRO into real COMBAT/ESCAPE, matching the reports
+  // of Controller not responding "実際のゲーム画面へ入った直後" too, since
+  // nothing else blurs it until the player happens to touch the screen
+  // (which naturally moves focus away — exactly why that "fixes" it).
+  if (document.activeElement && typeof document.activeElement.blur === 'function' && document.activeElement !== document.body) {
+    document.activeElement.blur();
+  }
   state.gameStarted = true;
   // RUN FLOW SYSTEM: the run always begins in COMBAT (spec section 2 —
   // "ゲーム開始時は必ずCOMBAT MODEから開始"), via the same COMBAT_INTRO
@@ -6433,6 +6840,7 @@ function clampForwardDeltaForBarrels(forwardDelta) {
   const playerScreenX = state.centerX + state.player.strafeOffset;
   let allowed = forwardDelta;
   for (const b of barrels) {
+    if (barrelRows[b.rowId].destroyed) continue; // 7TH ROUND section 11: a destroyed row blocks nothing
     if (b.z - forwardDelta >= BARREL_COLLIDE_Z_FLOOR) continue;
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
     const radius = BARREL_TOUCH_RADIUS_PX * proj.scale;
@@ -6452,6 +6860,7 @@ function clampForwardDeltaForBarrels(forwardDelta) {
 function clampStrafeForBarrels(desiredOffset, prevOffset) {
   let offset = desiredOffset;
   for (const b of barrels) {
+    if (barrelRows[b.rowId].destroyed) continue; // 7TH ROUND section 11: a destroyed row blocks nothing
     if (b.z > BARREL_TOUCH_Z_MAX) continue;
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
     const radius = BARREL_TOUCH_RADIUS_PX * proj.scale;
@@ -6558,6 +6967,7 @@ const COVER_TOUCH_SLOP_PX = 6;
 function isPlayerInCover() {
   const playerScreenX = state.centerX + state.player.strafeOffset;
   for (const b of barrels) {
+    if (barrelRows[b.rowId].destroyed) continue; // 7TH ROUND section 11: no hiding behind a destroyed row
     if (b.z > BARREL_TOUCH_Z_MAX) continue;
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
     const radius = BARREL_TOUCH_RADIUS_PX * proj.scale + COVER_TOUCH_SLOP_PX;
@@ -6577,6 +6987,7 @@ function r10DebugCoverClusterId() {
   const playerScreenX = state.centerX + state.player.strafeOffset;
   for (let i = 0; i < barrels.length; i++) {
     const b = barrels[i];
+    if (barrelRows[b.rowId].destroyed) continue; // 7TH ROUND section 11: stay in agreement with isPlayerInCover()
     if (b.z > BARREL_TOUCH_Z_MAX) continue;
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
     const radius = BARREL_TOUCH_RADIUS_PX * proj.scale + COVER_TOUCH_SLOP_PX;
@@ -6602,7 +7013,8 @@ function playerMarkerPos() {
 // 30TH ROUND items 19-22: DECOY — throws a marker DECOY_SCREEN_OFFSET_PX to
 // the west/east of the player's own marker. Fires from consumeEscapeActions()'
 // westDecoy/eastDecoy (gamepad LB/RB, debounced against the LB+RB JUMP
-// combo — see pollGamepad()'s ESCAPE branch — or touch-decoy-w/e directly).
+// combo — see pollGamepad()'s ESCAPE branch — or touch-shadow, whose
+// direction is derived from the MOVE stick, see its own wireButton() call).
 // A new throw always overwrites any still-active one (never stacks).
 function updateEscapeDecoy(dt, now, escActions) {
   const es = state.escape;
@@ -7591,6 +8003,15 @@ function spawnEnemy(type) {
   e.deathState = 'alive';
   e.deathStartedAt = 0;
   e.deathUntil = 0;
+  e.deathPoseAnchor = null;
+  // 7TH ROUND (spec sections 6-10): BARREL ROW knockback state — reset
+  // fresh on every spawn so a new encounter never inherits a previous
+  // enemy's in-progress tween. knockbackUntil<=now (the default) is what
+  // updateEnemyCore()'s own knockback gate reads as "not currently being
+  // knocked back".
+  e.knockbackUntil = 0;
+  e.knockbackStartZ = 0;
+  e.knockbackTargetZ = 0;
   // 14TH ROUND (items 5-8): chain-explosion state — see updateExplosionChain()
   e.explosionChainActive = false;
   e.explosionChainStartAt = 0;
@@ -7737,16 +8158,49 @@ function advanceEnemyRotation(now) {
 // telegraph (LOCK box, missile target ellipse, etc.) stops being drawn on
 // the very next frame — updateEnemy()'s own deathState!=='alive' early
 // return (PART 27) is what actually stops combat AI/new attacks from here on.
+// 7TH ROUND (spec sections 1-2): two new death families, both a plain
+// silhouette fade with NO particle burst / no ember / no brightness flash /
+// no bottom-up crop — see startEnemyDeath()'s own family dispatch and
+// renderEnemy()'s 'fading' branch for the entire implementation (reuses
+// the exact same deathStartedAt/deathUntil timer + `1 - t` alpha formula
+// 'exploding'/'burning' already established, just with every extra visual
+// flourish stripped out).
+// - 'fade': B ROUTE's ADAM SPHERE (encounterRole===B_PRE_FINAL_GABRIEL) —
+//   1000ms, then the enemy is simply gone (feeds into the normal
+//   onEnemyDefeated()/CLEAR SEQUENCE flow exactly like any other defeat).
+// - 'kneel': non-FINAL GABRIEL (state.run.isFinalCombat===false) — holds
+//   1500ms on the real cinematic/down pose instead of fading to nothing;
+//   see renderEnemy()'s 'kneeling' branch, which does NOT fade globalAlpha
+//   at all (the pose stays fully visible the whole hold, per spec — "その
+//   姿勢を表示" never says it should also dim).
+const DEATH_FADE_MS = 1000;   // spec section 1, explicit value
+const DEATH_KNEEL_MS = 1500;  // spec section 2, explicit value
+function resolveDeathFamily(e) {
+  const r = state.run;
+  if (e.type === 'adamSphere' && r.encounterRole === ENCOUNTER_ROLE.B_PRE_FINAL_GABRIEL) return 'fade';
+  if (e.type === 'gabriel' && !r.isFinalCombat) return 'kneel';
+  return ENEMY_DEATH_FAMILY[e.type] || 'explode';
+}
 function startEnemyDeath(now) {
   const e = state.enemy;
   if (e.deathState !== 'alive') return;
-  const family = ENEMY_DEATH_FAMILY[e.type] || 'explode';
-  e.deathState = family === 'burn' ? 'burning' : 'exploding';
+  const family = resolveDeathFamily(e);
+  e.deathState = family === 'burn' ? 'burning' : family === 'fade' ? 'fading' : family === 'kneel' ? 'kneeling' : 'exploding';
   e.deathStartedAt = now;
-  e.deathUntil = now + (family === 'burn' ? DEATH_BURN_MS : DEATH_EXPLODE_MS);
+  e.deathUntil = now + (family === 'burn' ? DEATH_BURN_MS : family === 'fade' ? DEATH_FADE_MS : family === 'kneel' ? DEATH_KNEEL_MS : DEATH_EXPLODE_MS);
   e.attackState = 'idle';
 
   const rect = computeEnemyDrawRect();
+  // 7TH ROUND: 'fade'/'kneel' deliberately fall through to NEITHER branch
+  // below — no explosionChainAnchors, no ember spawn, no particle burst of
+  // any kind, per spec's explicit "particle explosionなし" (section 1) /
+  // "通常death effectを発生させない" (section 2). 'kneel' additionally
+  // captures the exact on-screen rect GABRIEL occupied the instant it
+  // died, so the cinematic-pose swap in renderEnemy() can anchor to it
+  // with no size/foot jump — see that branch's own comment.
+  if (family === 'kneel') {
+    e.deathPoseAnchor = { cx: rect.x + rect.w / 2, bottomY: rect.y + rect.h, bodyHeightPx: rect.h };
+  }
   if (family === 'explode') {
     // 28TH ROUND item 5: root cause of "空中に浮いて地面だけ赤く光る" —
     // this reused resolveMissileImpact()'s own chain system UNCHANGED: a
@@ -7792,7 +8246,7 @@ function startEnemyDeath(now) {
     e.explosionChainSpawned = 0;
     spawnExplosionChainBurst(e, now, 0);
     e.explosionChainSpawned = 1;
-  } else {
+  } else if (family === 'burn') {
     // PART 26 (embers) + 28TH ROUND item 6 (real blasts): GABRIEL/ADAM —
     // previously ONLY a scatter of traveling embers + the bottom-up
     // dissolve/tint below, which the user reported as "absent or weak" —
@@ -7861,8 +8315,36 @@ function updateEnemyCore(dt, now) {
   // PART 27: once death has started, combat AI is fully stopped — no
   // facing/animation updates, no attack-phase progression, no new
   // projectiles. Only the death-timer itself advances, until it completes.
+  // 7TH ROUND 6th sub-part (spec sections 2-4): root-cause fix for
+  // "onEnemyDefeated() re-fires every frame". The `e.deathState !== 'gone'`
+  // guard below is the actual fix — previously this block called
+  // onEnemyDefeated(now, true) on EVERY frame where deathState!=='alive'
+  // AND now>=deathUntil, with no check for "have I already done this".
+  // For every enemy/death-family EXCEPT A_FINAL_PRE_ADAM's own explicit
+  // STOP case, this was invisible: onEnemyDefeated() always ended by
+  // calling triggerClearSequence(), which sets state.clearSequence.active
+  // = true, which makes frame()'s COMBAT branch stop calling updateEnemy()/
+  // updateEnemyCore() at all on the very next frame — so there was never a
+  // second frame on which this block could even run again. A_FINAL_PRE_ADAM
+  // is the ONE case that returns from onEnemyDefeated() WITHOUT calling
+  // triggerClearSequence() (spec section 1's own "HP=0では進めない" — the
+  // real transform trigger is the 30s timer, not this death), so
+  // clearSequence.active stays false, updateEnemyCore() keeps being called
+  // every subsequent frame, and deathState stays 'gone' forever (nothing
+  // else resets it until the next spawnEnemy() call) — meaning the old,
+  // unguarded code called onEnemyDefeated(now, true) again on literally
+  // every frame from the kill until the 30s transform actually fires.
+  // e.deathState is exactly the EXISTING "has this death already been
+  // processed" marker the architecture already has (spec section 4's own
+  // "既存stateで正しく表現できないか確認") — the transition INTO 'gone' is
+  // the one-time event; being ALREADY 'gone' is the "already handled"
+  // state. No new boolean field was needed. This also means the fix is
+  // fully generic (guards the real completion check itself, not a
+  // type/role-specific branch), so it equally protects any other death
+  // family that might someday skip triggerClearSequence() the same way,
+  // not just this one case.
   if (e.deathState !== 'alive') {
-    if (now >= e.deathUntil) {
+    if (e.deathState !== 'gone' && now >= e.deathUntil) {
       e.deathState = 'gone';
       // RUN FLOW round: the old "1 DRONE defeated -> 3-drone WAVE 2
       // reinforcement" mechanic (spawnDroneWave2()/updateDroneWave()/
@@ -7876,6 +8358,37 @@ function updateEnemyCore(dt, now) {
       onEnemyDefeated(now, true);
     }
     return;
+  }
+
+  // 7TH ROUND (spec sections 8-10): BARREL ROW knockback in progress —
+  // completely short-circuits the rest of this function (facing, idle
+  // approach, attack-state machine, every kind's own fire sequence) for
+  // its whole duration, the SAME pattern the death-check above already
+  // uses. This is what satisfies "knockback中に攻撃開始/claw発生/missile
+  //発射/別approachによるe.z上書きが起きないように" — nothing else in
+  // updateEnemyCore() can run (and therefore nothing else can touch e.z or
+  // e.attackState) until the tween finishes. Uses the SAME eased-tween
+  // shape (ease-out-quad) CLAW_APPROACH/RECOVERY already use for "move e.z
+  // toward a target over a duration", reusing CLAW_RECOVERY_MS (900ms) —
+  // the existing duration for this exact kind of motion (retreat to a
+  // farther z, eased) — rather than inventing a new constant.
+  if (now < e.knockbackUntil) {
+    const tNorm = clamp(1 - (e.knockbackUntil - now) / BARREL_KNOCKBACK_MS, 0, 1);
+    const eased = 1 - Math.pow(1 - tNorm, 2);
+    e.z = e.knockbackStartZ + (e.knockbackTargetZ - e.knockbackStartZ) * eased;
+    return;
+  }
+  if (e.knockbackUntil > 0) {
+    // BUGFIX (found during this round's own QA — see completion report):
+    // the tween above only ever runs while now < knockbackUntil, so it can
+    // never itself land exactly on knockbackTargetZ on the final frame
+    // (the eased value at t=1 was landing a few px short in testing). This
+    // runs exactly once, the first frame now has reached/passed
+    // knockbackUntil, snaps to the real target precisely, then clears the
+    // flag (knockbackUntil=0) so normal idle-approach resumes cleanly next
+    // frame without re-entering this block.
+    e.z = e.knockbackTargetZ;
+    e.knockbackUntil = 0;
   }
 
   updateEnemyFacing(dt, now);
@@ -9307,6 +9820,28 @@ function updateBullets(now) {
     if (!b.active) continue;
     if (now < b.resolveAt) continue;
     b.active = false;
+    // 7TH ROUND (spec section 5): BARREL ROW hit-test — checked before the
+    // enemy hit-test below, same "resolved against something else, skip the
+    // rest of this shot" pattern DRONE WAVE 2/the missile midair-intercept
+    // already use just below. Only still-alive (non-destroyed-row) barrels
+    // are checked; the SAME radius formula COVER/clampStrafeForBarrels()
+    // already use (BARREL_TOUCH_RADIUS_PX * proj.scale) so "can this shot
+    // reach the barrel" never disagrees with "can the player touch it".
+    {
+      let hitBarrel = null, hitDist = Infinity;
+      for (const bar of barrels) {
+        if (barrelRows[bar.rowId].destroyed) continue;
+        const proj = project(bar.lane, CORRIDOR_FLOOR_Y, bar.z);
+        const radius = BARREL_TOUCH_RADIUS_PX * proj.scale;
+        const d = Math.hypot(b.x2 - proj.x, b.y2 - proj.y);
+        if (d <= radius && d < hitDist) { hitBarrel = bar; hitDist = d; }
+      }
+      if (hitBarrel) {
+        triggerBarrelRow(barrelRows[hitBarrel.rowId], now);
+        if (DEBUG_MODE) r10DebugLog('SHOT RESOLVED: hit BARREL ROW ' + hitBarrel.rowId);
+        continue;
+      }
+    }
     // 30TH ROUND item 17: DRONE WAVE 2 — checked BEFORE the normal
     // state.enemy hit-test below, since WAVE 1 (state.enemy) is already
     // deathState!=='alive' for the whole WAVE-2 window and would otherwise
@@ -10220,6 +10755,7 @@ function drawOneBarrel(b, proj) {
 function renderBarrels() {
   const sorted = barrels.slice().sort((a, b) => b.z - a.z);
   for (const b of sorted) {
+    if (barrelRows[b.rowId].destroyed) continue; // 7TH ROUND section 11: destroyed rows are gone, not invisible-but-present
     const proj = project(b.lane, CORRIDOR_FLOOR_Y, b.z);
     drawOneBarrel(b, proj);
   }
@@ -10717,26 +11253,22 @@ function renderPlayer(theme) {
     ctx.drawImage(img, dx, dy, drawW, drawH);
     ctx.restore();
   } else {
-    // 6TH ADJUSTMENT ROUND (spec section 5, Option B, user-approved after
-    // STOP report): darken the player's own sprite to the SAME curve
-    // enemy/barrels already get from renderFlashlightMask() (they draw
-    // BEFORE the mask; PLAYER draws after it — see that STOP report for why
-    // moving renderPlayer() itself was rejected as too high-regression-risk).
-    // flashlightOverlayAlphaAt() is the analytic equivalent of the real
-    // mask's gradient, sampled at the sprite's own on-screen center — a
-    // single value for the whole sprite (not a true per-pixel gradient like
-    // the real mask gets), which is the deliberate minimal-scope choice
-    // here: enough to stop the player reading as a flat, unlit sticker
-    // pasted over the scene, without inventing a new PLAYER-only lighting
-    // effect. Scoped to this plain draw path only — STEALTH/COVER/hit-flash
-    // above already carry their own distinct, pre-existing dim/tint
-    // treatments and are left untouched.
-    const tintAlpha = flashlightOverlayAlphaAt(dx + drawW / 2, dy + drawH / 2);
-    if (tintAlpha > 0.01) {
-      drawColorTintedSprite(img, dx, dy, drawW, drawH, '0,0,0', tintAlpha);
-    } else {
-      ctx.drawImage(img, dx, dy, drawW, drawH);
-    }
+    // 7TH ROUND (spec section 2): the 6TH ADJUSTMENT ROUND's Option B
+    // SPOTLIGHT-distance darkening (flashlightOverlayAlphaAt() tint,
+    // formerly applied here) is REMOVED — real-device evidence this round
+    // reproduced it going near-black during completely ordinary play (aim
+    // at the enemy to FIRE, nothing COVER-specific required): AIM/SPOTLIGHT
+    // share one coordinate (spec section 6), and the enemy is essentially
+    // never at the player's own screen position, so tintAlpha sat at/near
+    // FLASHLIGHT_MASK_BASE_ALPHA (0.90, maximum darkness) for most of real
+    // combat, not just while genuinely far from a stationary light. Spec
+    // now explicitly reprioritizes: PLAYER visibility must be unconditional
+    // and takes precedence over matching enemy/barrel's darkness curve.
+    // Draw order is untouched (still after renderFlashlightMask(), per the
+    // STOP report's regression-risk finding on missile/boss-attack/bullet
+    // ordering) — PLAYER simply goes back to always rendering at full
+    // brightness here, matching every pose before the 6TH round.
+    ctx.drawImage(img, dx, dy, drawW, drawH);
   }
 }
 
@@ -10966,6 +11498,33 @@ function renderEscapePlayer() {
 function renderEnemy(theme) {
   const e = state.enemy;
   if (e.deathState === 'gone') return; // fully defeated — nothing left to draw
+  // 7TH ROUND (spec section 2): non-FINAL GABRIEL's "kneel"/DOWN pose —
+  // a completely separate, minimal draw path (never computeEnemyDrawRect()'s
+  // normal walk/idle/attack image selection, which would keep cycling
+  // GABRIEL's ordinary art underneath). Anchored to e.deathPoseAnchor,
+  // captured once in startEnemyDeath() at the exact on-screen rect GABRIEL
+  // occupied the instant it died — reusing computeBodyVisualScale() (the
+  // SAME alpha-fraction-normalized anchoring COVER/SOUTH WALK/SOUTH DASH
+  // already use) against that captured height, so the pose swap can never
+  // jump/shrink/grow or shift the feet, regardless of GABRIEL's own current
+  // world-z or ASSETS.gabriel.cinematicPose's very different source aspect
+  // ratio. No fade, no filter, no crop — the pose stays fully visible for
+  // the whole DEATH_KNEEL_MS hold, per spec ("その姿勢を表示").
+  if (e.deathState === 'kneeling') {
+    const frame = ASSETS.gabriel.cinematicPose;
+    if (imgReady(frame.img) && e.deathPoseAnchor) {
+      const anchor = e.deathPoseAnchor;
+      const bodyScale = computeBodyVisualScale(frame, anchor.bodyHeightPx);
+      const drawW = frame.img.naturalWidth * bodyScale;
+      const drawH = frame.img.naturalHeight * bodyScale;
+      const dx = anchor.cx - frame.bodyCenterXFrac * drawW;
+      const dy = anchor.bottomY - frame.bodyBottomFrac * drawH;
+      ctx.save();
+      ctx.drawImage(frame.img, dx, dy, drawW, drawH);
+      ctx.restore();
+    }
+    return;
+  }
   const rect = computeEnemyDrawRect();
   const now = performance.now();
 
@@ -11060,6 +11619,18 @@ function renderEnemy(theme) {
     const t = clamp((now - e.deathStartedAt) / Math.max(1, e.deathUntil - e.deathStartedAt), 0, 1);
     ctx.globalAlpha = 1 - t;
     ctx.filter = `brightness(${(1 + (1 - t) * 2.5).toFixed(2)})`;
+  } else if (e.deathState === 'fading') {
+    // 7TH ROUND (spec section 1): B ROUTE's ADAM SPHERE — "力を失い、スーッ
+    // と存在が消えていく", never an explosion. Deliberately the bare minimum:
+    // the SAME deathStartedAt/deathUntil timer + `1 - t` alpha formula
+    // 'exploding' uses, with NO brightness filter, NO crop, and (per
+    // startEnemyDeath()'s own dispatch) no particle burst was ever spawned
+    // for this family — falls through to the normal draw below using
+    // whatever image computeEnemyDrawRect() already resolved for adamSphere
+    // (its own idle/fire art, unchanged), just fading to fully transparent
+    // over DEATH_FADE_MS.
+    const t = clamp((now - e.deathStartedAt) / Math.max(1, e.deathUntil - e.deathStartedAt), 0, 1);
+    ctx.globalAlpha = 1 - t;
   } else if (e.deathState === 'burning') {
     // PART 26: GABRIEL/ADAM — a "burn down / dissolve", never a simple
     // explosion. Built entirely from existing canvas primitives (progressive
@@ -12248,16 +12819,99 @@ function pickFinalBattleEnemy() {
   return 'gabriel';
 }
 
+// 7TH ROUND 4th sub-part (spec section 3): encounterRole now has THREE
+// distinct values — the COMMON ROUTE's own ADAM SPHERE ESCAPE encounter is
+// a genuinely different role from either combat-only role below (spec
+// section 6 explicitly warns against conflating all three just because
+// they share enemy.type==='adamSphere'). None of these are ever inferred
+// from type alone — always set once, at encounter start, from the fixed
+// ROUTE table (see ROUTE_COMMON/ROUTE_A/ROUTE_B below).
+const ENCOUNTER_ROLE = {
+  COMMON_ESCAPE_ADAM_SPHERE: 'COMMON_ESCAPE_ADAM_SPHERE', // COMMON ROUTE: ADAM SPHERE as the ESCAPE pursuer, before ROUTE JUDGEMENT — evaded via the SURVIVE timer like any ESCAPE pursuer, never fought/defeated (spec section 6)
+  A_FINAL_PRE_ADAM: 'A_FINAL_PRE_ADAM',       // A ROUTE: ADAM SPHERE, 30s -> transforms into ADAM (see checkAFinalPreAdamTransform())
+  B_PRE_FINAL_GABRIEL: 'B_PRE_FINAL_GABRIEL', // B ROUTE: ADAM SPHERE, HP=0 -> quiet 1000ms fade -> FINAL GABRIEL
+};
+// 7TH ROUND 5th sub-part (spec sections 1-3): the CONFIRMED, sole trigger
+// for A_FINAL_PRE_ADAM's own transform — a plain 30s duration, no new
+// design decision (the spec gives this exact number; nothing was invented
+// here). See checkAFinalPreAdamTransform() for the actual trigger.
+const A_FINAL_PRE_ADAM_TRANSFORM_MS = 30000;
+
+// ---------------------------------------------------------------------
+// 7TH ROUND 4th sub-part (spec sections 1-12): fixed ROUTE SEQUENCE — the
+// new, sole source of truth for run progression. Replaces pickNextEnemy()'s
+// random/history-weighted pool and distanceRemaining's old role as the
+// end/final-battle trigger (see decideNextRunStep()/tickRunDistance()
+// below, and updateDismountTransitionPhase()). pickNextEnemy()/
+// pickFinalBattleEnemy() are left fully intact and still exported on
+// window.__darkoutTps (spec section 8's explicit "既存debug/manual...を
+// 破壊しない") but NOTHING in the real progression path calls them anymore.
+//
+// Each step describes ONE encounter:
+//   mode:         'COMBAT' | 'ESCAPE'
+//   enemyType:    the type spawnEnemy() should use, or 'REUSE_PREVIOUS' for
+//                 an ESCAPE step that should chase with whatever enemy was
+//                 just fought (the existing/original beginEscapeStretch()
+//                 default — unchanged for A ROUTE's ESCAPE and B ROUTE's
+//                 ESCAPE, both of which are meant to be pursued by the
+//                 COMBAT enemy that immediately preceded them)
+//   isFinal:      true ONLY for the branch's own final encounter (A's ADAM,
+//                 B's FINAL GABRIEL) — its defeat goes straight to ENDING,
+//                 never through another EVACUATION_WARNING/ESCAPE stretch
+//                 (spec sections 7/9/17)
+//   encounterRole: an ENCOUNTER_ROLE value, or null
+// ---------------------------------------------------------------------
+const ROUTE_COMMON = [
+  { mode: 'COMBAT', enemyType: 'drone', isFinal: false, encounterRole: null },
+  { mode: 'COMBAT', enemyType: 'drone', isFinal: false, encounterRole: null },
+  { mode: 'COMBAT', enemyType: 'drone', isFinal: false, encounterRole: null },
+  { mode: 'ESCAPE', enemyType: 'adamSphere', isFinal: false, encounterRole: ENCOUNTER_ROLE.COMMON_ESCAPE_ADAM_SPHERE },
+  { mode: 'COMBAT', enemyType: 'roid1', isFinal: false, encounterRole: null },
+];
+const ROUTE_A = [
+  { mode: 'ESCAPE', enemyType: 'REUSE_PREVIOUS', isFinal: false, encounterRole: null },
+  { mode: 'COMBAT', enemyType: 'roid2', isFinal: false, encounterRole: null },
+  { mode: 'COMBAT', enemyType: 'gabriel', isFinal: false, encounterRole: null },
+  { mode: 'COMBAT', enemyType: 'adamSphere', isFinal: false, encounterRole: ENCOUNTER_ROLE.A_FINAL_PRE_ADAM },
+  { mode: 'COMBAT', enemyType: 'adam', isFinal: true, encounterRole: null },
+];
+const ROUTE_B = [
+  { mode: 'COMBAT', enemyType: 'gabriel', isFinal: false, encounterRole: null },
+  { mode: 'ESCAPE', enemyType: 'REUSE_PREVIOUS', isFinal: false, encounterRole: null },
+  { mode: 'COMBAT', enemyType: 'roid1', isFinal: false, encounterRole: null },
+  { mode: 'COMBAT', enemyType: 'adamSphere', isFinal: false, encounterRole: ENCOUNTER_ROLE.B_PRE_FINAL_GABRIEL },
+  { mode: 'COMBAT', enemyType: 'gabriel', isFinal: true, encounterRole: null },
+];
+const ROUTE_BY_BRANCH = { A: ROUTE_A, B: ROUTE_B };
+
+function currentRouteArray() {
+  const r = state.run;
+  return r.routeSection === 'COMMON' ? ROUTE_COMMON : ROUTE_BY_BRANCH[r.routeSection];
+}
+function currentRouteStepDef() {
+  const arr = currentRouteArray();
+  return arr[state.run.routeStep] || null;
+}
+
 // Records the outcome of the encounter that JUST ended (enemy HP hit 0, OR
 // the COMBAT TIME LIMIT ran out with the enemy still alive — spec section
 // 8: "倒せなかった=即失敗ではない", the run continues either way) into
 // state.history, then plays the existing shared CLEAR SEQUENCE exactly as
 // before. decideNextRunStep() (called from clearSequenceResolve()) reads
 // this history the instant the cutscene finishes.
+//
+// 7TH ROUND 4th sub-part (spec section 2): ROUTE JUDGEMENT is captured HERE,
+// synchronously at the exact instant of the COMMON ROUTE's ROID1 defeat —
+// never later (never re-derived after the CLEAR SEQUENCE cutscene, never
+// re-derived if the player's HP happens to change afterward) — using
+// `routeBranch === null` (never yet judged) rather than
+// `type === 'roid1'` alone, so B ROUTE's later ROID1 REMATCH can never
+// re-trigger it.
 function onEnemyDefeated(now, defeated) {
   const e = state.enemy;
   const type = e.type;
   const h = state.history;
+  const r = state.run;
   h.encounteredEnemies.push(type);
   h.previousEnemy = type;
   h.previousBattleResult = defeated ? 'defeated' : 'escaped';
@@ -12273,28 +12927,123 @@ function onEnemyDefeated(now, defeated) {
       // still reasonably healthy, rather than barely surviving.
       if (state.player.hp / PLAYER_MAX_HP >= 0.4) h.gabrielClearedWell = true;
     }
+    if (type === 'roid1' && r.routeBranch === null) {
+      const hpRatio = state.player.hp / PLAYER_MAX_HP;
+      r.routeJudgementHpRatio = hpRatio;
+      r.routeBranch = hpRatio >= 0.60 ? 'A' : 'B';
+      if (DEBUG_MODE) r10DebugLog('ROUTE JUDGEMENT: hpRatio=' + hpRatio.toFixed(3) + ' -> ROUTE ' + r.routeBranch);
+    }
   }
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: ' + type + ' ' + h.previousBattleResult + ' (score=' + state.score + ')');
+  // 7TH ROUND 5th/6th sub-part (spec sections 1-6 of the 6th sub-part): the
+  // ADAM SPHERE -> ADAM transform is CONFIRMED as TIME-only (the 30s timer,
+  // see checkAFinalPreAdamTransform()) — HP=0 is explicitly NOT a trigger,
+  // even if it happens before the 30s mark ("HP=0になった瞬間にADAMへ変身
+  // させてはいけません"). So a kill here still records score/history (once
+  // — see the re-fire fix below) but must NOT advance the route, must NOT
+  // start CLEAR SEQUENCE like a normal defeat, and must NOT repeat this
+  // bookkeeping on every subsequent frame while the player waits out the
+  // remaining timer. The one-time guarantee is enforced at the true source
+  // — updateEnemyCore()'s own death-completion check now only calls
+  // onEnemyDefeated() on the single frame deathState actually transitions
+  // to 'gone' (see that function's own comment) — so this branch itself
+  // only ever runs once per encounter; no additional guard is needed here.
+  if (defeated && type === 'adamSphere' && r.encounterRole === ENCOUNTER_ROLE.A_FINAL_PRE_ADAM) {
+    if (DEBUG_MODE) r10DebugLog('ROUTE: A_FINAL_PRE_ADAM sphere defeated by HP=0 before its 30s timer — defeat recorded once, route held until the timer fires (see checkAFinalPreAdamTransform())');
+    return;
+  }
   triggerClearSequence(now, 'combat');
 }
 
-// BUGFIX ROUND (spec section 6): DRONE and ADAM SPHERE never lead into an
-// ESCAPE stretch — their own COMBAT ends straight into the NEXT COMBAT,
-// regardless of what pickNextEnemy()'s own introContinue would otherwise
-// say. ROID1/ROID2/GABRIEL/ADAM are unaffected (their defeat can still lead
-// to EVACUATION_WARNING as before).
-const COMBAT_ONLY_ENEMY_TYPES = { drone: true, adamSphere: true };
+// 7TH ROUND 4th sub-part (spec section 5): advances routeStep/routeSection
+// to the NEXT entry in the fixed ROUTE table and begins whatever that step
+// requires (another COMBAT_INTRO, or an EVACUATION_WARNING that eventually
+// reaches an ESCAPE stretch). Called both directly from decideNextRunStep()
+// (a COMBAT win) and from updateDismountTransitionPhase() (after an ESCAPE
+// stretch's own dismount fade — the SAME "what's next" decision, just
+// reached from the other direction).
+function advanceRouteStep(now) {
+  const r = state.run;
+  const arr = currentRouteArray();
+  const atLastOfSection = r.routeStep >= arr.length - 1;
+  if (atLastOfSection && r.routeSection === 'COMMON') {
+    // ROUTE JUDGEMENT already decided r.routeBranch, synchronously, back in
+    // onEnemyDefeated() — never re-decided here.
+    r.routeSection = r.routeBranch;
+    r.routeStep = 0;
+  } else {
+    r.routeStep++;
+  }
+  const stepDef = currentRouteStepDef();
+  if (!stepDef) {
+    // Should be unreachable if ROUTE_COMMON/A/B stay well-formed — surfaced
+    // loudly rather than silently stranding the run in place.
+    if (DEBUG_MODE) r10DebugLog('ROUTE ERROR: no step def at section=' + r.routeSection + ' step=' + r.routeStep);
+    return;
+  }
+  if (stepDef.mode === 'COMBAT') {
+    markRunTransition('AUTO:route->COMBAT_INTRO(' + stepDef.enemyType + ')', now);
+    beginCombatIntro(now, stepDef.enemyType, !!stepDef.isFinal, stepDef.encounterRole);
+  } else {
+    // spec section 6: a scripted ESCAPE pursuer type is stashed on
+    // state.run for beginEscapeStretch() to pick up several phase-
+    // transitions later (EVACUATION_WARNING -> MOUNT_TRANSITION ->
+    // beginEscapeStretch()) — the exact same "state.run carries data across
+    // this multi-phase chain" pattern evacuateDirection already established
+    // for MOUNT_TRANSITION's own walk direction, not a new mechanism.
+    r.pendingEscapeEnemyType = stepDef.enemyType === 'REUSE_PREVIOUS' ? null : stepDef.enemyType;
+    markRunTransition('AUTO:route->EVACUATION_WARNING', now);
+    beginEvacuationWarning(now);
+  }
+}
+
+// 7TH ROUND 5th sub-part (spec sections 1-3): the ADAM SPHERE -> ADAM
+// transform's sole, CONFIRMED trigger — the 30s timer started by
+// updateCombatIntroPhase() the instant this encounter's real COMBAT begins
+// (state.run.aFinalPreAdamTimerStartedAt). Called every COMBAT frame from
+// frame()'s own COMBAT branch, mirroring exactly how the SAME branch
+// already ticks tickRunDistance()/GAME OVER checks each frame.
+//
+// spec section 1: NO HP/damage carries over — advanceRouteStep() routes
+// straight into beginCombatIntro(now, 'adam', true, null), the EXACT SAME
+// entry point every other route transition already uses, so ADAM gets a
+// completely fresh spawnEnemy('adam') HP (=ENEMY_MAX_HP, full) once its own
+// COMBAT_INTRO reveal beat runs — never a value derived from the sphere's
+// remaining/lost HP.
+// spec section 2: spawnEnemy() (called inside that SAME COMBAT_INTRO reveal
+// beat, not duplicated here) already resets every attack/lock/projectile/
+// transient field on state.enemy from scratch (attackState/attackUntil/
+// nextIdleCheckAt/lastShotFiredAt/lockX,Y/missile*/sweep*/barrage*/
+// GABRIEL-ADAM DEFENSE-counter-reaim fields — see spawnEnemy()'s own body),
+// so ADAM starts with none of the sphere's state carried over — no separate
+// reset implementation needed or written.
+// spec section 3: the existing COMBAT_INTRO phase (RUN_INTRO_EMPTY_MS empty
+// stage + RUN_INTRO_REVEAL_MS light-burst reveal, both pre-existing
+// constants, no new magic number) is the reused "safe short transition" —
+// updateRunFlow()'s own phase==='COMBAT_INTRO' gate already fully blocks
+// updateEnemy()/fireWeapon()/all targeting for its entire duration (the
+// same guarantee every other enemy-to-enemy transition in this file already
+// relies on), so neither side can land an attack during the switch. No new
+// transition/fade was added.
+function checkAFinalPreAdamTransform(now) {
+  const r = state.run;
+  if (r.aFinalPreAdamTimerStartedAt <= 0) return;
+  if (now - r.aFinalPreAdamTimerStartedAt < A_FINAL_PRE_ADAM_TRANSFORM_MS) return;
+  r.aFinalPreAdamTimerStartedAt = 0; // consume — never re-fires for this encounter
+  markRunTransition('AUTO:aFinalPreAdamTransform->ADAM', now);
+  if (DEBUG_MODE) r10DebugLog('ROUTE: A_FINAL_PRE_ADAM 30s reached — transforming into ADAM (full HP, fresh state)');
+  advanceRouteStep(now);
+}
 
 // The sequencer — called once CLEAR SEQUENCE's own gate/whiteout cutscene
 // finishes (from clearSequenceResolve()), for BOTH the 'combat' reason
 // (encounter over) and the 'escape' reason (an ESCAPE stretch's own SURVIVE
 // timer ran out). Decides what state.run.phase happens next.
-// BUGFIX ROUND: `reason` is now passed in directly from clearSequenceResolve()
-// (captured at the original triggerClearSequence() call) instead of being
-// re-derived from state.run.phase here — see clearSequenceResolve()'s own
-// comment for the root-caused silent-no-op bug this fixes.
+// 7TH ROUND 4th sub-part (spec sections 7/9/17): distanceRemaining is no
+// longer read here at all — the fixed ROUTE table (via advanceRouteStep()/
+// isFinal) is now the sole source of truth for both "what's next" and "is
+// the run over".
 function decideNextRunStep(now, reason) {
-  if (state.progress.distanceRemaining <= 0) return; // enterEscapeComplete() already fired from tickRunDistance()
   // EMERGENCY FIX ROUND: this used to unconditionally SKIP (no-op) the
   // first decideNextRunStep() call after any manual Pause Menu override,
   // on the theory that it might be a stale, leftover transition from
@@ -12322,22 +13071,15 @@ function decideNextRunStep(now, reason) {
   state.run.manualOverrideActive = false;
   if (reason === 'combat') {
     if (state.run.isFinalCombat) {
-      // FINAL BATTLE resolved (defeated or timed out) -> back on the bike
-      // for the last stretch to 0m.
-      markRunTransition('AUTO:finalCombat->EVACUATION_WARNING', now);
-      beginEvacuationWarning(now);
+      // spec sections 7/9/17: A's ADAM or B's FINAL GABRIEL just fell —
+      // straight to ENDING, no EVACUATION_WARNING/ESCAPE stretch in between
+      // (the OLD distance-triggered flow used to route this through
+      // EVACUATION_WARNING; the new fixed ROUTE explicitly does not).
+      markRunTransition('AUTO:finalCombat->ENDING', now);
+      beginRunEnding(now);
       return;
     }
-    const justDefeatedType = state.history.previousEnemy;
-    const combatOnly = COMBAT_ONLY_ENEMY_TYPES[justDefeatedType];
-    const next = pickNextEnemy();
-    if (next.introContinue || combatOnly) {
-      markRunTransition('AUTO:combat->COMBAT_INTRO(' + next.type + (combatOnly ? ',combatOnly' : '') + ')', now);
-      beginCombatIntro(now, next.type, false);
-    } else {
-      markRunTransition('AUTO:combat->EVACUATION_WARNING', now);
-      beginEvacuationWarning(now);
-    }
+    advanceRouteStep(now);
     return;
   }
   if (reason === 'escape') {
@@ -12346,6 +13088,11 @@ function decideNextRunStep(now, reason) {
   }
 }
 
+// spec section 7: distanceRemaining is kept ticking purely as flavor/HUD
+// state ("EXIT XXXXXm" — spec explicitly allows this) — it no longer
+// triggers enterEscapeComplete()/ENDING on its own (that used to happen the
+// instant it hit 0; see beginRunEnding()/decideNextRunStep() for the real
+// trigger now). Floors at 0 and simply stops mattering from there.
 function tickRunDistance(dt, escapeForwardDelta) {
   const pr = state.progress;
   if (pr.distanceRemaining <= 0) return;
@@ -12353,10 +13100,7 @@ function tickRunDistance(dt, escapeForwardDelta) {
     pr.distanceRemaining = Math.max(0, pr.distanceRemaining - RUN_COMBAT_DISTANCE_PER_SEC * dt);
   } else if (state.run.phase === 'ESCAPE') {
     pr.distanceRemaining = Math.max(0, pr.distanceRemaining - Math.abs(escapeForwardDelta || 0) * RUN_ESCAPE_DISTANCE_PER_WORLDZ);
-  } else {
-    return;
   }
-  if (pr.distanceRemaining <= 0) enterEscapeComplete(performance.now());
 }
 
 function pickEvacuateDirection() {
@@ -12370,18 +13114,31 @@ function pickEvacuateDirection() {
 // style radial-gradient technique rather than per-sprite alpha
 // compositing, which would require touching the render pipeline's draw
 // order) -> enemy name / "BATTLE" banner -> COMBAT begins.
-function beginCombatIntro(now, enemyType, isFinal) {
+// (ENCOUNTER_ROLE itself now lives above, next to the ROUTE tables — see
+// that declaration's own comment.)
+function beginCombatIntro(now, enemyType, isFinal, encounterRole) {
   const r = state.run;
   r.phase = 'COMBAT_INTRO';
   r.phaseStartedAt = now;
   r.introEnemyType = enemyType;
+  // 7TH ROUND 4th sub-part (spec section 9): A_FINAL_PRE_ADAM's own 30s
+  // countdown starts the instant this encounter's real COMBAT begins — see
+  // updateCombatIntroPhase()'s own COMBAT-start transition, which is where
+  // aFinalPreAdamTimerStartedAt is actually stamped (mirrors
+  // resetAimToCombatCenter()'s own "only at the real COMBAT-start instant,
+  // never at the COMBAT_INTRO call site" timing). Cleared here for every
+  // OTHER encounter so a stale timer from a previous A_FINAL_PRE_ADAM
+  // attempt (e.g. after a CONTINUE re-fight of a different encounter) can
+  // never leak into an unrelated fight's DEBUG display.
+  if (encounterRole !== ENCOUNTER_ROLE.A_FINAL_PRE_ADAM) r.aFinalPreAdamTimerStartedAt = 0;
   r.isFinalCombat = !!isFinal;
   r.enemyRevealed = false;
+  r.encounterRole = encounterRole || null;
   setGameMode('combat'); // also correctly toggles body.escape-mode/gamemode-btn CSS
   setStageTheme('lab'); // corridor visual skin back to COMBAT's own stage — see setStageTheme()'s own comment
   state.enemy.hp = 0; // hidden — computeEnemyDrawRect()/renderEnemy() draw nothing meaningful for a dead-on-arrival enemy, and updateEnemy() itself is never called while this phase owns the frame
   hideRunBanner();
-  if (DEBUG_MODE) r10DebugLog('RUN FLOW: COMBAT_INTRO start, enemy=' + enemyType + ' final=' + r.isFinalCombat);
+  if (DEBUG_MODE) r10DebugLog('RUN FLOW: COMBAT_INTRO start, enemy=' + enemyType + ' final=' + r.isFinalCombat + ' role=' + r.encounterRole);
 }
 function updateCombatIntroPhase(now) {
   const r = state.run;
@@ -12407,6 +13164,11 @@ function updateCombatIntroPhase(now) {
   r.phase = 'COMBAT';
   r.phaseStartedAt = now;
   resetAimToCombatCenter();
+  // spec section 9: A_FINAL_PRE_ADAM's 30s countdown starts at the real
+  // COMBAT-start instant (not COMBAT_INTRO's own start) — diagnostic only,
+  // see state.run.aFinalPreAdamTimerStartedAt's own comment for why it
+  // deliberately has no gameplay effect at expiry.
+  if (r.encounterRole === ENCOUNTER_ROLE.A_FINAL_PRE_ADAM) r.aFinalPreAdamTimerStartedAt = now;
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: COMBAT begins (' + r.introEnemyType + ')');
 }
 // BUGFIX ROUND (spec section 1): COMBAT start must re-center AIM+SPOTLIGHT
@@ -12532,14 +13294,52 @@ function renderMountTransitionOverlay(now) {
   ctx.restore();
 }
 
-function beginEscapeStretch(now) {
+// 7TH ROUND 5th sub-part (spec section 7): `isContinueRestart` distinguishes
+// a genuine NEW route-driven ESCAPE entry (called from updateMountTransition
+// Phase(), false/omitted) from a CONTINUE re-entry into the SAME stretch
+// (called from continueEscapeRun(), true) — the ONLY behavioral difference
+// is whether escapeCheckpointEnemyHp gets (re-)captured (spec section 6:
+// "CONTINUEするたびにcheckpointを上書きすると...禁止" — a repeat CONTINUE
+// must keep reusing the ORIGINAL checkpoint, never re-save the enemy's
+// current, possibly-already-different HP). Every other reset below runs
+// identically either way, since both cases want the exact same "ESCAPE
+// start" state (spec section 7's own explicit preference: reuse this one
+// real init path rather than hand-rolling a second, duplicate reset list).
+function beginEscapeStretch(now, isContinueRestart) {
   const r = state.run;
   r.phase = 'ESCAPE';
   r.phaseStartedAt = now;
   setGameMode('escape'); // also toggles body.escape-mode CSS + resets timeLeftSec
   setStageTheme('escape'); // corridor visual skin — see its own comment for why this must be kept in sync manually
+  // spec section 7: full ESCAPE-transient reset, so neither a normal entry
+  // into a LATER escape stretch (this round's fixed ROUTE has more than one
+  // per run — COMMON's own ADAM SPHERE ESCAPE, plus each branch's own) nor a
+  // CONTINUE restart can ever inherit leftover decoy/collapse/dash/jump/
+  // afterimage state from a stretch that already ended.
   state.escape.depthPos = 0;
   state.escape.dashScalePulse = 1;
+  state.escape.animFrame = 0; state.escape.animElapsedMs = 0;
+  state.escape.runFrame = 0; state.escape.runElapsedMs = 0;
+  state.escape.strafeDashUntil = 0; state.escape.strafeDashDir = 0; state.escape.strafeDashStart = 0;
+  state.escape.fwdDashUntil = 0; state.escape.fwdDashSign = 0; state.escape.fwdDashCoveredZ = 0;
+  state.escape.afterimages = []; state.escape.lateralDashBlinkSuppressUntil = 0;
+  state.escape.leanAngle = 0;
+  state.escape.freeJumping = false; state.escape.freeJumpStartedAt = 0;
+  state.escape.lbDownAt = 0; state.escape.rbDownAt = 0;
+  state.escape.decoy = { active: false, side: 0, x: 0, y: 0, until: 0, visualUntil: 0 };
+  state.escape.collapse.phase = 'idle';
+  state.escape.collapse.phaseStartedAt = 0;
+  state.escape.collapse.nextEventAt = 6000;
+  state.escape.collapse.shakeX = 0; state.escape.collapse.shakeY = 0; state.escape.collapse.tiltAngle = 0;
+  state.escape.collapse.obstacles = [];
+  state.escape.collapse.playerBackshift = null;
+  state.escape.collapse.bossBackshift = null;
+  // spec section 7 ("player position"): centers the player's own screen
+  // position for a genuine "ESCAPE start" — the same resolution-independent
+  // reasoning resetAimToCombatCenter() already uses for COMBAT's own start,
+  // just for the player's screen position instead of AIM.
+  state.player.strafeOffset = 0;
+  state.player.invincibleUntil = 0;
   hideRunBanner();
   // EMERGENCY FIX ROUND: root cause of the reported "COMBAT->ESCAPE後、白
   // TRANSITIONが再発火する" — ESCAPE reuses the SAME state.enemy object as
@@ -12555,11 +13355,28 @@ function beginEscapeStretch(now) {
   // immediately followed by the same enemy "defeated" again. spawnEnemy()
   // is the SAME reset every other real entry point already uses — reusing
   // it here revives the enemy fresh (alive, full HP, idle attack state) for
-  // its new role as the ESCAPE pursuer, exactly as intended by design
-  // (COMBAT_ONLY_ENEMY_TYPES deliberately excludes roid1/roid2/gabriel/adam
-  // from ever reaching this function in the first place).
-  spawnEnemy(state.enemy.type);
-  if (DEBUG_MODE) r10DebugLog('RUN FLOW: ESCAPE stretch begins');
+  // its new role as the ESCAPE pursuer, exactly as intended by design.
+  // 7TH ROUND 4th sub-part (spec section 6): if advanceRouteStep() stashed a
+  // SCRIPTED pursuer type (the COMMON ROUTE's own "ADAM SPHERE ESCAPE" step,
+  // which must be chased by ADAM SPHERE even though DRONE was the enemy
+  // just fought), use that instead of the plain "reuse whatever was just
+  // fought" default — every OTHER ESCAPE step in the fixed ROUTE leaves
+  // this null, so their behavior is byte-for-byte unchanged from before.
+  const scriptedType = r.pendingEscapeEnemyType;
+  spawnEnemy(scriptedType || state.enemy.type);
+  r.pendingEscapeEnemyType = null;
+  // 7TH ROUND 5th sub-part (spec sections 4-6): the ESCAPE CONTINUE
+  // checkpoint — captured ONCE, right here, right after spawnEnemy() has
+  // given the pursuer its real starting HP for THIS stretch (never before,
+  // which would capture the previous COMBAT enemy's HP at the moment it
+  // died — not what "ESCAPE移行直前のenemy HP" means; the pursuer's OWN
+  // starting HP for the stretch the player is now in). Skipped entirely on
+  // a CONTINUE restart (isContinueRestart===true) so re-entering the SAME
+  // stretch can never overwrite the original checkpoint with a later value.
+  if (!isContinueRestart) {
+    r.escapeCheckpointEnemyHp = state.enemy.hp;
+  }
+  if (DEBUG_MODE) r10DebugLog('RUN FLOW: ESCAPE stretch begins (' + state.enemy.type + (scriptedType ? ', scripted' : ', reused') + ')' + (isContinueRestart ? ' [CONTINUE restart, checkpoint kept]' : ' [checkpoint=' + r.escapeCheckpointEnemyHp + ']'));
 }
 
 // ---- DISMOUNT_TRANSITION ----
@@ -12569,17 +13386,16 @@ function beginDismountTransition(now) {
   r.phaseStartedAt = now;
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: DISMOUNT_TRANSITION start');
 }
+// 7TH ROUND 4th sub-part (spec sections 5/7/8): no longer reads
+// distanceRemaining/pickFinalBattleEnemy()/pickNextEnemy() at all — the
+// fixed ROUTE table (advanceRouteStep()) is the sole "what's next" decision,
+// used identically whether this dismount followed the COMMON ROUTE's own
+// ADAM SPHERE ESCAPE or a branch's own ESCAPE step.
 function updateDismountTransitionPhase(now) {
   const elapsed = now - state.run.phaseStartedAt;
   if (elapsed < RUN_DISMOUNT_FADE_MS) return;
   setGameMode('combat'); // also toggles body.escape-mode CSS off
-  if (state.progress.distanceRemaining <= RUN_LAST_STRETCH_M && !state.history.finalBattleQueued) {
-    state.history.finalBattleQueued = true;
-    beginCombatIntro(now, pickFinalBattleEnemy(), true);
-  } else {
-    const next = pickNextEnemy();
-    beginCombatIntro(now, next.type, false);
-  }
+  advanceRouteStep(now);
 }
 function renderDismountTransitionOverlay(now) {
   const elapsed = now - state.run.phaseStartedAt;
@@ -12592,6 +13408,22 @@ function renderDismountTransitionOverlay(now) {
 }
 
 // ---- ESCAPE_COMPLETE -> ENDING -> RESULT ----
+// 7TH ROUND 4th sub-part (spec sections 7/9/17): the NEW ending trigger —
+// A ROUTE's ADAM or B ROUTE's FINAL GABRIEL falling in COMBAT. Unlike the
+// OLD distance-reaches-0 trigger (enterEscapeComplete(), still used by
+// nothing now that tickRunDistance() no longer calls it), this fires
+// straight from COMBAT mode, so gameMode/theme must be switched to 'escape'
+// first — the exact same forcing beginEnding() already documents as its own
+// precondition, and the same technique debugJumpToResult() already used for
+// its own DEBUG-only jump. Deliberately skips the "ESCAPE COMPLETE" banner
+// beat (enterEscapeComplete()/updateEscapeCompletePhase()) — that text is
+// specifically about reaching the end of a bike stretch, which did not just
+// happen here; the player just won a boss fight in COMBAT.
+function beginRunEnding(now) {
+  setGameMode('escape');
+  setStageTheme('escape');
+  beginEnding(now);
+}
 function enterEscapeComplete(now) {
   if (state.run.phase === 'ESCAPE_COMPLETE' || state.run.phase === 'ENDING' || state.run.phase === 'RESULT') return;
   const r = state.run;
@@ -12663,16 +13495,41 @@ function updateEndingPhase(now) {
 // scene keeps rendering (and the ENDING BGM keeps playing) underneath —
 // RESULT is a UI layer, never a scene swap.
 // ---------------------------------------------------------------------
+// 7TH ROUND 4th sub-part (spec section 17): RANK is now CLEAR TIME +
+// CONTINUE COUNT — the old score-based S 2000+/A 1200+/B 700+/C 300+/D
+// thresholds are retired wholesale (spec's own explicit "廃止対象").
+// Checked in strict priority order S->A->B->C->D and returns on the FIRST
+// match, so a run satisfying more than one band's criteria always keeps the
+// higher rank (spec section 17's explicit "重複した場合は最上位を採用").
+// Reads state.run.totalPlayTimeMs/continueCount directly (same convention
+// every other RUN FLOW function already uses) rather than taking
+// parameters, so a test script can simply set those two fields and call
+// this directly (window.__darkoutTps.computeResultRank), same pattern as
+// every other exported RUN FLOW function.
+// 7TH ROUND 5th sub-part (spec section 11): continueCount is the ONE
+// shared counter both continueRun() (COMBAT) and continueEscapeRun()
+// (ESCAPE) increment — already the sum of both CONTINUE types with no
+// separate combining step needed here.
 function computeResultRank() {
-  const s = state.score;
-  if (s >= 2000) return 'S';
-  if (s >= 1200) return 'A';
-  if (s >= 700) return 'B';
-  if (s >= 300) return 'C';
+  const r = state.run;
+  const sec = r.totalPlayTimeMs / 1000;
+  const cc = r.continueCount;
+  if (sec <= 600 && cc === 0) return 'S';
+  if (sec <= 720 && cc < 2) return 'A';
+  if (sec <= 900 && cc <= 3) return 'B';
+  if (sec <= 1200 && cc <= 5) return 'C';
   return 'D';
+}
+function formatClearTime(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
 }
 function showResultScreen() {
   resultScoreValueEl.textContent = String(state.score);
+  if (resultTimeValueEl) resultTimeValueEl.textContent = formatClearTime(state.run.totalPlayTimeMs);
+  if (resultContinueValueEl) resultContinueValueEl.textContent = String(state.run.continueCount);
   resultRankValueEl.textContent = computeResultRank();
   state.resultFocus = 0;
   updateResultFocusUI();
@@ -12726,6 +13583,17 @@ function triggerGameOver(now, reason) {
   r.phaseStartedAt = now;
   r.gameOverTriggered = true;
   r.gameOverReason = reason || 'PLAYER_HP_ZERO';
+  // 7TH ROUND 4th sub-part (spec sections 13-15): CONTINUE is only ever
+  // offered for a COMBAT death — ESCAPE death's CONTINUE semantics are
+  // explicitly unresolved this round (restarting the ESCAPE stretch itself
+  // has no single unambiguous "from its own start" definition the way
+  // beginCombatIntro() already gives COMBAT — depthPos/collapse/decoy state,
+  // the SURVIVE timer, and player position mid-corridor are all genuinely
+  // ambiguous — see the completion report's STOP item). Captured here,
+  // once, at the exact instant of death, so it can never drift if gameMode
+  // happens to change again before the player actually presses anything on
+  // this screen.
+  r.deathGameMode = state.gameMode;
   markRunTransition('GAME_OVER:' + r.gameOverReason, now);
   showRunBanner('GAME OVER', '');
   if (DEBUG_MODE) {
@@ -12737,12 +13605,105 @@ function triggerGameOver(now, reason) {
       ' manualSelectionActive=' + r.manualOverrideActive);
   }
 }
+// 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER now holds on its
+// plain text banner for the same 1500ms as before, then shows an
+// INTERACTIVE overlay (CONTINUE/QUIT) and WAITS — it no longer auto-advances
+// to RESULT on its own. RESULT is a "the run is genuinely complete" screen;
+// giving up here reloads instead (mirrors RESULT's own QUIT precedent —
+// the most honest "quit" a browser page has), rather than fabricating a
+// RESULT presentation for a run that was never cleared.
 function updateGameOverPhase(now) {
+  if (!gameoverScreenEl.hidden) return; // already showing, waiting on CONTINUE/QUIT
   if (now - state.run.phaseStartedAt < 1500) return;
   hideRunBanner();
-  state.run.phase = 'RESULT';
-  state.run.phaseStartedAt = now;
-  showResultScreen();
+  showGameOverScreen();
+}
+// 7TH ROUND 5th sub-part (spec section 4-10): CONTINUE is now fully defined
+// for BOTH death modes — the GAME OVER screen always offers it, and reads
+// state.run.deathGameMode purely to pick WHICH of the two implementations
+// below to call, never to decide whether to show the button at all (that
+// mode-based hiding is what the 4th sub-part's report flagged as its STOP
+// item; this round's spec resolves it).
+function showGameOverScreen() {
+  const r = state.run;
+  if (gameoverContinueBtnEl) gameoverContinueBtnEl.hidden = false;
+  if (gameoverContinueRowEl) gameoverContinueRowEl.hidden = false;
+  if (gameoverContinueCountValueEl) gameoverContinueCountValueEl.textContent = String(r.continueCount);
+  state.gameOverFocus = 0;
+  updateGameOverFocusUI();
+  gameoverScreenEl.hidden = false;
+  if (DEBUG_MODE) r10DebugLog('GAME OVER SCREEN: shown, deathGameMode=' + r.deathGameMode);
+}
+function hideGameOverScreen() {
+  gameoverScreenEl.hidden = true;
+}
+function updateGameOverFocusUI() {
+  if (gameoverContinueBtnEl) gameoverContinueBtnEl.classList.toggle('gamepad-focused', state.gameOverFocus === 0);
+  if (gameoverQuitBtnEl) gameoverQuitBtnEl.classList.toggle('gamepad-focused', state.gameOverFocus === 1);
+}
+// 7TH ROUND 5th sub-part (spec section 10): dispatches to whichever of the
+// two CONTINUE implementations matches how the player actually died — never
+// mixed/confused (spec's own explicit "この2つを混同しないでください").
+function activateGameOverFocusedButton() {
+  if (state.gameOverFocus === 0) {
+    if (state.run.deathGameMode === 'escape') continueEscapeRun(performance.now());
+    else continueRun(performance.now());
+  } else {
+    // QUIT — same reasoning as RESULT's own QUIT: reload is the most honest
+    // "quit" a browser page has, and correctly stops all audio too.
+    window.location.reload();
+  }
+}
+if (gameoverContinueBtnEl) gameoverContinueBtnEl.addEventListener('click', () => { state.gameOverFocus = 0; activateGameOverFocusedButton(); });
+if (gameoverQuitBtnEl) gameoverQuitBtnEl.addEventListener('click', () => { state.gameOverFocus = 1; activateGameOverFocusedButton(); });
+
+// 7TH ROUND 4th sub-part (spec sections 13-14): COMBAT CONTINUE — restarts
+// ONLY the current COMBAT encounter from its own start, never the whole RUN.
+// routeBranch/routeSection/routeStep/encounterRole/totalPlayTimeMs are all
+// deliberately left untouched (spec section 14's explicit list) — the ONLY
+// state this function ever writes is continueCount, player.hp, and
+// whatever beginCombatIntro()'s own normal COMBAT-start path already resets
+// (state.enemy, via spawnEnemy() at the reveal beat) — reusing that REAL
+// entry point rather than a second, duplicate "restart combat" code path,
+// so CONTINUE can never drift from what a normal COMBAT start already does.
+function continueRun(now) {
+  const r = state.run;
+  r.continueCount++;
+  state.player.hp = PLAYER_MAX_HP;
+  hideGameOverScreen();
+  hideRunBanner();
+  r.gameOverTriggered = false;
+  r.gameOverReason = null;
+  const enemyType = r.introEnemyType;
+  const isFinal = r.isFinalCombat;
+  const role = r.encounterRole;
+  if (DEBUG_MODE) r10DebugLog('CONTINUE (COMBAT): count=' + r.continueCount + ' enemy=' + enemyType + ' final=' + isFinal + ' role=' + role);
+  beginCombatIntro(now, enemyType, isFinal, role);
+}
+
+// 7TH ROUND 5th sub-part (spec sections 4-6, 10): ESCAPE CONTINUE — restarts
+// the CURRENT ESCAPE stretch from its own start (beginEscapeStretch(now,
+// true) — the SAME real ESCAPE-init path a normal entry uses, per spec
+// section 7's explicit reuse preference), then immediately overrides the
+// freshly-spawned pursuer's HP with the STORED checkpoint (spec section 6:
+// never full HP, never the HP it happened to have at the moment of death —
+// always the value captured once when this stretch began). routeBranch/
+// routeSection/routeStep/encounterRole/totalPlayTimeMs/
+// escapeCheckpointEnemyHp itself are all left untouched, exactly mirroring
+// continueRun()'s own COMBAT-side guarantees (spec section 10's explicit
+// "この2つを混同しないでください" — same guarantees, different restart
+// target and different enemy-HP rule).
+function continueEscapeRun(now) {
+  const r = state.run;
+  r.continueCount++;
+  state.player.hp = PLAYER_MAX_HP;
+  hideGameOverScreen();
+  hideRunBanner();
+  r.gameOverTriggered = false;
+  r.gameOverReason = null;
+  beginEscapeStretch(now, true);
+  state.enemy.hp = r.escapeCheckpointEnemyHp;
+  if (DEBUG_MODE) r10DebugLog('CONTINUE (ESCAPE): count=' + r.continueCount + ' enemy=' + state.enemy.type + ' hpRestoredTo=' + state.enemy.hp);
 }
 
 function updateRunFlow(now) {
@@ -12864,25 +13825,27 @@ function frame(ts) {
   if (!state.gameStarted) return;
   state.input.moveX = gpInput.move.x !== 0 ? gpInput.move.x : touchMove.x;
   state.input.moveY = gpInput.move.y !== 0 ? gpInput.move.y : touchMove.y;
-  // 26TH ROUND (COMBAT operation redesign): GAMEPAD RIGHT STICK now drives
-  // ONE unified AIM+SPOTLIGHT input — gpInput.light is always {0,0} in
-  // COMBAT now (see pollGamepad()'s own comment), so whenever the gamepad's
-  // right stick is actually deflected, the EXACT SAME sensitivity-scaled
-  // value is fed into BOTH state.input.aimX/Y and state.input.lightX/Y this
-  // frame — not "similar", the identical number — which is what lets
-  // updatePlayer() move p.aimLiveX/Y and p.lightPersistX/Y in perfect
-  // lockstep (same speed/range constants there too) without needing a
-  // single shared variable. TOUCH's own independent AIM pad / LIGHT pad
-  // are completely untouched — each keeps falling back to its own
-  // touchAim.x/y / touchLight.x/y whenever the gamepad stick is neutral on
-  // that axis, exactly as before this round.
+  // 26TH ROUND (COMBAT operation redesign): GAMEPAD RIGHT STICK drives ONE
+  // unified AIM+SPOTLIGHT input — gpInput.light is always {0,0} in COMBAT
+  // (see pollGamepad()'s own comment), so whenever the gamepad's right
+  // stick is actually deflected, the EXACT SAME sensitivity-scaled value is
+  // fed into BOTH state.input.aimX/Y and state.input.lightX/Y this frame —
+  // not "similar", the identical number — which is what lets updatePlayer()
+  // move p.aimLiveX/Y and p.lightPersistX/Y in perfect lockstep (same
+  // speed/range constants there too) without needing a single shared
+  // variable.
+  // 7TH ROUND 4th sub-part (spec sections 19-20): TOUCH now does the exact
+  // same thing — the old separate AIM pad/LIGHT pad are unified into ONE
+  // stick (touchLight; the old touchAim object/DOM no longer exists), fed
+  // into both channels identically, mirroring GAMEPAD's own approach above
+  // rather than needing separate reconciliation.
   // 7TH ROUND PART 11: controllerAimSensitivity multiplies ONLY the
-  // gamepad branch — touchAim.x/y (the else branch) is untouched, so the
+  // gamepad branch — touchLight.x/y (the else branch) is untouched, so the
   // PAUSE setting never affects TOUCH AIM.
   const gpAimScaledX = gpInput.aim.x * controllerAimSensitivity;
   const gpAimScaledY = gpInput.aim.y * controllerAimSensitivity;
-  state.input.aimX = gpInput.aim.x !== 0 ? gpAimScaledX : touchAim.x;
-  state.input.aimY = gpInput.aim.y !== 0 ? gpAimScaledY : touchAim.y;
+  state.input.aimX = gpInput.aim.x !== 0 ? gpAimScaledX : touchLight.x;
+  state.input.aimY = gpInput.aim.y !== 0 ? gpAimScaledY : touchLight.y;
   state.input.lightX = gpInput.aim.x !== 0 ? gpAimScaledX : touchLight.x;
   state.input.lightY = gpInput.aim.y !== 0 ? gpAimScaledY : touchLight.y;
   // PART 6: LT/RT + D-PAD manual AIM trim (height/horizontal).
@@ -12890,7 +13853,7 @@ function frame(ts) {
   state.input.aimHorizAdjust = gpInput.aimAdjust.horiz;
   // ESCAPE has zero attack commands (spec section 7) — forced false here,
   // in addition to pollGamepad()'s ESCAPE branch already returning
-  // fire:false/focusHeld:false and #touch-fire/#touch-focus being hidden
+  // fire:false/focusHeld:false and #touch-shot/#touch-focus being hidden
   // via CSS (body.escape-mode) — defense-in-depth so a single button (e.g.
   // RB, which is both LAB's FIRE and ESCAPE's EAST-dash trigger key) can
   // NEVER produce a LAB combat effect while in ESCAPE, no matter what path
@@ -12906,6 +13869,11 @@ function frame(ts) {
   if (actions.pauseToggle) togglePauseMenu();
 
   if (!state.paused) {
+    // spec section 16: TOTAL PLAY TIME — accumulated ONLY inside this same
+    // `if (!state.paused)` gate every other per-run timer in this file
+    // already relies on (see state.run.totalPlayTimeMs's own comment for
+    // why this needs no separate pause/resume timestamp bookkeeping).
+    state.run.totalPlayTimeMs += dt * 1000;
     // 9TH ROUND (item 30-35): CLEAR SEQUENCE owns the frame while active —
     // advance its own time-based phase machine, but skip every normal
     // FIRE/MOVE/DASH/RELOAD/COVER/LIGHT/enemy-update call below entirely
@@ -13002,15 +13970,22 @@ function frame(ts) {
       // (state.run.phase==='COMBAT' — guaranteed true here, since
       // COMBAT_INTRO is its own separate RUN FLOW phase handled above).
       tickRunDistance(dt, 0);
-      // RUN FLOW: per-encounter COMBAT TIME LIMIT — new this round (only
-      // ESCAPE had a timer before). Not defeating the enemy in time is
-      // explicitly NOT a game over (spec section 8) — onEnemyDefeated(ts,
-      // false) just records a non-defeat result and plays the SAME shared
-      // CLEAR SEQUENCE the enemy-death path already uses.
-      if (state.run.phase === 'COMBAT' && state.combat.timeLeftSec > 0) {
-        state.combat.timeLeftSec = Math.max(0, state.combat.timeLeftSec - dt);
-        if (state.combat.timeLeftSec <= 0) onEnemyDefeated(ts, false);
-      }
+      // 7TH ROUND 5th sub-part (spec sections 1-3): A_FINAL_PRE_ADAM's own
+      // 30s timer -> ADAM transform, ticked every COMBAT frame exactly like
+      // tickRunDistance()/the GAME OVER check just below it. No-op unless
+      // this specific encounterRole's timer is actually running (see the
+      // function's own comment).
+      checkAFinalPreAdamTransform(ts);
+      // 7TH ROUND (spec section 13): the per-encounter COMBAT TIME LIMIT
+      // (auto-ending a fight at 50s even with the enemy still alive) is
+      // REMOVED — COMBAT now always resolves the same way it already does
+      // on a real kill: enemy.hp reaches 0 -> startEnemyDeath() -> the
+      // existing death-family sequence -> onEnemyDefeated(ts, true) ->
+      // decideNextRunStep(). That path is completely untouched by this
+      // removal. state.combat.timeLeftSec is left in state (still reset at
+      // COMBAT start, still shown in the DEBUG panel — see its own field
+      // comment) but nothing decrements it or reads it as a deadline
+      // anymore, so it now reads as a static, informational value only.
     }
     // RUN FLOW SYSTEM: GAME OVER — did not exist anywhere in this codebase
     // before this round (state.player.hp could already reach 0 via every
@@ -13288,6 +14263,12 @@ window.__darkoutTps = {
   // added 3rd round (PART 3/4/6/9/11/12): new stick curve/collision helpers
   applyLightCurve, clampStrafeForBarrels, clampForwardDeltaForBarrels,
   triggerFireHaptics,
+  // 7TH ROUND: BARREL ROW / KNOCKBACK / encounterRole / new death families —
+  // exposed for automated testing only.
+  barrelRows, triggerBarrelRow, findNextBarrelRow, rowLiveAnchorZ,
+  isKnockbackSafe, KNOCKBACK_SAFE_ATTACK_STATES, KNOCKBACK_EXCLUDED_TYPES,
+  BARREL_ROW_PROXIMITY_Z, BARREL_KNOCKBACK_MS,
+  ENCOUNTER_ROLE, resolveDeathFamily, DEATH_FADE_MS, DEATH_KNEEL_MS,
   // added 4th round: ENEMY SELECT/AUTO MODE, FOCUS/AUTO AIM, death effects,
   // PAUSE/touch-controls-visibility — exposed for automated testing only.
   selectEnemy, spawnEnemy, startEnemyDeath, advanceEnemyRotation,
@@ -13429,4 +14410,23 @@ window.__darkoutTps = {
   escapePlayerBaseScaleFromDepth, ESCAPE_PLAYER_BASE_SCALE,
   gabrielAdamApproachSpeed, GABRIEL_ADAM_WEAKPOINT_DAMAGE_MULT,
   GABRIEL_ADAM_COUNTER_RANGE_TOLERANCE, clawBossWeakPointFor,
+  // 7TH ROUND 4th sub-part: fixed ROUTE SEQUENCE / CONTINUE / TOTAL PLAY
+  // TIME / new RESULT RANK — exposed for automated testing only.
+  ROUTE_COMMON, ROUTE_A, ROUTE_B, ROUTE_BY_BRANCH,
+  currentRouteArray, currentRouteStepDef, advanceRouteStep, beginRunEnding,
+  continueRun, showGameOverScreen, hideGameOverScreen, updateGameOverPhase,
+  updateGameOverFocusUI, activateGameOverFocusedButton, formatClearTime,
+  // 7TH ROUND 4th sub-part: TOUCH UI redesign — exposed for automated
+  // testing only (the live touchMove/touchLight stick objects, so a test
+  // can set their x/y directly rather than needing a real synthetic
+  // multi-touch pointer session to hold a stick while tapping a button).
+  touchMove, touchLight, touchMoveDominantDir,
+  // 7TH ROUND 4th sub-part (spec sections 38-45): resize()/AIM init fix —
+  // exposed for automated testing only.
+  resize, RESIZE_MIN_SANE_PX, RESIZE_RETRY_MAX_ATTEMPTS,
+  // 7TH ROUND 5th sub-part: ADAM SPHERE -> ADAM transform / ESCAPE
+  // CONTINUE checkpoint — exposed for automated testing only.
+  checkAFinalPreAdamTransform, A_FINAL_PRE_ADAM_TRANSFORM_MS,
+  continueEscapeRun,
+  get resizeRetryAttempts() { return resizeRetryAttempts; },
 };

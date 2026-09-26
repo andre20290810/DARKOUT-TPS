@@ -652,6 +652,45 @@ html, body {
   box-shadow: 0 0 0 2px rgba(127,255,212,0.4), 0 0 14px rgba(127,255,212,0.35);
 }
 
+/* 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER screen — same
+   layout rules as #result-screen/#result-overlay-dim/#result-panel/
+   #result-title (deliberately duplicated under new ids rather than reused,
+   since GAME_OVER and RESULT are two distinct DOM overlays that could in
+   principle both exist hidden at once); .result-stat-row/.result-btn/
+   .gamepad-focused above are already generic classes, reused as-is. */
+#gameover-screen {
+  position: absolute;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#gameover-screen[hidden] { display: none; }
+#gameover-overlay-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(3,5,8,0.62);
+}
+#gameover-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 20px;
+}
+#gameover-title {
+  font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
+  font-stretch: condensed;
+  font-size: clamp(28px, 8vw, 42px);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #ff5c5c;
+  text-shadow: 0 0 12px rgba(255,60,60,0.4), 0 2px 4px rgba(0,0,0,0.9);
+  margin-bottom: 4px;
+}
+
 /* 5TH ROUND PART 14: enemy/boss HP gauge moved from character-overlapping
    top-center to the screen's top-right corner (spec: "画面右上端へ表示",
    "キャラクターspriteには重ねないでください") — stacked directly below
@@ -1028,21 +1067,27 @@ html, body {
   transition: none;
 }
 #touch-move-pad { left: max(14px, env(safe-area-inset-left)); }
+/* Unified AIM+LIGHT stick — same position the old separate LIGHT stick
+   always had; only its label text changed (see index.html). */
 #touch-light-pad { left: calc(max(14px, env(safe-area-inset-left)) + 110px); }
-#touch-aim-pad { right: max(120px, calc(env(safe-area-inset-right) + 120px)); }
 
-#touch-buttons {
-  position: absolute;
-  right: max(14px, env(safe-area-inset-right));
-  bottom: max(20px, env(safe-area-inset-bottom));
-  display: grid;
-  grid-template-columns: repeat(2, 52px);
-  gap: 6px;
-}
+/* 7TH ROUND 4th sub-part (spec sections 20-27): the button cluster that
+   replaces the old #touch-buttons grid + the old right-side #touch-aim-pad
+   stick. Concept layout (COMBAT):
+              SHOT
+   MOVE       AIM                                FOCUS
+   stick      stick
+                                                    DASH     RELOAD
+   ESCAPE swaps FOCUS/RELOAD for SHADOW/JUMP at the exact same two slots
+   (never shown at the same time as their COMBAT counterparts, so reusing
+   the identical position values is intentional, not a coincidence). */
 .touch-btn {
+  position: absolute;
   font-size: 9px;
   letter-spacing: 0.03em;
   padding: 10px 2px;
+  width: 64px;
+  text-align: center;
   background: rgba(255,255,255,0.08);
   border: 1px solid rgba(255,255,255,0.25);
   color: #e0e6ea;
@@ -1050,18 +1095,56 @@ html, body {
   touch-action: none;
 }
 .touch-btn:active { background: rgba(255,255,255,0.3); }
+/* SHOT — above MOVE stick, spec section 20. */
+.touch-btn-shot {
+  left: max(14px, env(safe-area-inset-left));
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 112px);
+}
+/* DASH — a large round button at the old right-side AIM stick's position
+   (spec sections 20/24), sized/shaped like the sticks above it for visual
+   parity with the primary MOVE/AIM sticks rather than the smaller utility
+   buttons around it. */
+.touch-btn-round {
+  position: absolute;
+  right: max(120px, calc(env(safe-area-inset-right) + 120px));
+  bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px));
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.25);
+  color: #e0e6ea;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  touch-action: none;
+}
+.touch-btn-round:active { background: rgba(255,255,255,0.3); }
+/* RELOAD / JUMP — right of DASH, spec sections 20/24. */
+.touch-btn-side {
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px));
+}
+/* FOCUS / SHADOW — above DASH, spec sections 20/24. */
+.touch-btn-top {
+  right: max(120px, calc(env(safe-area-inset-right) + 120px));
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 112px);
+}
 
 /* Narrow-height landscape (small phones): shrink touch controls a bit */
 @media (max-height: 420px) {
   .touch-pad { width: 78px; height: 78px; bottom: max(56px, calc(env(safe-area-inset-bottom) + 56px)); }
   .touch-btn { padding: 7px 2px; }
+  .touch-btn-round { width: 78px; height: 78px; }
+  .touch-btn-shot { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 94px); }
+  .touch-btn-top { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 94px); }
 }
 
 /* ESCAPE-EXCLUSIVE GAMEPLAY MODE (state.gameMode === 'escape', toggled onto
    <body> by the SAME existing ESCAPE theme button — see game.js's
    .theme-btn click handler). Purely visual: hides the combat-only HUD
    readouts/touch buttons that have no meaning with zero attack commands
-   (spec section 7), and reveals the two ESCAPE-only WEST/EAST DASH touch
+   (spec section 7), and reveals the two ESCAPE-only JUMP/SHADOW touch
    buttons that have no LAB equivalent. Never affects LAB/ARMORED, since
    body.escape-mode is only ever present while state.gameMode === 'escape'. */
 .touch-escape-only { display: none; }
@@ -1080,12 +1163,13 @@ body.escape-mode #ammo-hud,
 body.escape-mode #stealth-readout,
 body.escape-mode #enemy-hud,
 body.escape-mode #focus-hud,
-body.escape-mode #touch-fire,
+body.escape-mode #touch-shot,
 body.escape-mode #touch-reload,
-body.escape-mode #touch-stealth,
 body.escape-mode #touch-focus,
 body.escape-mode #touch-light-pad {
   /* 9TH ROUND item 20: ESCAPE MODE has no LIGHT input/rendering/UI at all —
-     it is a survive-until-TIME-LIMIT mode, not explore-in-darkness. */
+     it is a survive-until-TIME-LIMIT mode, not explore-in-darkness. SHOT/
+     RELOAD/FOCUS have zero meaning with zero attack commands either
+     (unchanged reasoning, 7TH ROUND 4th sub-part just renamed FIRE->SHOT). */
   display: none;
 }

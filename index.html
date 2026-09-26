@@ -249,11 +249,38 @@
     <div id="result-overlay-dim"></div>
     <div id="result-panel">
       <div id="result-title">RESULTS</div>
+      <!-- 7TH ROUND 4th sub-part (spec section 17): RANK is now CLEAR TIME +
+           CONTINUE COUNT, not SCORE — both are now shown alongside RANK so
+           the number actually driving the rank is visible, not hidden
+           behind a score that no longer determines it. SCORE itself is
+           kept on-screen (harmless, still genuinely tracked) rather than
+           removed. -->
+      <div class="result-stat-row">CLEAR TIME <span id="result-time-value">00:00</span></div>
+      <div class="result-stat-row">CONTINUE <span id="result-continue-value">0</span></div>
       <div class="result-stat-row">SCORE <span id="result-score-value">0</span></div>
       <div class="result-stat-row">RANK <span id="result-rank-value">D</span></div>
       <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
       <button type="button" tabindex="-1" id="result-quit-btn" class="result-btn">QUIT</button>
       <a id="result-artist-btn" class="result-btn" href="#" target="_blank" rel="noopener">ARTIST PAGE</a>
+    </div>
+  </div>
+
+  <!-- 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER screen — a
+       new interactive overlay (previously GAME OVER auto-advanced straight
+       to RESULT after 1500ms with no player choice at all). Mirrors
+       #result-screen's own structure/CSS classes exactly (.result-btn,
+       .result-stat-row, .gamepad-focused) rather than inventing a second
+       visual language. CONTINUE is hidden/disabled by game.js when the
+       death happened in ESCAPE mode (spec section 15: ESCAPE death's
+       CONTINUE semantics are explicitly unresolved this round — see the
+       completion report's STOP item), leaving only QUIT in that case. -->
+  <div id="gameover-screen" hidden>
+    <div id="gameover-overlay-dim"></div>
+    <div id="gameover-panel">
+      <div id="gameover-title">GAME OVER</div>
+      <div class="result-stat-row" id="gameover-continue-row">CONTINUE COUNT <span id="gameover-continue-count-value">0</span></div>
+      <button type="button" tabindex="-1" id="gameover-continue-btn" class="result-btn">CONTINUE</button>
+      <button type="button" tabindex="-1" id="gameover-quit-btn" class="result-btn">QUIT</button>
     </div>
   </div>
 
@@ -363,45 +390,51 @@
        / style.css's default-hidden rule) — toggled ON/OFF from PAUSE only.
        The touch input implementation itself (makeVirtualStick()/
        wireButton() listeners) is completely unchanged; only visibility. -->
+  <!-- 7TH ROUND 4th sub-part (spec sections 19-28): TOUCH UI redesign.
+       GAMEPAD mapping (pollGamepad()) is completely untouched — this block
+       only changes touch DOM/CSS/pointer-handler input routing. Removed
+       controls (STEALTH, N-DASH/S-STEP/W-DASH/E-DASH, the old separate
+       right-side AIM stick, the old FIRE button, W-DECOY/E-DECOY) have NO
+       surviving DOM/CSS/handler — see game.js's touch-input wiring for the
+       matching removals. -->
   <div id="touch-controls">
     <div id="touch-move-pad" class="touch-pad">
       <div class="touch-pad-label">MOVE</div>
       <div class="touch-stick"></div>
     </div>
+    <!-- Unified AIM+LIGHT stick — was the separate LIGHT stick; now drives
+         BOTH AIM and LIGHT/SPOTLIGHT together (see game.js's frame() input
+         merge, which now feeds this single stick's x/y into both
+         state.input.aimX/Y and lightX/Y, mirroring how GAMEPAD's right
+         stick already drives both identically). The OLD separate right-side
+         AIM stick (#touch-aim-pad) is removed entirely — #touch-dash below
+         now occupies its former screen position. -->
     <div id="touch-light-pad" class="touch-pad">
-      <div class="touch-pad-label">LIGHT</div>
-      <div class="touch-stick"></div>
-    </div>
-    <div id="touch-aim-pad" class="touch-pad">
       <div class="touch-pad-label">AIM</div>
       <div class="touch-stick"></div>
     </div>
-    <div id="touch-buttons">
-      <button type="button" tabindex="-1" id="touch-fire" class="touch-btn">FIRE</button>
-      <button type="button" tabindex="-1" id="touch-reload" class="touch-btn">RELOAD</button>
-      <button type="button" tabindex="-1" id="touch-stealth" class="touch-btn">STEALTH</button>
-      <!-- 4th round: FLASH retired, this slot now hosts FOCUS/AUTO AIM (held, same as FIRE). -->
-      <button type="button" tabindex="-1" id="touch-focus" class="touch-btn">FOCUS</button>
-      <button type="button" tabindex="-1" id="touch-dash-n" class="touch-btn">N-DASH</button>
-      <button type="button" tabindex="-1" id="touch-dash-s" class="touch-btn">S-STEP</button>
-      <!-- ESCAPE-exclusive: LB/X WEST DASH, RB/B EAST DASH have no LAB
-           touch equivalent at all — these two buttons only exist so ESCAPE
-           has real touch parity for them, hidden unless body.escape-mode
-           (see style.css / game.js's theme-btn click handler). -->
-      <button type="button" tabindex="-1" id="touch-dash-w" class="touch-btn touch-escape-only">W-DASH</button>
-      <button type="button" tabindex="-1" id="touch-dash-e" class="touch-btn touch-escape-only">E-DASH</button>
-      <!-- NEW FEATURE: METROPOLIS COLLAPSE — touch equivalent of the
-           gamepad's LB+RB JUMP combo (see game.js's touch-dash-jump wiring
-           and pollGamepad()'s ESCAPE branch). ESCAPE-exclusive, same as
-           W-DASH/E-DASH above. -->
-      <button type="button" tabindex="-1" id="touch-dash-jump" class="touch-btn touch-escape-only">JUMP</button>
-      <!-- 30TH ROUND items 19-22: DECOY — touch equivalent of the gamepad's
-           LB(WEST)/RB(EAST) DECOY throw. Touch has no chord-priority concern
-           (each is its own physical button, no LB+RB ambiguity to resolve),
-           so these fire immediately, unlike the gamepad's debounced version. -->
-      <button type="button" tabindex="-1" id="touch-decoy-w" class="touch-btn touch-escape-only">W-DECOY</button>
-      <button type="button" tabindex="-1" id="touch-decoy-e" class="touch-btn touch-escape-only">E-DECOY</button>
-    </div>
+    <!-- COMBAT-only: was #touch-fire, same held-button FIRE mechanism,
+         relocated above MOVE and relabeled SHOT per spec section 20. -->
+    <button type="button" tabindex="-1" id="touch-shot" class="touch-btn touch-btn-shot">SHOT</button>
+    <!-- Single DASH button for BOTH modes (position mirrors the removed
+         right-side stick). Direction is read from the MOVE stick's CURRENT
+         position at the moment of press and dispatched to the SAME
+         existing directional dash actions (northDash/southDash/westDash/
+         eastDash in COMBAT; northBackstep/southDash/westDash/eastDash in
+         ESCAPE) GAMEPAD already uses — input routing only, no dash
+         mechanics/distance/i-frame/sprite change (spec section 23/25). A
+         centered/neutral MOVE stick is a deliberate no-op (see the
+         completion report's STOP item for this exact case). -->
+    <button type="button" tabindex="-1" id="touch-dash" class="touch-btn-round">DASH</button>
+    <button type="button" tabindex="-1" id="touch-reload" class="touch-btn touch-btn-side">RELOAD</button>
+    <button type="button" tabindex="-1" id="touch-focus" class="touch-btn touch-btn-top">FOCUS</button>
+    <!-- ESCAPE-only. JUMP: was #touch-dash-jump, unchanged mechanism,
+         relabeled/repositioned. SHADOW: replaces W-DECOY/E-DECOY with ONE
+         button, direction read from MOVE stick's current horizontal
+         position the same way DASH reads its direction (spec section 26) —
+         a centered MOVE stick is again a deliberate no-op, same STOP item. -->
+    <button type="button" tabindex="-1" id="touch-jump" class="touch-btn touch-btn-side touch-escape-only">JUMP</button>
+    <button type="button" tabindex="-1" id="touch-shadow" class="touch-btn touch-btn-top touch-escape-only">SHADOW</button>
   </div>
 
 </div>
