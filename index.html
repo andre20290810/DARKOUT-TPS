@@ -445,8 +445,12 @@
       <div class="touch-stick"></div>
     </div>
     <!-- COMBAT-only: was #touch-fire, same held-button FIRE mechanism,
-         relocated above MOVE and relabeled SHOT per spec section 20. -->
-    <button type="button" tabindex="-1" id="touch-shot" class="touch-btn touch-btn-shot">SHOT</button>
+         relabeled SHOT. 11TH ROUND (spec sections 18-22): moved from its
+         old far-left position (above MOVE stick) to DASH's LEFT side —
+         see .touch-btn-pos-left's own comment in style.css for the
+         semicircle-panel redesign this and the other 5 action buttons
+         below now share. -->
+    <button type="button" tabindex="-1" id="touch-shot" class="touch-btn touch-btn-pos-left">SHOT</button>
     <!-- Single DASH button for BOTH modes (position mirrors the removed
          right-side stick). Direction is read from the MOVE stick's CURRENT
          position at the moment of press and dispatched to the SAME
@@ -457,19 +461,20 @@
          centered/neutral MOVE stick is a deliberate no-op (see the
          completion report's STOP item for this exact case). -->
     <button type="button" tabindex="-1" id="touch-dash" class="touch-btn-round">DASH</button>
-    <button type="button" tabindex="-1" id="touch-reload" class="touch-btn touch-btn-side">RELOAD</button>
-    <button type="button" tabindex="-1" id="touch-focus" class="touch-btn touch-btn-top">FOCUS</button>
+    <button type="button" tabindex="-1" id="touch-reload" class="touch-btn touch-btn-pos-right">RELOAD</button>
+    <button type="button" tabindex="-1" id="touch-focus" class="touch-btn touch-btn-pos-top">FOCUS</button>
     <!-- ESCAPE-only. JUMP: was #touch-dash-jump, unchanged mechanism,
          relabeled/repositioned. 8TH ROUND (spec sections 2-4): SHADOW is now
          TWO explicit buttons (WEST SHADOW / EAST SHADOW) instead of one
          MOVE-stick-direction-inferred button — each wired directly to its
-         own existing westDecoy/eastDecoy action (see game.js). All three
-         ESCAPE-only buttons (JUMP + the two SHADOWs) are arranged in an arc
-         around DASH (touch-btn-arc-*, spec section 4) rather than the old
-         two-slot top/side layout. -->
-    <button type="button" tabindex="-1" id="touch-jump" class="touch-btn touch-btn-arc-jump touch-escape-only">JUMP</button>
-    <button type="button" tabindex="-1" id="touch-shadow-east" class="touch-btn touch-btn-arc-east touch-escape-only">EAST<br>SHADOW</button>
-    <button type="button" tabindex="-1" id="touch-shadow-west" class="touch-btn touch-btn-arc-west touch-escape-only">WEST<br>SHADOW</button>
+         own existing westDecoy/eastDecoy action (see game.js). 11TH ROUND
+         (spec sections 23-24): all three ESCAPE-only buttons now share the
+         SAME cardinal semicircle-panel classes COMBAT's SHOT/FOCUS/RELOAD
+         use — DASHの左=EAST SHADOW, DASHの上=WEST SHADOW, DASHの右=JUMP —
+         so both modes render the identical panel geometry. -->
+    <button type="button" tabindex="-1" id="touch-jump" class="touch-btn touch-btn-pos-right touch-escape-only">JUMP</button>
+    <button type="button" tabindex="-1" id="touch-shadow-east" class="touch-btn touch-btn-pos-left touch-escape-only">EAST<br>SHADOW</button>
+    <button type="button" tabindex="-1" id="touch-shadow-west" class="touch-btn touch-btn-pos-top touch-escape-only">WEST<br>SHADOW</button>
   </div>
 
 </div>

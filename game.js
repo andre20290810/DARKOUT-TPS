@@ -6,6 +6,19 @@
  * Standalone project — does not read or write ACTION-GAME in any way.
  */
 
+// 11TH ROUND (spec sections 40-41): manually-maintained build identifier,
+// shown only in the DEBUG MODE panel (?debug=1) and its COPY DEBUG
+// clipboard text (see r10UpdateDebugPanel()/r10FormatDebugText()) — lets a
+// real-device tester distinguish "GitHub main is newer than what's actually
+// published" from "the published build is current but a fix is missing."
+// No build/bundler step exists in this project (plain static files, no
+// npm/webpack) so a real git commit hash cannot be captured automatically
+// at runtime without adding new build tooling, which spec explicitly says
+// not to do — bump this string by hand each adjustment round instead, the
+// same manually-maintained spirit as this project's existing asset `?v=N`
+// cache-busting query params.
+const BUILD_VERSION = 'DARKOUT2-R11';
+
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
 // URLSearchParams so it can never misparse/consume any OTHER existing query
@@ -1499,6 +1512,21 @@ const CLAW_APPROACH_MS = 480;
 // 5-HIT COUNTER's own close-range attack gets the SAME telegraph, not a
 // separate/parallel one).
 const CLAW_WINDUP_MS = 640;
+// 11TH ROUND (spec sections 9-11): real-device report — the NON-DEFENSE
+// (normal blink->approach->telegraph->impact) attack-prep freeze reads as
+// "約1秒" of GABRIEL just standing there after RUN before it swings, too
+// long now that RUN is properly held through this window (10th round) —
+// spec explicitly separates this from the UNRELATED, already-correct
+// DEFENSE hold (GABRIEL_ADAM_DEFENSE_MS, untouched below) and its own
+// already-fast counterApproach/counterAttack windup (GABRIEL_ADAM_COUNTER_
+// APPROACH_MS / the reused CLAW_WINDUP_MS at the counterApproach->
+// counterAttack transition — both untouched, that whole chain only runs
+// AFTER 'defense', a structurally separate path). This new constant is
+// GABRIEL-ONLY (see its one use site, the 'approach'->'telegraph'
+// transition in updateEnemy()) — ADAM keeps CLAW_WINDUP_MS unchanged since
+// this round's spec never names ADAM at all, avoiding an unrequested
+// regression to its own attack timing/feel.
+const GABRIEL_NON_DEFENSE_ATTACK_PREP_MS = 300;
 const CLAW_SWING_MS = 140;      // unchanged from the old single impact duration
 const CLAW_COOLDOWN_MS = 1200;  // unchanged from the old cooldown duration
 const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
@@ -2173,7 +2201,8 @@ function r10UpdateDebugPanel(ts) {
   r10DbgLastRenderAt = ts;
   const s = r10CollectSnapshot(ts);
 
-  r10DbgGameEl.textContent = 'GAME mode=' + s.game.mode + ' theme=' + s.game.theme +
+  r10DbgGameEl.textContent = 'BUILD_VERSION=' + BUILD_VERSION +
+    ' | GAME mode=' + s.game.mode + ' theme=' + s.game.theme +
     ' started=' + s.game.started + ' paused=' + s.game.paused +
     (s.game.mode === 'escape' ? ' escT=' + s.escapeTimer.timeLeftSec + '/' + s.escapeTimer.limitSec : '') +
     (s.clearSeq.active ? ' CLEAR=' + s.clearSeq.phase : '') +
@@ -2279,6 +2308,19 @@ function r10UpdateDebugPanel(ts) {
 function r10FormatDebugText(s) {
   const lines = [];
   lines.push('=== DARKOUT 2 DEBUG ===');
+  // 11TH ROUND (spec sections 40-41): no existing BUILD_VERSION/APP_VERSION/
+  // commit-hash/DEBUG-build display existed anywhere in the codebase before
+  // this (confirmed by search — this project has no build step at all, it
+  // is served as plain static files, so an ACTUAL commit hash cannot be
+  // captured automatically at runtime without introducing new build
+  // tooling, which spec explicitly says not to add: "新しい大規模version
+  // 管理systemは不要"). Minimal, manually-maintained identifier instead —
+  // bumped by hand each adjustment round, same spirit as this project's
+  // existing manually-bumped asset `?v=N` cache-busting query params.
+  // DEBUG-MODE-only (?debug=1), never shown on the normal play screen, per
+  // spec's own explicit "通常プレイ画面へ大きくversion文字を追加する必要
+  // はありません".
+  lines.push('BUILD_VERSION: ' + BUILD_VERSION);
   lines.push('');
   lines.push('GAME');
   lines.push('mode: ' + s.game.mode);
@@ -8679,7 +8721,12 @@ function updateEnemyCore(dt, now) {
       if (now >= e.attackUntil) {
         e.z = zMin; // land exactly on the max-approach position, no overshoot/undershoot
         e.attackState = 'telegraph'; // reuses the existing windup-art render state
-        e.attackUntil = now + CLAW_WINDUP_MS;
+        // 11TH ROUND (spec sections 9-11): GABRIEL's NON-DEFENSE attack-prep
+        // freeze shortened to ~0.3s (GABRIEL_NON_DEFENSE_ATTACK_PREP_MS) —
+        // ADAM keeps the original CLAW_WINDUP_MS. renderEnemy()'s own
+        // inSlowTelegraph flash-ring math derives its timing from this SAME
+        // per-type duration (see its own comment) so the two never desync.
+        e.attackUntil = now + (e.type === 'gabriel' ? GABRIEL_NON_DEFENSE_ATTACK_PREP_MS : CLAW_WINDUP_MS);
         // FOLLOWUP HOTFIX: captured ONCE, right as the attack actually
         // commits — see computeEnemyDrawRect()'s own comment for why this
         // must be a locked-in snapshot (not re-read every frame): the whole
@@ -9353,7 +9400,26 @@ function computeEnemyDrawRect() {
     // 'idle' (see its own comment), so it already sits frozen on whatever
     // frame was current the instant 'idle' was left — this fix only corrects
     // which image computeEnemyDrawRect() reads for those frozen frames.
-    const gabrielEscapeRunActive = isGabriel && state.gameMode === 'escape'
+    //
+    // 11TH ROUND (spec sections 6-8): COMBAT's own normal approach ("通常
+    // 接近している状態") now ALSO uses this same RUN asset/normalization —
+    // spec explicitly asks to reuse the ESCAPE RUN asset and its existing
+    // visual normalization "可能な限り" rather than build a second parallel
+    // system. The gameMode==='escape' restriction is dropped entirely: the
+    // state list below (idle/blink/approach/telegraph) already generalizes
+    // cleanly to COMBAT since updateEnemy()'s claw AI is the SAME shared
+    // code path for both modes (confirmed — see its own "Applies in COMBAT
+    // and ESCAPE alike" comment), and computeEnemyDrawRect()'s drawBottomY
+    // already has its OWN separate COMBAT-south-edge-clamp branch (see
+    // `else if (state.gameMode === 'combat')` a little below) that the
+    // escapeRun override block already reads via footScreenY=drawBottomY —
+    // so no new position/clamp code is needed for COMBAT either. Frame-
+    // switch CADENCE is deliberately left untouched (GABRIEL_ESCAPE_RUN_
+    // FRAME_MS still only applies under state.gameMode==='escape' in
+    // updateEnemy(); COMBAT keeps its existing 160ms clawWalkElapsedMs
+    // cadence) — spec only asks for the RUN ARTWORK/123123 order in COMBAT,
+    // never a playback-speed change there.
+    const gabrielEscapeRunActive = isGabriel
       && (e.attackState === 'idle' || e.attackState === 'blink' || e.attackState === 'approach' || e.attackState === 'telegraph');
     const gabrielEscapeRunFrame = gabrielEscapeRunActive
       ? ASSETS.gabriel.escapeRun[e.clawWalkFrame] : null;
@@ -10483,30 +10549,26 @@ function renderStructure(s, theme) {
       break;
     }
     case 'grating': {
-      // BUGFIX ROUND (spec section 12): this is the SECOND render path
-      // producing the reported "small vertical tick marks" on ESCAPE's
-      // front row — floor-height short vertical bars (moveTo/lineTo pairs
-      // below), drawn at almost the SAME CORRIDOR_FLOOR_Y as floorSeam's
-      // own plain line, which is exactly the "| | | | |" pattern
-      // real-device testing found sitting on top of/right next to the
-      // intended plain "──────" line. 'grating' is a SHARED (not
-      // escape-exclusive) structure kind also used by LAB/ARMORED, where
-      // it was never reported as a problem (busier scenes absorb it — same
-      // reasoning as the earlier 'pipe' LAB-only gate above) — so only
-      // ESCAPE is gated off here, LAB/ARMORED grating is untouched.
-      if (state.theme === 'escape') break;
-      const crawlZg = (state.timeSec * AMBIENT_FLOOR_CRAWL_SPEED) % AMBIENT_FLOOR_CRAWL_SPACING.grating;
-      const gz = s.z - crawlZg;
-      const l = project(-half * 0.7, CORRIDOR_FLOOR_Y * 0.98, gz);
-      const r = project(half * 0.7, CORRIDOR_FLOOR_Y * 0.98, gz);
-      const w = r.x - l.x;
-      ctx.strokeStyle = theme.wallDark;
-      ctx.lineWidth = Math.max(1, 1.5 * l.scale);
-      const bars = 6;
-      for (let i = 0; i <= bars; i++) {
-        const x = l.x + (w * i) / bars;
-        ctx.beginPath(); ctx.moveTo(x, l.y - 3 * l.scale); ctx.lineTo(x, l.y + 3 * l.scale); ctx.stroke();
-      }
+      // 11TH ROUND (spec sections 1-5): root cause of the front-row tick
+      // marks STILL being reported on real devices after the earlier
+      // ESCAPE-only guard below. This case is the ONLY remaining generator
+      // of the short "| | | | |" vertical bars (confirmed by auditing every
+      // case in this switch — floorSeam draws the correct plain horizontal
+      // line and is untouched; armorGate's own lattice bars span the FULL
+      // ceiling-to-floor height as a legitimate gate structure, not a
+      // front-row tick pattern, and only ever draws under the currently-
+      // unreachable 'armored' theme anyway). 'grating' is spawned from the
+      // single global STRUCTURE_KINDS pool with NO theme/mode filtering at
+      // all (see STRUCTURE_KINDS/the structures[] population loop) — so the
+      // previous `if (state.theme === 'escape') break;` guard only ever
+      // stopped it in ESCAPE; it kept drawing unconditionally under 'lab'
+      // (COMBAT's real, always-used stage theme) and 'armored', which is
+      // exactly why real-device COMBAT play still showed the tick pattern.
+      // renderStructure() takes no enemy argument at all, so this fix is
+      // automatically enemy-agnostic — no per-enemy branch is possible or
+      // needed. Disabled unconditionally, mirroring 'escapeStrip' above
+      // (case/STRUCTURE_KINDS entry left in place as an intentional no-op
+      // so nothing else that iterates structures by kind needs to change).
       break;
     }
     case 'pipe': {
@@ -11790,9 +11852,16 @@ function renderEnemy(theme) {
   } else if (inDefense) {
     ctx.filter = 'brightness(0.9) saturate(1.4) hue-rotate(175deg)';
   } else if (inSlowTelegraph) {
-    const quarterMs = CLAW_WINDUP_MS / 4;
-    const stateStartedAt = e.attackUntil - CLAW_WINDUP_MS;
-    const elapsed = clamp(now - stateStartedAt, 0, CLAW_WINDUP_MS - 1);
+    // 11TH ROUND: 'telegraph' for GABRIEL now uses the shorter
+    // GABRIEL_NON_DEFENSE_ATTACK_PREP_MS (see updateEnemy()'s matching
+    // attackUntil assignment) — 'counterAttack' (the DEFENSE-path's own
+    // windup, reached only after 'defense') still reuses the original
+    // CLAW_WINDUP_MS unconditionally, exactly as before, for both types.
+    const telegraphDurationMs = (e.attackState === 'telegraph' && e.type === 'gabriel')
+      ? GABRIEL_NON_DEFENSE_ATTACK_PREP_MS : CLAW_WINDUP_MS;
+    const quarterMs = telegraphDurationMs / 4;
+    const stateStartedAt = e.attackUntil - telegraphDurationMs;
+    const elapsed = clamp(now - stateStartedAt, 0, telegraphDurationMs - 1);
     const quarter = Math.floor(elapsed / quarterMs);
     const lit = quarter === 0 || quarter === 2; // lit, dim, lit, dim -> exactly 2 flashes
     ctx.globalAlpha = lit ? 1 : 0.45;
@@ -14613,6 +14682,9 @@ window.__darkoutTps = {
   GABRIEL_ADAM_COUNTER_TOTAL_HITS, GABRIEL_ADAM_DAMAGE_INTERVAL_MS,
   GABRIEL_ADAM_REAIM_THRESHOLD_PX, GABRIEL_ADAM_DEFENSE_MS,
   GABRIEL_ADAM_COUNTER_APPROACH_MS, updateEnemy,
+  // 11TH ROUND: exported for automated QA only (spec sections 9-11's real-
+  // timing verification) — never read by any gameplay code itself.
+  GABRIEL_NON_DEFENSE_ATTACK_PREP_MS, CLAW_WINDUP_MS,
   // NEXT ROUND: muzzle/direction fix, SNIPER dodge-window fix, COMBAT
   // quake+debris atmosphere, ESCAPE south-dash pulse, GABRIEL close-attack
   // size, CLEAR-sequence frame removal — exposed for automated testing only.

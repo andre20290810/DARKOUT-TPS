@@ -532,10 +532,16 @@ html, body {
 
 /* RUN FLOW SYSTEM: persistent DISTANCE TO EXIT readout — top-center,
    deliberately separate from #theme-label's own bottom-center spot so the
-   two never overlap. */
+   two never overlap.
+   11TH ROUND (spec sections 26-29): PAUSE moved INTO this readout's old
+   top-center spot (#pause-btn below); EXIT itself moved directly under
+   PAUSE's new position — spec's own explicit "PAUSE旧位置=旧EXIT位置,
+   EXIT=PAUSE直下" (never "PAUSE under LIFE" — that reading is explicitly
+   ruled out in spec section 28). Only the position changed here —
+   distanceRemaining's own update/format/unit logic in game.js is untouched. */
 #distance-readout {
   position: absolute;
-  top: max(8px, env(safe-area-inset-top));
+  top: calc(max(8px, env(safe-area-inset-top)) + 30px);
   left: 50%;
   transform: translateX(-50%);
   font-size: 12px;
@@ -727,15 +733,22 @@ html, body {
   transition: width 0.15s ease-out;
 }
 
-/* 4th round PART 17: FOCUS gauge (LB / AUTO AIM resource). 5TH ROUND
-   PART 14/15: #enemy-switch no longer lives up here (moved to the bottom
-   control panel), so this stacks directly below the new #enemy-hud
-   position instead of needing to clear a 2-row wrapped button panel. */
+/* 4th round PART 17: FOCUS gauge (LB / AUTO AIM resource).
+   11TH ROUND (spec sections 30-33): real-device report — FOCUS/AMMO still
+   read from the old top-RIGHT column instead of stacking under PLAYER
+   LIFE. Moved to #hud-top-left's own left-edge (matching its `left` value
+   exactly) with a FIXED absolute top (not a flex child of #hud-top-left),
+   so it never shifts when ESCAPE's SURVIVE timer line toggles the height
+   of #hud-top-left's flex column (spec section 33's explicit "mode切替で
+   anchor/layoutがずれてはいけない" — a flex-child approach here would have
+   reintroduced exactly that bug). text-align switched left-> matches the
+   LIFE gauge's own left-aligned text instead of the old right-aligned
+   top-right-corner column. */
 #focus-hud {
   position: absolute;
-  top: 100px;
-  right: max(14px, env(safe-area-inset-right));
-  text-align: right;
+  top: calc(max(10px, env(safe-area-inset-top)) + 32px);
+  left: max(14px, env(safe-area-inset-left));
+  text-align: left;
   z-index: 45;
 }
 #focus-label {
@@ -760,15 +773,17 @@ html, body {
   transition: width 0.1s ease-out;
 }
 
-/* 10TH ROUND (items 25-27): AMMO now stacks directly below #focus-hud
-   (real-device report: it used to be duplicated at top-right AND under
-   LIFE, and PAUSE sat right where AMMO needed to go). Same right-aligned
-   column, same font treatment as the old under-HP readout it replaces. */
+/* 10TH ROUND (items 25-27): AMMO stacks directly below #focus-hud.
+   11TH ROUND (spec sections 30-33): moved into the SAME left-aligned
+   PLAYER LIFE -> FOCUS -> AMMO column #focus-hud now uses (was the old
+   top-right corner column) — same fixed-absolute-top approach as
+   #focus-hud (see its own comment) so this never shifts between COMBAT/
+   ESCAPE either. */
 #ammo-hud {
   position: absolute;
-  top: 128px;
-  right: max(14px, env(safe-area-inset-right));
-  text-align: right;
+  top: calc(max(10px, env(safe-area-inset-top)) + 62px);
+  left: max(14px, env(safe-area-inset-left));
+  text-align: left;
   z-index: 45;
 }
 #ammo-hud-readout {
@@ -790,13 +805,19 @@ html, body {
 
 /* 4th round: PAUSE button — always visible regardless of touch-controls
    visibility (spec: never hide the minimum UI needed to progress the
-   game). 10TH ROUND: pushed further down the same right-hand column, below
-   the new #ammo-hud, so it no longer sits where AMMO needs to be and stays
-   less likely to be brushed by accident while reading AMMO/FOCUS. */
+   game).
+   11TH ROUND (spec sections 26-29): moved to #distance-readout's OLD
+   top-center spot (real-device report: the previously-instructed PAUSE
+   layout still wasn't reflected in the published build) — EXIT itself now
+   sits directly below (see #distance-readout's own updated rule above).
+   Explicitly NOT under #hud-top-left/LIFE (spec section 28 rules that
+   reading out). Applies to COMBAT and ESCAPE identically — this rule has
+   no mode-specific override anywhere, so it cannot drift between modes. */
 #pause-btn {
   position: absolute;
-  top: 164px;
-  right: max(14px, env(safe-area-inset-right));
+  top: max(8px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 55;
   font-size: 9px;
   letter-spacing: 0.08em;
@@ -1073,16 +1094,17 @@ html, body {
 
 /* 7TH ROUND 4th sub-part (spec sections 20-27): the button cluster that
    replaces the old #touch-buttons grid + the old right-side #touch-aim-pad
-   stick. Concept layout (COMBAT):
-              SHOT
-   MOVE       AIM                                FOCUS
-   stick      stick
-                                                    DASH     RELOAD
-   8TH ROUND (spec sections 3/6): action button hit areas enlarged (COMBAT
-   SHOT/FOCUS/DASH/RELOAD + the ESCAPE set below) — MOVE/AIM stick size
-   (.touch-pad, just above) is explicitly UNCHANGED. ESCAPE no longer reuses
-   FOCUS/RELOAD's exact two slots (see .touch-btn-arc-* below instead —
-   three ESCAPE-only buttons now, not two, arranged around DASH). */
+   stick. 8TH ROUND (spec sections 3/6): action button hit areas enlarged
+   (COMBAT SHOT/FOCUS/DASH/RELOAD + the ESCAPE set below) — MOVE/AIM stick
+   size (.touch-pad, just above) is explicitly UNCHANGED.
+   11TH ROUND (spec sections 18-25): current concept layout, both modes —
+   DASH-centered semicircle split into 3 (see .touch-btn-pos-left/top/right
+   below, the three position classes both modes' action buttons now share):
+              TOP
+   MOVE       AIM
+   stick      stick        LEFT              DASH        RIGHT
+   COMBAT: LEFT=SHOT, TOP=FOCUS, RIGHT=RELOAD.
+   ESCAPE: LEFT=EAST SHADOW, TOP=WEST SHADOW, RIGHT=JUMP. */
 .touch-btn {
   position: absolute;
   font-size: 10px;
@@ -1098,11 +1120,6 @@ html, body {
   line-height: 1.35;
 }
 .touch-btn:active { background: rgba(255,255,255,0.3); }
-/* SHOT — above MOVE stick, spec section 20. */
-.touch-btn-shot {
-  left: max(14px, env(safe-area-inset-left));
-  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 122px);
-}
 /* DASH — a large round button at the old right-side AIM stick's position
    (spec sections 20/24), sized/shaped like the sticks above it for visual
    parity with the primary MOVE/AIM sticks rather than the smaller utility
@@ -1125,34 +1142,38 @@ html, body {
   touch-action: none;
 }
 .touch-btn-round:active { background: rgba(255,255,255,0.3); }
-/* RELOAD (COMBAT only) — right of DASH, spec sections 20/24. */
-.touch-btn-side {
-  right: max(14px, env(safe-area-inset-right));
+
+/* 11TH ROUND (spec sections 18-25): DASH-centered "semicircle split into
+   3" action layout — replaces both the old far-left SHOT (which sat all
+   the way over by the MOVE stick, spec section 21's explicit "旧位置へ戻
+   さないでください") and the old loosely-scattered ESCAPE arc buttons
+   (which read as "3 small round buttons placed apart," not a panel that
+   visibly wraps DASH). All 6 action buttons (COMBAT: SHOT/FOCUS/RELOAD,
+   ESCAPE: EAST SHADOW/WEST SHADOW/JUMP) now share exactly THREE position
+   classes, cardinal to DASH's own center — .touch-btn-pos-left (DASHの
+   左), .touch-btn-pos-top (DASHの上), .touch-btn-pos-right (DASHの右) —
+   so COMBAT and ESCAPE necessarily render the identical panel geometry
+   (only the label/action differs), matching spec's own concept diagram
+   for both modes. RIGHT reuses the pre-existing (already-correct) RELOAD
+   offset; TOP reuses the pre-existing (already-correct) FOCUS offset;
+   LEFT is new — computed as RIGHT's offset mirrored across DASH (DASH's
+   own far edge = its right-anchor + its own width; LEFT position's near
+   edge sits the SAME ~26px gap beyond that far edge that RIGHT's near
+   edge already sits inside DASH's own right-anchor), so all three read as
+   equidistant from DASH by construction, not independently eyeballed
+   numbers. MOVE/AIM stick sizes (.touch-pad) are untouched per spec
+   section 25. */
+.touch-btn-pos-left {
+  right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 134px);
   bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px));
 }
-/* FOCUS (COMBAT only) — above DASH, spec sections 20/24. */
-.touch-btn-top {
+.touch-btn-pos-top {
   right: max(120px, calc(env(safe-area-inset-right) + 120px));
   bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 122px);
 }
-
-/* 8TH ROUND (spec section 4): ESCAPE's three own buttons (JUMP, EAST
-   SHADOW, WEST SHADOW — SHADOW is no longer one MOVE-stick-direction-
-   inferred button, see index.html) arranged in a rough arc around DASH
-   instead of two shared top/side slots, so a right thumb anchored near
-   DASH can reach any of the three with minimal travel. Plain
-   position+border-radius (already on .touch-btn) — no SVG needed. */
-.touch-btn-arc-jump {
-  right: max(4px, env(safe-area-inset-right));
-  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 64px);
-}
-.touch-btn-arc-west {
-  right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 4px);
-  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 150px);
-}
-.touch-btn-arc-east {
-  right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 96px);
-  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 96px);
+.touch-btn-pos-right {
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px));
 }
 
 /* Narrow-height landscape (small phones): shrink touch controls a bit */
@@ -1160,16 +1181,27 @@ html, body {
   .touch-pad { width: 78px; height: 78px; bottom: max(56px, calc(env(safe-area-inset-bottom) + 56px)); }
   .touch-btn { width: 68px; padding: 10px 3px; font-size: 9px; }
   .touch-btn-round { width: 88px; height: 88px; }
-  .touch-btn-shot { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 100px); }
-  .touch-btn-top { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 100px); }
-  .touch-btn-arc-jump { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 52px); }
-  .touch-btn-arc-west {
-    right: calc(max(108px, calc(env(safe-area-inset-right) + 108px)) + 2px);
-    bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 122px);
+  /* DASH's own right-anchor/bottom formula are unchanged in narrow mode
+     (only its own width/height shrink, see .touch-btn-round above), so its
+     own top edge (narrow) sits at max(70px,...)+88px. LEFT's offset is
+     recomputed for DASH's now-narrower 88px width (120 + 88 + 26 = 234),
+     matching the same ~26px gap logic as the base rule above. RIGHT needs
+     no override at all (its right:14/bottom formula already holds at any
+     height, same as before this round). TOP originally mirrored FOCUS's
+     own pre-existing narrow behavior verbatim (a 56px bottom-reference,
+     borrowed from .touch-pad's narrow bottom) — but Functional QA (spec
+     section 43, hit-area overlap check) measured a real ~2px vertical
+     overlap between TOP's rendered box and DASH's own top edge at this
+     breakpoint, since DASH itself never used that 56px reference (it kept
+     the base rule's max(70px,...) unconditionally). Recomputed from DASH's
+     OWN actual narrow-mode top (max(70px,...)+88px) plus an explicit
+     clearance gap instead, so it can never drift out of sync with
+     whatever DASH's own narrow height happens to be. */
+  .touch-btn-pos-left {
+    right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 114px);
   }
-  .touch-btn-arc-east {
-    right: calc(max(108px, calc(env(safe-area-inset-right) + 108px)) + 78px);
-    bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 78px);
+  .touch-btn-pos-top {
+    bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 96px);
   }
 }
 
