@@ -1078,66 +1078,99 @@ html, body {
    MOVE       AIM                                FOCUS
    stick      stick
                                                     DASH     RELOAD
-   ESCAPE swaps FOCUS/RELOAD for SHADOW/JUMP at the exact same two slots
-   (never shown at the same time as their COMBAT counterparts, so reusing
-   the identical position values is intentional, not a coincidence). */
+   8TH ROUND (spec sections 3/6): action button hit areas enlarged (COMBAT
+   SHOT/FOCUS/DASH/RELOAD + the ESCAPE set below) — MOVE/AIM stick size
+   (.touch-pad, just above) is explicitly UNCHANGED. ESCAPE no longer reuses
+   FOCUS/RELOAD's exact two slots (see .touch-btn-arc-* below instead —
+   three ESCAPE-only buttons now, not two, arranged around DASH). */
 .touch-btn {
   position: absolute;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.03em;
-  padding: 10px 2px;
-  width: 64px;
+  padding: 14px 4px;
+  width: 80px;
   text-align: center;
   background: rgba(255,255,255,0.08);
   border: 1px solid rgba(255,255,255,0.25);
   color: #e0e6ea;
-  border-radius: 6px;
+  border-radius: 8px;
   touch-action: none;
+  line-height: 1.35;
 }
 .touch-btn:active { background: rgba(255,255,255,0.3); }
 /* SHOT — above MOVE stick, spec section 20. */
 .touch-btn-shot {
   left: max(14px, env(safe-area-inset-left));
-  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 112px);
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 122px);
 }
 /* DASH — a large round button at the old right-side AIM stick's position
    (spec sections 20/24), sized/shaped like the sticks above it for visual
    parity with the primary MOVE/AIM sticks rather than the smaller utility
-   buttons around it. */
+   buttons around it. 8TH ROUND (spec section 3/6): enlarged along with
+   every other action button (was 96x96, matching the sticks — sticks
+   themselves stay at 96x96, only DASH's own hit area grows). */
 .touch-btn-round {
   position: absolute;
   right: max(120px, calc(env(safe-area-inset-right) + 120px));
   bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px));
-  width: 96px;
-  height: 96px;
+  width: 108px;
+  height: 108px;
   border-radius: 50%;
   background: rgba(255,255,255,0.08);
   border: 1px solid rgba(255,255,255,0.25);
   color: #e0e6ea;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   touch-action: none;
 }
 .touch-btn-round:active { background: rgba(255,255,255,0.3); }
-/* RELOAD / JUMP — right of DASH, spec sections 20/24. */
+/* RELOAD (COMBAT only) — right of DASH, spec sections 20/24. */
 .touch-btn-side {
   right: max(14px, env(safe-area-inset-right));
   bottom: max(70px, calc(env(safe-area-inset-bottom) + 70px));
 }
-/* FOCUS / SHADOW — above DASH, spec sections 20/24. */
+/* FOCUS (COMBAT only) — above DASH, spec sections 20/24. */
 .touch-btn-top {
   right: max(120px, calc(env(safe-area-inset-right) + 120px));
-  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 112px);
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 122px);
+}
+
+/* 8TH ROUND (spec section 4): ESCAPE's three own buttons (JUMP, EAST
+   SHADOW, WEST SHADOW — SHADOW is no longer one MOVE-stick-direction-
+   inferred button, see index.html) arranged in a rough arc around DASH
+   instead of two shared top/side slots, so a right thumb anchored near
+   DASH can reach any of the three with minimal travel. Plain
+   position+border-radius (already on .touch-btn) — no SVG needed. */
+.touch-btn-arc-jump {
+  right: max(4px, env(safe-area-inset-right));
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 64px);
+}
+.touch-btn-arc-west {
+  right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 4px);
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 150px);
+}
+.touch-btn-arc-east {
+  right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 96px);
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 96px);
 }
 
 /* Narrow-height landscape (small phones): shrink touch controls a bit */
 @media (max-height: 420px) {
   .touch-pad { width: 78px; height: 78px; bottom: max(56px, calc(env(safe-area-inset-bottom) + 56px)); }
-  .touch-btn { padding: 7px 2px; }
-  .touch-btn-round { width: 78px; height: 78px; }
-  .touch-btn-shot { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 94px); }
-  .touch-btn-top { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 94px); }
+  .touch-btn { width: 68px; padding: 10px 3px; font-size: 9px; }
+  .touch-btn-round { width: 88px; height: 88px; }
+  .touch-btn-shot { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 100px); }
+  .touch-btn-top { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 100px); }
+  .touch-btn-arc-jump { bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 52px); }
+  .touch-btn-arc-west {
+    right: calc(max(108px, calc(env(safe-area-inset-right) + 108px)) + 2px);
+    bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 122px);
+  }
+  .touch-btn-arc-east {
+    right: calc(max(108px, calc(env(safe-area-inset-right) + 108px)) + 78px);
+    bottom: calc(max(56px, calc(env(safe-area-inset-bottom) + 56px)) + 78px);
+  }
 }
 
 /* ESCAPE-EXCLUSIVE GAMEPLAY MODE (state.gameMode === 'escape', toggled onto

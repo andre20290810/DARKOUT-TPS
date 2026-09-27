@@ -56,7 +56,25 @@ const Z_RANGE = Z_FAR - Z_NEAR;
 
 // Player forward/back world-scroll speeds (z units / second).
 const WALK_FORWARD_SPEED = 150;
-const WALK_BACK_SPEED = 120;
+// 8TH ROUND (spec sections 24-25): real-device report — SOUTH's normal walk
+// (moveY>0 branch below) felt too fast. Scaled to 60% of its previous value
+// (120 -> 72) per the explicit "NEW = CURRENT x 0.60" spec. This constant is
+// used ONLY in updatePlayer()'s SOUTH branch (confirmed via exhaustive grep
+// — no other reader anywhere in the file), so the change cannot reach
+// NORTH (WALK_FORWARD_SPEED, separate constant), EAST/WEST (STRAFE_SPEED,
+// a fully independent moveX-driven term), any DASH (its own DASH_* distance
+// constants), ESCAPE MODE (an entirely separate, never-shared constant
+// block — see that block's own comment), or AIM/LIGHT (unrelated system).
+// The resulting forwardDelta still flows through the SAME
+// applyForwardDelta() real-world-Z-shift every other walk direction uses
+// (confirmed via that call chain), so this reduces actual displacement, not
+// merely animation playback — the SOUTH WALK sprite cycle (p.southWalkFrame,
+// its own independent 0.07s timer) is untouched and keeps its existing
+// 1->2->3->1 order. SE/SW share this exact same branch (moveX/moveY are
+// separate additive terms here, never normalized together), so diagonal
+// south movement's depth component scales identically and consistently,
+// with no separate diagonal-only code path introduced.
+const WALK_BACK_SPEED = 120 * 0.60;
 // FOLLOWUP FIX (dash felt like a teleport): both dash distances are now
 // fixed TOTAL displacements covered over DASH_DURATION_MS, computed the
 // same position-tracked way the strafe dash always was (see fwdDashCovered
@@ -695,6 +713,20 @@ const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, neve
 // for GABRIEL to read closer to human scale.
 const ROID_WORLD_HEIGHT = 700; // unchanged value from round 1 (was ENEMY_WORLD_HEIGHT)
 const GABRIEL_WORLD_HEIGHT = 480;
+// 9TH ROUND (spec section 14): ESCAPE-only GABRIEL RUN art's own frame-
+// switch cadence — the CURRENT walk-cycle cadence (160ms, see updateEnemy()'s
+// clawWalkElapsedMs advance) divided by 1.5, per spec's own literal formula.
+// Never applied to COMBAT's own walk[] cadence (still the raw 160ms there).
+const GABRIEL_ESCAPE_RUN_FRAME_MS = 160 / 1.5;
+// 9TH ROUND FOLLOWUP (spec sections 41-46): PLAYER's SOUTH WALK sprite-
+// switch cadence, requested frequency-first — "NEW FREQUENCY = CURRENT
+// FREQUENCY * 0.70" -> NEW FRAME DURATION = CURRENT FRAME DURATION / 0.70.
+// CURRENT frame duration was a literal 0.07 (seconds) in updatePlayer()'s
+// southWalkTimer advance -> 0.07 / 0.70 = 0.10 exactly. This is ONLY the
+// sprite-flip timer for p.southWalkFrame; real SOUTH movement speed
+// (WALK_BACK_SPEED, set in an earlier round) and every other direction's
+// walk cadence (p.walkTimer/p.walkFrame) are untouched.
+const SOUTH_WALK_FRAME_SEC = 0.07 / 0.70;
 // 9TH ROUND (item 29): was 480 (identical to GABRIEL_WORLD_HEIGHT), which
 // read as "ADAM looks the same size as GABRIEL" on real devices — bumped
 // ~15% larger. computeEnemyDrawRect() derives drawH directly from this
@@ -2875,6 +2907,29 @@ const ASSETS = {
       loadImg('assets/gabriel/gabriel_walk_1.png'),
       loadImg('assets/gabriel/gabriel_walk_2.png'),
       loadImg('assets/gabriel/gabriel_walk_3.png'),
+    ],
+    // 9TH ROUND (spec sections 12-23): ESCAPE-ONLY pursuer RUN loop — the 3
+    // user-attached images, copied byte-identical (sha256-verified against
+    // the original uploads) in strict attachment order (1->2->3->1...,
+    // never reversed), saved as gabriel_escape_run_1/2/3.png. All three
+    // confirmed genuine RGBA PNGs with real alpha transparency (60-67%
+    // fully-transparent pixels, <1% partial/AA edge pixels — a real
+    // character cutout, not a white-background JPEG) before import, so no
+    // background-removal step was needed or performed (spec section 17's
+    // STOP condition did not apply). bodyTopFrac/bodyBottomFrac are the
+    // real alpha-channel row bounds (alpha>10 threshold, same methodology
+    // as every other coverSpriteFrame()/spriteFrame() entry in this file);
+    // bodyCenterXFrac is the alpha-WEIGHTED horizontal centroid (not a
+    // simple bbox midpoint), matching bodyCenterXFrac's own documented
+    // convention elsewhere in this file. Used ONLY when state.gameMode===
+    // 'escape' (see computeEnemyDrawRect()'s isGabriel branch below) — the
+    // COMBAT walk[]/idle/windup/release art above is completely untouched,
+    // per spec section 18's explicit "COMBATのGABRIELスプライトを...置き換
+    // えないでください".
+    escapeRun: [
+      coverSpriteFrame('assets/gabriel/gabriel_escape_run_1.png', 0.0000, 0.9549, 0.5216),
+      coverSpriteFrame('assets/gabriel/gabriel_escape_run_2.png', 0.0133, 0.9138, 0.5019),
+      coverSpriteFrame('assets/gabriel/gabriel_escape_run_3.png', 0.0203, 0.9097, 0.4831),
     ],
     // 7TH ROUND (spec section 2): real ACTION-GAME asset (assets/boss/
     // cinematic_pose.png there — the same "DOWN/CINEMATIC" pose ACTION-GAME
@@ -5075,7 +5130,6 @@ function touchMoveDominantDir(deadzone) {
   return x < 0 ? 'west' : 'east';
 }
 const TOUCH_DASH_DEADZONE = 0.35;
-const TOUCH_SHADOW_DEADZONE = 0.2;
 wireButton('touch-dash', () => {
   const dir = touchMoveDominantDir(TOUCH_DASH_DEADZONE);
   if (!dir) return; // neutral MOVE stick — no-op, see this block's own comment
@@ -5091,12 +5145,25 @@ wireButton('touch-dash', () => {
     else state.actions.eastDash = true;
   }
 });
-wireButton('touch-shadow', () => {
+// 8TH ROUND (spec sections 2-3): SHADOW is now TWO explicit buttons (WEST
+// SHADOW / EAST SHADOW, index.html) instead of ONE button whose side was
+// inferred from the MOVE stick's current horizontal position — on a real
+// device the old single button always read as "just EAST SHADOW" since a
+// player rarely holds MOVE deliberately west at the exact instant they
+// tap SHADOW. Each new button now wires DIRECTLY to its own existing
+// westDecoy/eastDecoy action flag — same flags, same "max 1 decoy /
+// attracts ranged locks / no claw-debris interaction / unchanged effect
+// duration" gameplay semantics as before (spec section 2's own explicit
+// "変更しないでください"); TOUCH_SHADOW_DEADZONE/touchMove reading is no
+// longer needed for this button at all (GAMEPAD's own LB/RB decoy mapping
+// is untouched — this is TOUCH-only, spec section 2's own "TOUCH UIのみ").
+wireButton('touch-shadow-west', () => {
   if (state.gameMode !== 'escape') return;
-  const x = touchMove.x;
-  if (Math.abs(x) < TOUCH_SHADOW_DEADZONE) return; // neutral MOVE stick — no-op, see this block's own comment
-  if (x < 0) state.escape.actions.westDecoy = true;
-  else state.escape.actions.eastDecoy = true;
+  state.escape.actions.westDecoy = true;
+});
+wireButton('touch-shadow-east', () => {
+  if (state.gameMode !== 'escape') return;
+  state.escape.actions.eastDecoy = true;
 });
 
 // 9TH ROUND (item 0-2): STAGE TYPE (state.theme — cosmetic world/background
@@ -5956,9 +6023,21 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
       // 0/2-only alternation (skipping index 1, "2枚目") is explicitly
       // superseded — spec now asks for the plain forward cycle through all
       // 3 NEW photos: 1->2->3->1->2->3... (index 0->1->2->0). Only this
-      // frame-index sequence changed; the per-frame timer/cadence (0.07s)
-      // and every other WALK direction (p.walkFrame above) are untouched.
-      if (p.southWalkTimer > 0.07) { p.southWalkTimer = 0; p.southWalkFrame = (p.southWalkFrame + 1) % 3; }
+      // frame-index sequence changed; every other WALK direction
+      // (p.walkFrame above) is untouched.
+      //
+      // 9TH ROUND FOLLOWUP (spec sections 41-46): real-device report says
+      // this SOUTH WALK sprite still flips too fast. Requirement is stated
+      // frequency-first: NEW FREQUENCY = CURRENT FREQUENCY * 0.70, i.e.
+      // NEW FRAME DURATION = CURRENT FRAME DURATION / 0.70 (NOT the same as
+      // CURRENT * 1.30 — that would only be a ~23% frequency drop, not 30%).
+      // CURRENT frame duration was 0.07s -> 0.07 / 0.70 = 0.10s exactly.
+      // This ONLY changes the sprite-flip cadence via SOUTH_WALK_FRAME_SEC
+      // below; it does not touch p.southWalkTimer's accumulation (still
+      // += dt, real elapsed time), the 0->1->2->0 loop order immediately
+      // above, WALK_BACK_SPEED (real SOUTH movement speed, set in the 8th
+      // round and untouched here), or any other direction's walk cadence.
+      if (p.southWalkTimer > SOUTH_WALK_FRAME_SEC) { p.southWalkTimer = 0; p.southWalkFrame = (p.southWalkFrame + 1) % 3; }
     }
     // 9TH ROUND (items 7-8): track REAL south movement (D-PAD DOWN/LEFT
     // STICK DOWN, moveY>0 per the same sign convention applyForwardDelta()
@@ -8432,7 +8511,21 @@ function updateEnemyCore(dt, now) {
     // walk asset; see the body-bob comment in renderEnemy()) but harmless.
     if (e.type === 'gabriel' || e.type === 'adam') {
       e.clawWalkElapsedMs += dt * 1000;
-      if (e.clawWalkElapsedMs > 160) {
+      // 9TH ROUND (spec sections 12-14): ESCAPE's pursuing GABRIEL now cycles
+      // its own dedicated RUN art (ASSETS.gabriel.escapeRun[], see
+      // computeEnemyDrawRect()) at 1.5x this SAME frame-switch frequency —
+      // spec's own explicit formula is "1frameあたりの表示時間 = CURRENT
+      // FRAME DURATION / 1.5", i.e. GABRIEL_ESCAPE_RUN_FRAME_MS below (160/
+      // 1.5 ≈ 106.67ms), never the raw 160ms COMBAT still uses for its own
+      // walk[] art. This is ONLY the image-switch timer — e.z (the real
+      // world-distance closing rate, i.e. actual pursuit speed) is entirely
+      // untouched by this block, satisfying spec's explicit "worldZ移動
+      //速度そのものを1.5倍にする要求ではない" (that speed lives in
+      // applyForwardDelta()/updateEscapeEnemyPursuit(), neither of which
+      // this timer touches). COMBAT (state.gameMode!=='escape') keeps the
+      // original 160ms exactly as before.
+      const clawWalkFrameMs = state.gameMode === 'escape' ? GABRIEL_ESCAPE_RUN_FRAME_MS : 160;
+      if (e.clawWalkElapsedMs > clawWalkFrameMs) {
         e.clawWalkElapsedMs = 0;
         e.clawWalkFrame = (e.clawWalkFrame + 1) % 3;
       }
@@ -9235,11 +9328,20 @@ function computeEnemyDrawRect() {
     // windup art (already reads as a guarded/ready stance); the COUNTER's
     // actual strike (counterAttack) reuses the existing swing-connecting
     // release art — the exact same images 'telegraph'/'impact' already use.
+    // 9TH ROUND (spec sections 12-18): ESCAPE's pursuing GABRIEL selects its
+    // own dedicated RUN frame (a coverSpriteFrame()-shaped object, not a
+    // raw Image — see ASSETS.gabriel.escapeRun's own comment) instead of the
+    // COMBAT walk[] art, ONLY while state.gameMode==='escape' and walking —
+    // COMBAT's own approach walk (state.gameMode==='combat') is completely
+    // untouched, still selecting ASSETS.gabriel.walk[] exactly as before.
+    const gabrielEscapeRunFrame = (isGabriel && isWalking && state.gameMode === 'escape')
+      ? ASSETS.gabriel.escapeRun[e.clawWalkFrame] : null;
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
       : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach' ? set.windup
         : (e.attackState === 'impact' || e.attackState === 'counterAttack' ? set.release
-        : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle)));
+        : (gabrielEscapeRunFrame ? gabrielEscapeRunFrame.img
+        : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle))));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     // 27TH ROUND item 3: real-play feedback (添付3枚目・4枚目) said GABRIEL/ADAM
     // still read as unnaturally gigantic at point-blank range (measured
@@ -9287,13 +9389,35 @@ function computeEnemyDrawRect() {
     };
     const adamMeleeSizeBoost = (!isGabriel && BOSS_ATTACK_ACTIVE_STATES[e.attackState])
       ? (ADAM_ATTACK_POSE_SIZE_MULT[e.attackState] || 1.10) : 1;
-    // FOLLOWUP HOTFIX: GABRIEL had NO windup-specific size adjustment at all
-    // (the ADAM table above is explicitly `!isGabriel`-gated) — real-device
-    // report was its windup/telegraph pose reading too large (and, combined
-    // with the south-boundary/label clamp above, too low). A modest, windup-
-    // only reduction; GABRIEL's release/impact pose and idle/walk size are
-    // completely untouched (this round's spec names the windup specifically).
-    const gabrielWindupSizeMult = (isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach')) ? 0.82 : 1;
+    // 9TH ROUND (spec sections 1-4): ROOT CAUSE of "攻撃移行時にGABRIELの
+    // 見た目サイズが不自然に変化する" — drawH below is a single bounding-box
+    // height computed the same way for every pose, on the assumption that
+    // each source image's VISIBLE BODY fills roughly the same fraction of
+    // its own canvas. That assumption is false: a real per-pixel alpha-
+    // channel measurement of the actual files (same methodology every
+    // coverSpriteFrame()/registerWeakPointFrac() entry in this file already
+    // uses — never image.width/height alone) found gabriel_walk_1/2/3.png
+    // (the approach walk cycle) fill 94.3%/91.1%/92.3% of their 920px-tall
+    // canvas (average 92.57%), while gabriel_claw_windup.png fills 95.00% —
+    // so at the OLD flat 0.82 multiplier (itself never measured against real
+    // visible bounds — see the FOLLOWUP HOTFIX comment this replaces, which
+    // only ever cites a subjective "reading too large"), the windup pose's
+    // actual visible body height came out to just ~84% of the approach
+    // walk's average visible height (0.82 x 0.9500 / 0.9257) — a real,
+    // measurable ~16% shrink at the exact instant the attack begins, i.e.
+    // "急に小さくなる". Fix: the multiplier is now the measured ratio itself
+    // (walk-average-visible-fraction / windup-visible-fraction), so the
+    // windup pose's VISIBLE BODY height matches the approach walk cycle's
+    // own average visible height by construction, not by eye. POSITION
+    // (anchorX/drawBottomY below) is completely untouched — this only
+    // scales drawH, per spec section 3's explicit "POSITIONは変更しない".
+    // GABRIEL's release/impact pose and idle/walk size remain completely
+    // untouched (this round's spec names the approach->attack-start
+    // transition specifically, same scope the multiplier it replaces had).
+    const GABRIEL_WALK_AVG_VISIBLE_FRAC = (868 / 920 + 838 / 920 + 849 / 920) / 3; // gabriel_walk_1/2/3.png, alpha>10 bbox height / 920px canvas
+    const GABRIEL_WINDUP_VISIBLE_FRAC = 874 / 920; // gabriel_claw_windup.png, same methodology
+    const gabrielWindupSizeMult = (isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach'))
+      ? (GABRIEL_WALK_AVG_VISIBLE_FRAC / GABRIEL_WINDUP_VISIBLE_FRAC) : 1;
     const drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost * gabrielWindupSizeMult;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
@@ -9352,6 +9476,42 @@ function computeEnemyDrawRect() {
       if (drawBottomY > footY) drawBottomY = footY;
     }
     const drawTopY = drawBottomY - drawH;
+    // 9TH ROUND (spec sections 15-16): ESCAPE RUN frame visual normalization
+    // — the 3 escapeRun images have genuinely different canvas padding/pose
+    // framing (real measurement: visible body fills 95.5%/91.4%/91.0% of
+    // each canvas respectively, vs a near-uniform ~97-98% for the OLD
+    // walk[]/idle art those replace), so naively drawing them at the SAME
+    // drawH/drawW/drawX/drawTopY computed above (which implicitly assumes
+    // "canvas bottom = foot, canvas center = body center") would make
+    // GABRIEL visibly grow/shrink and drift left/right/up/down every frame
+    // switch. Fixed the same way every OTHER per-frame-varying sprite set in
+    // this file already solves it (ASSETS_PLAYER_ESCAPE's south/west/east[],
+    // player COVER, southWalkFrames — see computeBodyVisualScale()'s own
+    // dy/dx formula, reused verbatim here): treat drawH above as the TARGET
+    // VISIBLE BODY height (scaled by the same GABRIEL_WALK_AVG_VISIBLE_FRAC
+    // reference the walk-cycle it replaces represents, so ESCAPE's apparent
+    // GABRIEL size is unchanged from before this round), derive this
+    // specific frame's own canvas scale from its real measured
+    // bodyBottomFrac/bodyTopFrac, then anchor its real measured foot point
+    // (bodyBottomFrac) to the SAME footScreenY (=drawBottomY, already fully
+    // computed above via the untouched world-position/anchorFrac/ESCAPE-
+    // clamp logic) and its real measured horizontal center (bodyCenterXFrac)
+    // to the SAME anchorX every other GABRIEL pose already centers on.
+    // POSITION (anchorX itself, the ESCAPE south-clamp) is completely
+    // unmodified — only WHERE WITHIN drawW/drawH this frame's own body sits
+    // changes, per spec section 3's explicit "POSITIONは変更しない".
+    let finalX = drawX, finalY = drawTopY, finalW = drawW, finalH = drawH;
+    if (gabrielEscapeRunFrame && imgReady(img)) {
+      const footScreenY = drawBottomY;
+      const targetVisibleBodyHeightPx = drawH * GABRIEL_WALK_AVG_VISIBLE_FRAC;
+      const bodyHeightFrac = gabrielEscapeRunFrame.bodyBottomFrac - gabrielEscapeRunFrame.bodyTopFrac;
+      const rawBodyHeightPx = bodyHeightFrac * img.naturalHeight;
+      const frameScale = rawBodyHeightPx > 0 ? targetVisibleBodyHeightPx / rawBodyHeightPx : 1;
+      finalH = img.naturalHeight * frameScale;
+      finalW = img.naturalWidth * frameScale;
+      finalY = footScreenY - gabrielEscapeRunFrame.bodyBottomFrac * finalH;
+      finalX = anchorX - gabrielEscapeRunFrame.bodyCenterXFrac * finalW;
+    }
     // RUN FLOW round: GABRIEL's HEAD / ADAM's forehead RED EYE — the boss's
     // sole weak point, looked up by whichever pose image was actually
     // selected above (see CLAW_BOSS_WEAKPOINT_FRAC's own comment). Mirrors
@@ -9360,13 +9520,17 @@ function computeEnemyDrawRect() {
     // crosshair code below can treat every "has a measured weak point"
     // enemy type identically, with no separate isClawBoss branch needed
     // there. undefined (not present at all) when the current image has no
-    // registered entry, matching roid's own hasHead-optional pattern.
+    // registered entry, matching roid's own hasHead-optional pattern —
+    // escapeRun frames are never registered (ESCAPE has zero attack
+    // commands, so no crosshair/FOCUS/SHOT ever reads this for them), so wp
+    // is always null for gabrielEscapeRunFrame and headX/Y/R stay undefined,
+    // same as any other unregistered image.
     const wp = clawBossWeakPointFor(img);
     return {
-      img, proj, x: drawX, y: drawTopY, w: drawW, h: drawH, cx: anchorX, cy: drawTopY + drawH * 0.42,
-      headX: wp ? drawX + wp.xFrac * drawW : undefined,
-      headY: wp ? drawTopY + wp.yFrac * drawH : undefined,
-      headR: wp ? wp.rFrac * Math.max(drawW, drawH) : undefined,
+      img, proj, x: finalX, y: finalY, w: finalW, h: finalH, cx: anchorX, cy: finalY + finalH * 0.42,
+      headX: wp ? finalX + wp.xFrac * finalW : undefined,
+      headY: wp ? finalY + wp.yFrac * finalH : undefined,
+      headR: wp ? wp.rFrac * Math.max(finalW, finalH) : undefined,
     };
   }
 
@@ -12430,6 +12594,34 @@ function isAimOnEffectiveHit() {
   if ((e.type === 'roid1' || e.type === 'roid2') && rect.headX != null) {
     return Math.hypot(aim.x - rect.headX, aim.y - rect.headY) <= rect.headR;
   }
+  // 9TH ROUND (spec sections 5-10): ROOT CAUSE of "SHOTがHITする座標なのに
+  // YELLOWにならない" for GABRIEL/ADAM — updateBullets()'s own real damage
+  // hit-test (see its `if (dist <= hitRadius || headHit)` gate) treats the
+  // effective region as the UNION of the body-center circle AND the head/
+  // weak-point circle (a claw-boss body hit always deals real damage,
+  // headHit only adds a bonus multiplier — see that gate's own comment).
+  // This function's old fallthrough below only ever checked the body
+  // circle, never headHit, for EVERY enemy type without roid1/roid2's
+  // dedicated branch — harmless for DRONE/ADAM SPHERE (no rect.headX at
+  // all, so headHit is always false there and this OR is a no-op), but for
+  // GABRIEL/ADAM specifically the measured head sits far enough from
+  // rect.cx/cy that its circle pokes slightly OUTSIDE the body circle (real-
+  // device symptom + point-by-point measurement confirmed a reproducible
+  // sliver: dist slightly > hitRadius while still inside the real head
+  // circle), so a shot aimed there registered a real hit while YELLOW never
+  // showed. Mirrors updateBullets()'s own condition exactly — no change to
+  // hitRadius/headR/the real damage rule itself (never widened or narrowed,
+  // per spec's explicit "無理やり一致させるのは禁止"), just brings this
+  // shared crosshair/FOCUS geometry check into agreement with the damage
+  // gate that already existed. ROID1/ROID2 (their own branch above, body-
+  // hit intentionally excluded) and every other enemy type (rect.headX
+  // undefined, so headHit is always false, condition reduces to the
+  // original body-only check) are completely unaffected.
+  const hasClawBossHeadPoint = (e.type === 'gabriel' || e.type === 'adam') && rect.headX != null;
+  if (hasClawBossHeadPoint) {
+    const headHit = Math.hypot(aim.x - rect.headX, aim.y - rect.headY) <= rect.headR;
+    if (headHit) return true;
+  }
   return Math.hypot(aim.x - rect.cx, aim.y - rect.cy) <= enemyHitRadius(rect);
 }
 // 15TH ROUND (items 18-23): root-cause of the long-standing "RED表示され
@@ -13844,10 +14036,37 @@ function frame(ts) {
   // PAUSE setting never affects TOUCH AIM.
   const gpAimScaledX = gpInput.aim.x * controllerAimSensitivity;
   const gpAimScaledY = gpInput.aim.y * controllerAimSensitivity;
-  state.input.aimX = gpInput.aim.x !== 0 ? gpAimScaledX : touchLight.x;
-  state.input.aimY = gpInput.aim.y !== 0 ? gpAimScaledY : touchLight.y;
-  state.input.lightX = gpInput.aim.x !== 0 ? gpAimScaledX : touchLight.x;
-  state.input.lightY = gpInput.aim.y !== 0 ? gpAimScaledY : touchLight.y;
+  // 8TH ROUND (spec sections 7-11): ROOT CAUSE of "TOUCH AIM only reaches
+  // the screen edge" — gpInput.aim.x/y (GAMEPAD) is already passed through
+  // applyAimCurve() inside pollGamepad() (see gpAim.x/y there), which zeroes
+  // anything under AIM_DEADZONE (0.16) before it ever reaches p.aimLiveX/Y's
+  // own persistent, NEVER-auto-recentering velocity integration (see that
+  // code's own comment — this was intentionally made non-recentering a
+  // previous round). touchLight.x/y took the OLD, uncurved else branch
+  // here, so on TOUCH a player's ordinary imprecision keeping a thumb near
+  // the pad's exact visual center (a few px of unavoidable jitter — there is
+  // no physical spring-back like a real analog stick) was fed in RAW: a
+  // real-device pointer trace (2s of a deliberately "roughly centered"
+  // touch, jitter only ~3px) showed aimLiveY drift from 0 to -22px with
+  // ZERO player intent to move it, and any sustained directional hold
+  // saturates aimLiveX/Y to the full +/-AIM_RANGE (screen-size-scaled, e.g.
+  // 1280px) within well under a second — after which getAimPoint()'s own
+  // screen-edge margin clamp pins the visible point to a screen edge/corner
+  // and it has no way back to center except an equally precise, deliberate
+  // opposite-direction push, which is effectively impossible to land
+  // reliably on a flat touchscreen. Fix: touchLight.x/y now goes through
+  // the SAME applyAimCurve() gamepad already uses — full deflection (+/-1)
+  // still curves to exactly +/-1 (so the complete AIM_RANGE stays reachable,
+  // per spec section 12), but the small unintentional jitter that used to
+  // silently accumulate is absorbed by the deadzone, exactly like gamepad's
+  // own stick already behaves. No new clamp, no player/enemy/barrel
+  // collision, no change to GAMEPAD's own branch at all (spec sections 8/15).
+  const touchAimCurvedX = applyAimCurve(touchLight.x);
+  const touchAimCurvedY = applyAimCurve(touchLight.y);
+  state.input.aimX = gpInput.aim.x !== 0 ? gpAimScaledX : touchAimCurvedX;
+  state.input.aimY = gpInput.aim.y !== 0 ? gpAimScaledY : touchAimCurvedY;
+  state.input.lightX = gpInput.aim.x !== 0 ? gpAimScaledX : touchAimCurvedX;
+  state.input.lightY = gpInput.aim.y !== 0 ? gpAimScaledY : touchAimCurvedY;
   // PART 6: LT/RT + D-PAD manual AIM trim (height/horizontal).
   state.input.aimHeightAdjust = gpInput.aimAdjust.height;
   state.input.aimHorizAdjust = gpInput.aimAdjust.horiz;

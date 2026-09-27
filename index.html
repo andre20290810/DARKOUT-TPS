@@ -4,6 +4,27 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>DARKOUT 2</title>
+<!-- 9TH ROUND (spec sections 47-51): no favicon/apple-touch-icon/manifest
+     icon/OG/Twitter-card tags existed at all before this round (confirmed
+     by grep of the previous index.html) — these are new additions using
+     the user-attached "DARK OUT" title/PLAYER/GABRIEL artwork, resized
+     (never cropped or stretched — source is already a perfect 1:1 square,
+     2576x2576) to each standard size. See the completion report for the
+     explicit legibility finding: at true 16x16 the artwork is not
+     recognizable, and at 32x32 the "DARK OUT" text is not legible either
+     (only a rough red-silhouette impression survives) — this is reported
+     as a known limitation rather than papering over it with an invented
+     alternate design, per instruction. 180px+ (apple-touch-icon, manifest
+     icon, OG/Twitter card) are all clearly legible. -->
+<link rel="icon" type="image/png" sizes="32x32" href="assets/icon/favicon-32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="assets/icon/favicon-16.png?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/icon/apple-touch-icon.png?v=1">
+<meta property="og:title" content="DARKOUT 2">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/icon/og-image.jpg?v=1">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="DARKOUT 2">
+<meta name="twitter:image" content="assets/icon/og-image.jpg?v=1">
 <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
@@ -83,9 +104,19 @@
          <source> (tried first) for that audience; WebM/VP9 is added as a
          second source the browser falls through to whenever H.264 isn't
          available, rather than silently failing with no source at all. -->
-    <video id="intro-video" muted playsinline autoplay preload="auto" poster="assets/video/loading_intro_poster.jpg?v=1">
-      <source src="assets/video/loading_intro.mp4?v=1" type="video/mp4">
-      <source src="assets/video/loading_intro.webm?v=1" type="video/webm">
+    <!-- 9TH ROUND (spec section 37): OPENING LOOP VIDEO replaced with the
+         new user-attached content — same dual-source H.264/VP9 pipeline,
+         same duration/resolution as before (8.033s, 1920x864), converted
+         from the attached HEVC/.mov source via this project's own
+         established ffmpeg settings (matching the PREVIOUS loading_intro
+         files' encode quality — see the completion report for exact
+         codec/bitrate evidence). Filenames deliberately kept identical;
+         only the cache-busting ?v= bumped 1->2 so browsers/CDNs fetch the
+         new bytes instead of a cached copy of the old video under the same
+         URL. -->
+    <video id="intro-video" muted playsinline autoplay preload="auto" poster="assets/video/loading_intro_poster.jpg?v=2">
+      <source src="assets/video/loading_intro.mp4?v=2" type="video/mp4">
+      <source src="assets/video/loading_intro.webm?v=2" type="video/webm">
     </video>
     <!-- UI POLISH ROUND: the "DARK OUT 2" brand title is deliberately no
          longer shown on the LOADING gauge itself — the real intro video
@@ -429,12 +460,16 @@
     <button type="button" tabindex="-1" id="touch-reload" class="touch-btn touch-btn-side">RELOAD</button>
     <button type="button" tabindex="-1" id="touch-focus" class="touch-btn touch-btn-top">FOCUS</button>
     <!-- ESCAPE-only. JUMP: was #touch-dash-jump, unchanged mechanism,
-         relabeled/repositioned. SHADOW: replaces W-DECOY/E-DECOY with ONE
-         button, direction read from MOVE stick's current horizontal
-         position the same way DASH reads its direction (spec section 26) —
-         a centered MOVE stick is again a deliberate no-op, same STOP item. -->
-    <button type="button" tabindex="-1" id="touch-jump" class="touch-btn touch-btn-side touch-escape-only">JUMP</button>
-    <button type="button" tabindex="-1" id="touch-shadow" class="touch-btn touch-btn-top touch-escape-only">SHADOW</button>
+         relabeled/repositioned. 8TH ROUND (spec sections 2-4): SHADOW is now
+         TWO explicit buttons (WEST SHADOW / EAST SHADOW) instead of one
+         MOVE-stick-direction-inferred button — each wired directly to its
+         own existing westDecoy/eastDecoy action (see game.js). All three
+         ESCAPE-only buttons (JUMP + the two SHADOWs) are arranged in an arc
+         around DASH (touch-btn-arc-*, spec section 4) rather than the old
+         two-slot top/side layout. -->
+    <button type="button" tabindex="-1" id="touch-jump" class="touch-btn touch-btn-arc-jump touch-escape-only">JUMP</button>
+    <button type="button" tabindex="-1" id="touch-shadow-east" class="touch-btn touch-btn-arc-east touch-escape-only">EAST<br>SHADOW</button>
+    <button type="button" tabindex="-1" id="touch-shadow-west" class="touch-btn touch-btn-arc-west touch-escape-only">WEST<br>SHADOW</button>
   </div>
 
 </div>
