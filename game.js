@@ -9334,13 +9334,34 @@ function computeEnemyDrawRect() {
     // COMBAT walk[] art, ONLY while state.gameMode==='escape' and walking —
     // COMBAT's own approach walk (state.gameMode==='combat') is completely
     // untouched, still selecting ASSETS.gabriel.walk[] exactly as before.
-    const gabrielEscapeRunFrame = (isGabriel && isWalking && state.gameMode === 'escape')
+    //
+    // 10TH ROUND (spec sections 1-8): root cause of "RUNの後に一度、立ち止
+    // まっている通常画像へ戻る" — this used to gate on isWalking alone
+    // (attackState==='idle'), so the instant the shared claw AI (updateEnemy(),
+    // same idle->blink->approach->telegraph->impact chain COMBAT and ESCAPE
+    // both run) left 'idle' to begin an attack, this fell straight through to
+    // set.idle (during blink/approach) then set.windup (during telegraph) —
+    // a real standing pose, not a RUN frame, exactly matching the real-device
+    // report. Fix: keep selecting the escapeRun frame through blink/approach/
+    // telegraph too (every pre-impact state of that SAME chain), not just
+    // idle. Deliberately excludes 'impact' (spec section 8: the real ATTACK
+    // sprite must still take over there, unchanged) and excludes 'defense'/
+    // 'counterApproach'/'counterAttack' (the separate DEFENSE/COUNTER
+    // mechanic — out of this round's named scope, its existing windup/release
+    // reuse is untouched). The frame INDEX itself needs no new freeze logic:
+    // updateEnemy() only ever advances e.clawWalkFrame while attackState===
+    // 'idle' (see its own comment), so it already sits frozen on whatever
+    // frame was current the instant 'idle' was left — this fix only corrects
+    // which image computeEnemyDrawRect() reads for those frozen frames.
+    const gabrielEscapeRunActive = isGabriel && state.gameMode === 'escape'
+      && (e.attackState === 'idle' || e.attackState === 'blink' || e.attackState === 'approach' || e.attackState === 'telegraph');
+    const gabrielEscapeRunFrame = gabrielEscapeRunActive
       ? ASSETS.gabriel.escapeRun[e.clawWalkFrame] : null;
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
-      : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach' ? set.windup
+      : (gabrielEscapeRunFrame ? gabrielEscapeRunFrame.img
+        : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach' ? set.windup
         : (e.attackState === 'impact' || e.attackState === 'counterAttack' ? set.release
-        : (gabrielEscapeRunFrame ? gabrielEscapeRunFrame.img
         : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle))));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     // 27TH ROUND item 3: real-play feedback (添付3枚目・4枚目) said GABRIEL/ADAM
@@ -9416,7 +9437,16 @@ function computeEnemyDrawRect() {
     // transition specifically, same scope the multiplier it replaces had).
     const GABRIEL_WALK_AVG_VISIBLE_FRAC = (868 / 920 + 838 / 920 + 849 / 920) / 3; // gabriel_walk_1/2/3.png, alpha>10 bbox height / 920px canvas
     const GABRIEL_WINDUP_VISIBLE_FRAC = 874 / 920; // gabriel_claw_windup.png, same methodology
-    const gabrielWindupSizeMult = (isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach'))
+    // 10TH ROUND: excludes gabrielEscapeRunFrame cases — this ratio corrects
+    // specifically for the WINDUP IMAGE's own visible-alpha fraction (95.00%)
+    // vs the walk cycle's (92.57%), so it only makes sense when set.windup is
+    // actually the image being drawn. During ESCAPE's frozen-RUN-frame
+    // telegraph (see gabrielEscapeRunActive above), the escapeRun override
+    // block a little further down already derives its own frame-correct
+    // scale from drawH via the SAME GABRIEL_WALK_AVG_VISIBLE_FRAC reference —
+    // applying this multiplier on top of that would double-correct and
+    // shrink the frozen RUN frame for no real reason.
+    const gabrielWindupSizeMult = (isGabriel && !gabrielEscapeRunFrame && (e.attackState === 'telegraph' || e.attackState === 'counterApproach'))
       ? (GABRIEL_WALK_AVG_VISIBLE_FRAC / GABRIEL_WINDUP_VISIBLE_FRAC) : 1;
     const drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost * gabrielWindupSizeMult;
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
