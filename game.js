@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R14';
+const BUILD_VERSION = 'DARKOUT2-R15';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1029,31 +1029,40 @@ const AIM_PLAYER_MARGIN_PX = 14;
 // 7TH ROUND PART 11: CONTROLLER-only AIM sensitivity, adjustable from
 // PAUSE (see #aim-sens-slider in index.html / its input listener below).
 // Applied ONLY to the gamepad's own curved aim axis before it's written
-// into state.input.aimX/Y — TOUCH AIM's contribution is read completely
-// unaffected by this, per spec ("TOUCH側とは必要に応じて別管理").
-// 15TH ROUND (items 35-39): re-investigated the existing 3-tier system —
-// it was LOW(0.7)/NORMAL(1.0)/HIGH(1.4), defaulting to NORMAL. Per this
-// round's explicit instruction, whichever tier was SLOWEST becomes the new
-// STANDARD/default going forward (LOW's own 0.7 value, unchanged), with
-// the other two tiers reconstructed around it as SLOW (finer than
-// STANDARD) and FAST (quicker than STANDARD, reusing the old NORMAL value
-// so a player who liked the old default keeps that exact feel under its
-// new FAST label). Scoped to RIGHT STICK AIM only — see
-// controllerAimSensitivity's own read site (state.input.aimX/Y) below;
-// LEFT STICK LIGHT (applyLightCurve()) and player MOVE never read this at
-// all, so neither is affected by this change (item 38).
-const AIM_SENSITIVITY_PRESETS = { slow: 0.5, standard: 0.7, fast: 1.0 };
-// 13TH ROUND (spec sections 21-22): real-device report — the initial AIM
-// speed still read as too fast. Spec's own explicit formula: DEFAULT =
-// SLOW's existing effective value x 0.90 (never "10% of the slider's own
-// range" — a literal multiplier on the real SLOW number). SLOW itself
-// (AIM_SENSITIVITY_PRESETS.slow, 0.5) is unchanged; only the actual
-// starting value changes, to 0.5*0.90=0.45 — below the slider's old
-// min (which was effectively SLOW's own 0.5), so #aim-sens-slider's own
-// min="0.30" in index.html was widened to comfortably fit this new default
-// with room below it too.
-const AIM_SENSITIVITY_DEFAULT = AIM_SENSITIVITY_PRESETS.slow * 0.90;
+// into state.input.aimX/Y.
+// 15TH ROUND (real-device report, spec sections 16-18/33-35): re-measured
+// from scratch — even the OLD slider's minimum (0.30) let a FULL stick
+// deflection cross the entire screen width in ~0.82 real seconds (computed:
+// AIM_RANGE_BASELINE_PX/(AIM_MOVE_SPEED_BASELINE_PX_S*S), a resolution-
+// independent formula since AIM_MOVE_SPEED_PX_S/AIM_RANGE scale together —
+// see resize()'s own ratio), nowhere near precise enough for fine aiming,
+// confirming the real-device "SLOWでもまだ速すぎる" report. Presets/slider
+// redesigned around real edge-to-edge crossing TIME rather than arbitrary
+// multipliers: LOW≈4.1s (genuine precision aiming), DEFAULT≈1.2s
+// (comfortable regular play), HIGH≈0.41s (fast snap-turns). The OLD
+// TOUCH-is-unaffected design ("TOUCH側とは必要に応じて別管理") is now
+// revisited — real-device testing found TOUCH's own uncurved-by-sensitivity
+// path was ALSO far too fast/imprecise (effectively always running at this
+// slider's old max) — see TOUCH_AIM_SENSITIVITY below, a SEPARATE constant
+// (not reusing this slider) so TOUCH and GAMEPAD can each be tuned
+// independently per spec section 35, rather than sharing one value.
+const AIM_SENSITIVITY_PRESETS = { slow: 0.06, standard: 0.20, fast: 0.60 };
+const AIM_SENSITIVITY_DEFAULT = AIM_SENSITIVITY_PRESETS.standard;
 let controllerAimSensitivity = AIM_SENSITIVITY_DEFAULT;
+// 15TH ROUND (spec section 35): TOUCH's own independent sensitivity — the
+// same curved touchLight.x/y (applyAimCurve(), shared curve shape with
+// gamepad, per spec's "無理に同一化しない" applying to sensitivity/range,
+// not necessarily the curve function itself) previously had NO multiplier
+// at all before reaching AIM_MOVE_SPEED_PX_S, i.e. it always ran at the
+// equivalent of sensitivity=1.0 — a full touch-stick deflection crossed the
+// entire screen in ~0.245s REGARDLESS of the CONTROLLER AIM SENSITIVITY
+// slider (which never touched the touch branch — see the input-merge
+// block's own comment). Tuned to ~1.36s edge-to-edge at full deflection:
+// slower than gamepad's own HIGH (fast turns are less needed on touch,
+// where a virtual-stick drag saturates to full deflection quickly/
+// naturally, unlike a physical stick's resistance), but still fast enough
+// to complete a real turn in a bit over a second when genuinely needed.
+const TOUCH_AIM_SENSITIVITY = 0.18;
 
 const FIRE_COOLDOWN_MS = 130;
 // 12TH ROUND (item 9): MAG_SIZE 12->30. RESERVE_MAX scaled by the SAME
@@ -2127,7 +2136,11 @@ function r10CollectSnapshot(ts) {
         playerDrawRectTop: Math.round(rect.topY),
         bodyLeft: Math.round(bodyBounds.left), bodyRight: Math.round(bodyBounds.right),
         bodyTop: Math.round(bodyBounds.top), bodyBottom: Math.round(bodyBounds.bottom),
-        crosshairHiddenByBody: isPointOverPlayerBody(pt.x, pt.y, AIM_PLAYER_MARGIN_PX),
+        // 15TH ROUND: renamed from crosshairHiddenByBody — renderAimReticle()
+        // no longer fully hides the reticle here (dims it instead, see its
+        // own comment), so this field now accurately reports "would be
+        // dimmed", not "would be invisible".
+        crosshairDimmedByBody: isPointOverPlayerBody(pt.x, pt.y, AIM_PLAYER_MARGIN_PX),
         focusTarget: p.autoAimActive ? Math.round(p.aimLiveX) + ',' + Math.round(p.aimLiveY) : '-',
       };
     })(),
@@ -2428,7 +2441,7 @@ function r10UpdateDebugPanel(ts) {
     // coordinate is unrestricted now); crosshairHidden reflects the
     // render-only body-overlap visibility check instead.
     '\n AIM=' + s.aim.aimX + ',' + s.aim.aimY +
-    ' playerTop=' + s.aim.playerDrawRectTop + ' crosshairHiddenByBody=' + s.aim.crosshairHiddenByBody;
+    ' playerTop=' + s.aim.playerDrawRectTop + ' crosshairDimmedByBody=' + s.aim.crosshairDimmedByBody;
   r10DbgDecoyEl.textContent = 'ESCAPE DECOY applicable=' + s.decoy.applicable + ' active=' + s.decoy.active +
     ' side=' + s.decoy.side + ' remainMs=' + s.decoy.remainMs;
   r10DbgDroneWaveEl.textContent = 'DRONE WAVE active=' + s.droneWave.active + ' wave2Triggered=' + s.droneWave.wave2Triggered +
@@ -2521,9 +2534,11 @@ function r10FormatDebugText(s) {
   lines.push('playerDrawRectTop: ' + s.aim.playerDrawRectTop);
   // 6TH ADJUSTMENT ROUND: bodyLeft/Right/Top/Bottom are the real alpha-
   // measured visible body rect (+/-AIM_PLAYER_MARGIN_PX) — used ONLY to
-  // decide crosshairHiddenByBody (render visibility), never to clamp AIM.
+  // decide crosshairDimmedByBody (render visibility), never to clamp AIM.
+  // 15TH ROUND: renamed from crosshairHiddenByBody — the reticle is now
+  // dimmed, never fully hidden, over the body (see renderAimReticle()).
   lines.push('bodyRect: x[' + s.aim.bodyLeft + '..' + s.aim.bodyRight + '] y[' + s.aim.bodyTop + '..' + s.aim.bodyBottom + ']');
-  lines.push('crosshairHiddenByBody: ' + s.aim.crosshairHiddenByBody);
+  lines.push('crosshairDimmedByBody: ' + s.aim.crosshairDimmedByBody);
   lines.push('focusTarget: ' + s.aim.focusTarget);
   lines.push('');
   lines.push('PLAYER');
@@ -13311,22 +13326,36 @@ function renderAimReticle() {
   }
   const hot = effectiveNow && onWeakPoint;
   const r = 6; // was 11 — PART 7: smaller crosshair
-  // 6TH ADJUSTMENT ROUND (spec section 4): AIM's own coordinate is
-  // unrestricted now (see getAimPoint()'s own comment) — a "+" that would
-  // otherwise render on top of the player's real visible body is simply
-  // SKIPPED this frame, nothing else. The coordinate keeps moving through
-  // that region exactly as input drives it (so a continued south push
-  // still reaches the far side, and it reappears immediately once aim.x/y
-  // clears the body) — this never touches aim.x/y, isEffectiveDamageNow(),
-  // FOCUS, or fireWeapon()'s own target, all of which still read the
-  // genuine getAimPoint() result regardless of whether it's drawn this
-  // frame (spec section 4's explicit "無効化してはいけません").
-  // Margin uses the glyph's own half-length (r) so the "+"'s drawn ARMS,
-  // not just its center point, never visibly clip the body edge.
-  if (isPointOverPlayerBody(aim.x, aim.y, r)) return;
+  // 15TH ROUND (real-device report, spec sections 6-7/26): root cause of
+  // "FOCUSを押さないと狙いたい位置へまともに合わせにくい" / "中央を狙いたく
+  // ても自然に合わせられない" — the player's own body occupies a large,
+  // roughly SCREEN-CENTERED rectangle (this is an over-the-shoulder TPS —
+  // see computePlayerVisualBounds()), which is exactly where AIM's own
+  // resting/near-neutral position also naturally sits. The OLD `if
+  // (isPointOverPlayerBody(...)) return;` here fully skipped drawing the
+  // reticle for that whole region — real-device DEBUG capture confirmed
+  // this exact case (aim=449,166 landing inside bodyRect=x[411..495]
+  // y[144..360], crosshairHiddenByBody:true). The underlying aim.x/y
+  // coordinate itself was never frozen or clamped during this (confirmed —
+  // see isPointOverPlayerBody()'s own comment, still true), but with NO
+  // visual feedback at all while hidden, fine positioning near center
+  // became effectively blind: the user had no way to see small corrections
+  // take effect, and when the reticle re-emerged after clearing the body it
+  // read as an unexplained "jump" even though the coordinate had moved
+  // continuously the whole time. Per this round's explicit new spec
+  // ("CROSSHAIRは主人公sprite上を含めて連続的に移動可能... 座標を飛ばすこと
+  // は禁止" / "opacityを下げる、outlineを変える等は許容する"), the reticle
+  // now ALWAYS renders at the true aim.x/y — over the body it switches to a
+  // lower-opacity, distinct-outline style (never fully invisible) instead of
+  // being skipped, so the player always has continuous visual feedback of
+  // where they are actually aiming. aim.x/y/isEffectiveDamageNow()/FOCUS/
+  // fireWeapon() target are completely untouched — this is a render-style
+  // branch only, same scope the old early-return had.
+  const overBody = isPointOverPlayerBody(aim.x, aim.y, r);
   ctx.save();
-  ctx.strokeStyle = hot ? 'rgba(255,214,10,0.95)' : 'rgba(255,255,255,0.9)';
-  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = overBody ? 0.45 : 1;
+  ctx.strokeStyle = hot ? 'rgba(255,214,10,0.95)' : (overBody ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.9)');
+  ctx.lineWidth = overBody ? 1 : 1.5;
   ctx.beginPath();
   ctx.moveTo(aim.x - r, aim.y); ctx.lineTo(aim.x + r, aim.y);
   ctx.moveTo(aim.x, aim.y - r); ctx.lineTo(aim.x, aim.y + r);
@@ -14794,8 +14823,14 @@ function frame(ts) {
   // silently accumulate is absorbed by the deadzone, exactly like gamepad's
   // own stick already behaves. No new clamp, no player/enemy/barrel
   // collision, no change to GAMEPAD's own branch at all (spec sections 8/15).
-  const touchAimCurvedX = applyAimCurve(touchLight.x);
-  const touchAimCurvedY = applyAimCurve(touchLight.y);
+  // 15TH ROUND (spec sections 2-3/35): TOUCH_AIM_SENSITIVITY applied here —
+  // see its own declaration comment. Previously touchAimCurvedX/Y fed
+  // straight into state.input.aimX/Y with no multiplier at all (effectively
+  // always full speed), independent of and unaffected by the CONTROLLER AIM
+  // SENSITIVITY slider (gpAimScaledX/Y below is still the only consumer of
+  // controllerAimSensitivity — this does not change GAMEPAD's own branch).
+  const touchAimCurvedX = applyAimCurve(touchLight.x) * TOUCH_AIM_SENSITIVITY;
+  const touchAimCurvedY = applyAimCurve(touchLight.y) * TOUCH_AIM_SENSITIVITY;
   state.input.aimX = gpInput.aim.x !== 0 ? gpAimScaledX : touchAimCurvedX;
   state.input.aimY = gpInput.aim.y !== 0 ? gpAimScaledY : touchAimCurvedY;
   state.input.lightX = gpInput.aim.x !== 0 ? gpAimScaledX : touchAimCurvedX;
@@ -15379,6 +15414,8 @@ window.__darkoutTps = {
   get AIM_RANGE_Y() { return AIM_RANGE_Y; },
   get LIGHT_RANGE() { return LIGHT_RANGE; },
   get AIM_MOVE_SPEED_PX_S() { return AIM_MOVE_SPEED_PX_S; },
+  get TOUCH_AIM_SENSITIVITY() { return TOUCH_AIM_SENSITIVITY; },
+  AIM_SENSITIVITY_PRESETS, get AIM_SENSITIVITY_DEFAULT() { return AIM_SENSITIVITY_DEFAULT; },
   distanceDamageMultiplier, isWithinEffectiveDamageRange,
   DAMAGE_FALLOFF_FULL_Z, DAMAGE_FALLOFF_MAX_EFFECTIVE_Z, BULLET_DAMAGE,
   // 30TH ROUND item 17: DRONE WAVE 2 (1 drone -> 3 extra drones) — exposed

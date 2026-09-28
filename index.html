@@ -408,31 +408,39 @@
            unchanged; only this control surface changed. Native <datalist>
            ticks (list="aim-sens-ticks") give the "multiple visible steps,
            not just 3 points" requirement without hand-drawn tick markup.
-           SLOW/STANDARD/FAST preset VALUES (0.5/0.7/1.0, see
-           AIM_SENSITIVITY_PRESETS in game.js) are unchanged and still sit
-           on this exact slider range as three of its many tick positions. -->
+           15TH ROUND (real-device report, spec sections 16-18/33-35):
+           min/max/default range redesigned entirely around real edge-to-
+           edge screen-crossing TIME rather than arbitrary multipliers — the
+           OLD range (0.30-1.00) let even its own minimum cross the full
+           screen width in ~0.82 real seconds at full stick deflection, far
+           too fast for precision aiming (confirmed by direct measurement,
+           see AIM_SENSITIVITY_PRESETS's own comment in game.js). New range
+           0.06 (LOW, ~4.1s edge-to-edge — genuine precision) to 0.60
+           (HIGH, ~0.41s — fast snap-turn), SLOW/STANDARD/FAST preset
+           VALUES (0.06/0.20/0.60, see AIM_SENSITIVITY_PRESETS in game.js)
+           sitting on this range as tick positions, same as before. -->
       <div id="aim-sens-label" class="pause-menu-label">CONTROLLER AIM SENSITIVITY</div>
       <div id="aim-sens-slider-row">
         <span class="aim-sens-edge-label">SLOW</span>
-        <input type="range" tabindex="-1" id="aim-sens-slider" min="0.30" max="1.00" step="0.01" list="aim-sens-ticks">
+        <input type="range" tabindex="-1" id="aim-sens-slider" min="0.06" max="0.60" step="0.01" list="aim-sens-ticks">
         <span class="aim-sens-edge-label">FAST</span>
       </div>
       <datalist id="aim-sens-ticks">
+        <option value="0.06"></option>
+        <option value="0.10"></option>
+        <option value="0.14"></option>
+        <option value="0.18"></option>
+        <option value="0.20"></option>
+        <option value="0.22"></option>
+        <option value="0.26"></option>
         <option value="0.30"></option>
-        <option value="0.35"></option>
-        <option value="0.40"></option>
-        <option value="0.45"></option>
+        <option value="0.34"></option>
+        <option value="0.38"></option>
+        <option value="0.42"></option>
+        <option value="0.46"></option>
         <option value="0.50"></option>
-        <option value="0.55"></option>
+        <option value="0.54"></option>
         <option value="0.60"></option>
-        <option value="0.65"></option>
-        <option value="0.70"></option>
-        <option value="0.75"></option>
-        <option value="0.80"></option>
-        <option value="0.85"></option>
-        <option value="0.90"></option>
-        <option value="0.95"></option>
-        <option value="1.00"></option>
       </datalist>
 
       <div class="pause-menu-label">STAGE TYPE</div>
