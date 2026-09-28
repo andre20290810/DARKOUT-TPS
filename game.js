@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R12A';
+const BUILD_VERSION = 'DARKOUT2-R12';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -737,10 +737,16 @@ const ENEMY_Z_ABS_FLOOR = 15; // safety floor under the dynamic ROID solve, neve
 // for GABRIEL to read closer to human scale.
 const ROID_WORLD_HEIGHT = 700; // unchanged value from round 1 (was ENEMY_WORLD_HEIGHT)
 const GABRIEL_WORLD_HEIGHT = 480;
-// 9TH ROUND (spec section 14): ESCAPE-only GABRIEL RUN art's own frame-
-// switch cadence — the CURRENT walk-cycle cadence (160ms, see updateEnemy()'s
-// clawWalkElapsedMs advance) divided by 1.5, per spec's own literal formula.
-// Never applied to COMBAT's own walk[] cadence (still the raw 160ms there).
+// 9TH ROUND (spec section 14, HISTORICAL): originally ESCAPE-only GABRIEL RUN
+// art's own frame-switch cadence — the walk-cycle cadence ADAM still uses
+// (160ms, see updateEnemy()'s clawWalkElapsedMs advance) divided by 1.5, per
+// spec's own literal formula.
+// 12TH ROUND PART B (spec section 1): now ALSO used for COMBAT GABRIEL's own
+// RUN cadence (see updateEnemy()'s clawWalkFrameMs) so both modes share one
+// GABRIEL RUN switch-speed value instead of two — the name is kept as-is
+// (still literally "the ESCAPE RUN frame ms", now reused by COMBAT too)
+// rather than renamed, to keep this a minimal, low-risk change. ADAM's own
+// walk[] cadence never reads this constant and is unaffected either way.
 const GABRIEL_ESCAPE_RUN_FRAME_MS = 160 / 1.5;
 // 9TH ROUND FOLLOWUP (spec sections 41-46): PLAYER's SOUTH WALK sprite-
 // switch cadence, requested frequency-first — "NEW FREQUENCY = CURRENT
@@ -1551,6 +1557,22 @@ const CLAW_WINDUP_MS = 640;
 // regression to its own attack timing/feel.
 const GABRIEL_NON_DEFENSE_ATTACK_PREP_MS = 300;
 const CLAW_SWING_MS = 140;      // unchanged from the old single impact duration
+// 12TH ROUND PART B (spec section 4): real-device report — ESCAPE GABRIEL's
+// claw-release/impact sprite (drawn via set.release, the same image
+// CLAW_SWING_MS already gates for the non-defense attack's 'impact' state)
+// was on screen for only CLAW_SWING_MS=140ms — too brief to register as
+// "the claw actually swung" per spec's own "一瞬で次の状態へ移る". This is a
+// SEPARATE timer from GABRIEL_NON_DEFENSE_ATTACK_PREP_MS (the ~300ms
+// pre-attack windup before impact even begins, untouched) and from
+// GABRIEL_ADAM_DEFENSE_MS (the ~1100ms DEFENSE hold, also untouched) — it
+// only extends how long the 'impact' state itself is held once the claw has
+// already connected. ESCAPE-only (state.gameMode==='escape') and GABRIEL-
+// only (its one use site below gates on e.type==='gabriel'), so COMBAT
+// GABRIEL's own existing CLAW_SWING_MS=140ms and ADAM's CLAW_SWING_MS in
+// either mode are both completely unchanged. Long enough to clearly read as
+// "claw connected", short enough not to noticeably slow the overall attack
+// per spec's explicit "極端に遅くするのではない".
+const GABRIEL_ESCAPE_ATTACK_HOLD_MS = 420;
 const CLAW_COOLDOWN_MS = 1200;  // unchanged from the old cooldown duration
 const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
 // Real lateral reach at the swing instant — a bit under STRAFE_DASH_DISTANCE_PX
@@ -1618,6 +1640,30 @@ const ENEMY_LANE_TRACK_MULT = {
   gabriel: 0.55,
   adam: 0.55,
 };
+// 12TH ROUND PART B (spec sections 5-9, 14-16): GABRIEL-only real-position
+// zigzag approach. Previously specified but never implemented — grep for
+// "zigzag"/"weave" across the whole file found nothing before this round
+// (the 'approach' attack-rush sub-state's own small ±24-unit sin drift,
+// see updateEnemy(), is a separate, much subtler "not a perfectly straight
+// lunge" flourish, not this). Reuses the EXISTING e.laneTarget->e.laneBase->
+// e.lane pipeline updateEnemyFacing() already drives (the SAME chain
+// project()/computeEnemyDrawRect()'s rect.cx/the CLAW hit-test's lateral
+// distance check all read) rather than a second, parallel/visual-only
+// position — see updateEnemyFacing()'s own comment for exactly where this
+// is applied. Amplitude is comparable to DRONE_PATROL_LANE_AMPLITUDE_PX
+// (70, already confirmed "clearly visible" on screen) so it reads as a real
+// zigzag rather than a fine vibration, without becoming an extreme back-
+// and-forth. GABRIEL_ZIGZAG_TRACK_MULT (applied ONLY while zigzag is
+// actively driving the target — never touching ENEMY_LANE_TRACK_MULT.
+// gabriel=0.55 itself, still used unchanged the rest of the time) is needed
+// because that 0.55 "heavy melee" tracking multiplier is deliberately slow
+// (~2.3s to close most of a step) — left as-is, a zigzag toggling every
+// GABRIEL_ZIGZAG_HALF_PERIOD_MS would be smoothed into near-invisibility,
+// which is very likely why this spec read as "never reflected" even where
+// it may have been informally expected before any code for it existed.
+const GABRIEL_ZIGZAG_AMPLITUDE_PX = 100;
+const GABRIEL_ZIGZAG_HALF_PERIOD_MS = 850;
+const GABRIEL_ZIGZAG_TRACK_MULT = 2.6;
 
 // BUGFIX ROUND (spec section 2): DRONE was reading as a stationary/
 // near-stationary "turret" on real device. Root cause: DRONE's e.laneTarget
@@ -7302,13 +7348,40 @@ function updateEnemyFacing(dt, now) {
     }
   }
 
+  // 12TH ROUND PART B (spec sections 5-9, 14-16): GABRIEL-only zigzag —
+  // active ONLY during e.attackState==='idle' (the STALK/approach walk;
+  // spec's "APPROACH中のみ"), so it is automatically OFF for every other
+  // claw attackState (blink/approach/telegraph/impact/recovery/cooldown/
+  // defense/counterApproach/counterAttack) with zero extra state-checks
+  // needed elsewhere — those states simply never see attackState==='idle'.
+  // Alternates LEFT/RIGHT on a fixed timer (never Math.random(), so it can
+  // never bias toward one side — spec's explicit requirement) and feeds
+  // e.laneTarget below, the SAME real logic-position pipeline every other
+  // lane behavior (DRONE's patrol, ROID's attack-sway) already uses — never
+  // a separate render-only offset. Applies identically in COMBAT and ESCAPE
+  // (this function itself has no gameMode branch at all).
+  let gabrielZigzagOffset = 0;
+  let gabrielZigzagActive = false;
+  if (e.type === 'gabriel' && e.attackState === 'idle') {
+    gabrielZigzagActive = true;
+    if (!e.zigzagNextFlipAt || now >= e.zigzagNextFlipAt) {
+      e.zigzagDirSign = -(e.zigzagDirSign || 1);
+      e.zigzagNextFlipAt = now + GABRIEL_ZIGZAG_HALF_PERIOD_MS;
+    }
+    gabrielZigzagOffset = e.zigzagDirSign * GABRIEL_ZIGZAG_AMPLITUDE_PX;
+  }
+
   if (e.type === 'drone') {
     // BUGFIX ROUND (spec section 2): pure time-driven patrol, never a
     // function of player position — see DRONE_PATROL_*'s own comment.
     const patrolPhase = (now % DRONE_PATROL_PERIOD_MS) / DRONE_PATROL_PERIOD_MS;
     e.laneTarget = Math.sin(patrolPhase * Math.PI * 2) * DRONE_PATROL_LANE_AMPLITUDE_PX;
   } else {
-    e.laneTarget = clamp(diff * 0.12, -70, 70);
+    // 12TH ROUND PART B: laneTargetClampPx widens only when gabrielZigzagOffset
+    // is non-zero (GABRIEL, idle-approach only) — for every other type/state
+    // it's exactly 70, identical to before this round.
+    const laneTargetClampPx = 70 + Math.abs(gabrielZigzagOffset);
+    e.laneTarget = clamp(diff * 0.12 + gabrielZigzagOffset, -laneTargetClampPx, laneTargetClampPx);
   }
   // 12TH ROUND (items 36-40): this diff-driven laneTarget/lane pair was
   // ALREADY real PLAYER-X-axis tracking for every enemy type (this function
@@ -7316,7 +7389,14 @@ function updateEnemyFacing(dt, now) {
   // per-type SPEED differentiation. ENEMY_LANE_TRACK_MULT below is the only
   // change: DRONE/ADAM SPHERE track fast, ROID1/ROID2 stay at the original
   // baseline rate, GABRIEL/ADAM (heavy melee) track slow.
-  const trackMult = ENEMY_LANE_TRACK_MULT[e.type] || 1;
+  // 12TH ROUND PART B: while the zigzag above is actively driving the
+  // target, GABRIEL's own lane-tracking speed is temporarily raised to
+  // GABRIEL_ZIGZAG_TRACK_MULT so the LEFT/RIGHT switches actually travel far
+  // enough within GABRIEL_ZIGZAG_HALF_PERIOD_MS to read as a real zigzag —
+  // ENEMY_LANE_TRACK_MULT.gabriel (0.55) itself is untouched and still
+  // applies exactly as before whenever zigzag is inactive (every attack
+  // state, and ADAM always).
+  const trackMult = gabrielZigzagActive ? GABRIEL_ZIGZAG_TRACK_MULT : (ENEMY_LANE_TRACK_MULT[e.type] || 1);
   e.laneBase += (e.laneTarget - e.laneBase) * Math.min(1, dt * 0.8 * trackMult);
 
   // 27TH ROUND item 6: ROID1/ROID2 read as a static "turret" while
@@ -8220,6 +8300,11 @@ function spawnEnemy(type) {
   e.forcedBarrageCount = 0;
   e.clawApproachStartZ = 0;
   e.clawDistanceBonusZ = 0; // NEXT-ROUND PART C — see applyForwardDelta()/updateEnemy()'s 'recovery' block
+  // 12TH ROUND PART B (spec sections 5-9): GABRIEL zigzag state — reset
+  // fresh on every spawn so a stale flip-timer/side can never leak from a
+  // previous encounter. See updateEnemyFacing()'s own comment.
+  e.zigzagDirSign = 1;
+  e.zigzagNextFlipAt = 0;
   e.deathState = 'alive';
   e.deathStartedAt = 0;
   e.deathUntil = 0;
@@ -8652,20 +8737,31 @@ function updateEnemyCore(dt, now) {
     // walk asset; see the body-bob comment in renderEnemy()) but harmless.
     if (e.type === 'gabriel' || e.type === 'adam') {
       e.clawWalkElapsedMs += dt * 1000;
-      // 9TH ROUND (spec sections 12-14): ESCAPE's pursuing GABRIEL now cycles
-      // its own dedicated RUN art (ASSETS.gabriel.escapeRun[], see
-      // computeEnemyDrawRect()) at 1.5x this SAME frame-switch frequency —
-      // spec's own explicit formula is "1frameあたりの表示時間 = CURRENT
-      // FRAME DURATION / 1.5", i.e. GABRIEL_ESCAPE_RUN_FRAME_MS below (160/
-      // 1.5 ≈ 106.67ms), never the raw 160ms COMBAT still uses for its own
-      // walk[] art. This is ONLY the image-switch timer — e.z (the real
-      // world-distance closing rate, i.e. actual pursuit speed) is entirely
-      // untouched by this block, satisfying spec's explicit "worldZ移動
-      //速度そのものを1.5倍にする要求ではない" (that speed lives in
-      // applyForwardDelta()/updateEscapeEnemyPursuit(), neither of which
-      // this timer touches). COMBAT (state.gameMode!=='escape') keeps the
-      // original 160ms exactly as before.
-      const clawWalkFrameMs = state.gameMode === 'escape' ? GABRIEL_ESCAPE_RUN_FRAME_MS : 160;
+      // 9TH ROUND (spec sections 12-14, HISTORICAL): ESCAPE's pursuing
+      // GABRIEL used to cycle its own dedicated RUN art (ASSETS.gabriel.
+      // escapeRun[], see computeEnemyDrawRect()) at 1.5x COMBAT's own
+      // frame-switch frequency (GABRIEL_ESCAPE_RUN_FRAME_MS = 160/1.5 ≈
+      // 106.67ms vs COMBAT's raw 160ms) — this is ONLY ever the image-switch
+      // timer, never e.z (the real world-distance closing rate / actual
+      // pursuit speed, which lives entirely in applyForwardDelta()/
+      // updateEscapeEnemyPursuit(), neither of which this timer touches).
+      // 12TH ROUND PART B (spec section 1): real-device report — COMBAT
+      // GABRIEL's own RUN 1->2->3 loop (correct frame ORDER, added 11TH
+      // ROUND) switches noticeably slower than ESCAPE's, since COMBAT was
+      // still on the old 160ms while ESCAPE already used the faster ~107ms.
+      // Per spec's explicit request, COMBAT is now matched to ESCAPE's own
+      // value by reusing GABRIEL_ESCAPE_RUN_FRAME_MS unconditionally for
+      // GABRIEL in BOTH modes — sharing the SAME constant rather than adding
+      // a second one, per spec's own "可能であれば...共有する". Gated on
+      // e.type==='gabriel' (not on gameMode) so ADAM's own unrelated walk[]
+      // cadence (this same shared block also drives, via the identical
+      // e.clawWalkElapsedMs/clawWalkFrame fields — see this branch's own
+      // `e.type === 'gabriel' || e.type === 'adam'` guard above) stays at
+      // its original 160ms exactly as before in every mode ADAM appears in.
+      // Movement speed (e.z), max-approach-distance, attack-start-distance,
+      // attack timing, and NON-DEFENSE/DEFENSE timers are untouched — this
+      // is only the RUN sprite's own image-switch interval.
+      const clawWalkFrameMs = (e.type === 'gabriel') ? GABRIEL_ESCAPE_RUN_FRAME_MS : 160;
       if (e.clawWalkElapsedMs > clawWalkFrameMs) {
         e.clawWalkElapsedMs = 0;
         e.clawWalkFrame = (e.clawWalkFrame + 1) % 3;
@@ -8842,7 +8938,12 @@ function updateEnemyCore(dt, now) {
       // CLAW_HIT_RANGE_PX during blink+approach+this window avoids it.
       if (now >= e.attackUntil) {
         e.attackState = 'impact'; // reuses the existing release/swing-art render state
-        e.attackUntil = now + CLAW_SWING_MS;
+        // 12TH ROUND PART B (spec section 4): ESCAPE GABRIEL holds this
+        // 'impact' pose longer (GABRIEL_ESCAPE_ATTACK_HOLD_MS) — see that
+        // constant's own comment. COMBAT GABRIEL and ADAM in either mode
+        // keep the original CLAW_SWING_MS unchanged.
+        const swingMs = (e.type === 'gabriel' && state.gameMode === 'escape') ? GABRIEL_ESCAPE_ATTACK_HOLD_MS : CLAW_SWING_MS;
+        e.attackUntil = now + swingMs;
         // The actual hit-test — fires exactly once, at the instant the
         // swing begins, against the player's ACTUAL current position.
         const rect = computeEnemyDrawRect();
@@ -9513,20 +9614,45 @@ function computeEnemyDrawRect() {
     // `else if (state.gameMode === 'combat')` a little below) that the
     // escapeRun override block already reads via footScreenY=drawBottomY —
     // so no new position/clamp code is needed for COMBAT either. Frame-
-    // switch CADENCE is deliberately left untouched (GABRIEL_ESCAPE_RUN_
-    // FRAME_MS still only applies under state.gameMode==='escape' in
-    // updateEnemy(); COMBAT keeps its existing 160ms clawWalkElapsedMs
-    // cadence) — spec only asks for the RUN ARTWORK/123123 order in COMBAT,
-    // never a playback-speed change there.
+    // switch CADENCE: originally left untouched here (GABRIEL_ESCAPE_RUN_
+    // FRAME_MS only applied under state.gameMode==='escape' in updateEnemy());
+    // 12TH ROUND PART B (spec section 1) now applies that SAME cadence to
+    // COMBAT GABRIEL too (see updateEnemy()'s clawWalkFrameMs) — this
+    // render-side selection logic itself needs no change for that, since it
+    // only ever reads the already-advanced e.clawWalkFrame index.
     const gabrielEscapeRunActive = isGabriel
       && (e.attackState === 'idle' || e.attackState === 'blink' || e.attackState === 'approach' || e.attackState === 'telegraph');
     const gabrielEscapeRunFrame = gabrielEscapeRunActive
       ? ASSETS.gabriel.escapeRun[e.clawWalkFrame] : null;
+    // 12TH ROUND PART B (spec sections 2-3, 12): real-device report — after
+    // 'impact' (the claw-release swing), the claw AI's own existing tail
+    // (impact -> recovery -> cooldown -> idle, see updateEnemy()'s e.kind===
+    // 'claw' block) already eases e.z back out to the STALK distance during
+    // 'recovery' (this IS the "RETREAT" beat) and then just waits out
+    // CLAW_COOLDOWN_MS in 'cooldown' before returning to 'idle' — but neither
+    // 'recovery' nor 'cooldown' was in gabrielEscapeRunActive's list above
+    // (correctly — RUN shouldn't play while still retreating) NOR in the
+    // attack-pose checks below, so both fell through to the final `set.idle`
+    // — a real standing/idle sprite shown for the entire retreat, exactly
+    // matching the reported "攻撃画像→立ち尽くしている静止画像→後退→RUN".
+    // Fix: GABRIEL keeps showing the SAME attack/claw-release sprite
+    // (set.release — the exact image 'impact' already uses, never a new
+    // asset) through 'recovery' AND 'cooldown', so no standing/idle sprite
+    // is ever inserted between the attack and the next RUN resumption. Size
+    // shrinks naturally as e.z eases back out during 'recovery', via the
+    // EXISTING distance/scale computation below (unchanged) — no new scale
+    // logic needed. Once 'cooldown' expires, attackState returns to 'idle'
+    // and gabrielEscapeRunActive above takes back over, resuming RUN.
+    // ADAM-only (isGabriel===false) is deliberately excluded — Part B is
+    // GABRIEL-only, so ADAM's own recovery/cooldown visual (already
+    // `set.idle` today) is left completely unchanged.
+    const gabrielRetreatHoldingAttackSprite = isGabriel
+      && (e.attackState === 'recovery' || e.attackState === 'cooldown');
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
       : (gabrielEscapeRunFrame ? gabrielEscapeRunFrame.img
         : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach' ? set.windup
-        : (e.attackState === 'impact' || e.attackState === 'counterAttack' ? set.release
+        : ((e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) ? set.release
         : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle))));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     // 27TH ROUND item 3: real-play feedback (添付3枚目・4枚目) said GABRIEL/ADAM
@@ -14877,6 +15003,11 @@ window.__darkoutTps = {
   // 11TH ROUND: exported for automated QA only (spec sections 9-11's real-
   // timing verification) — never read by any gameplay code itself.
   GABRIEL_NON_DEFENSE_ATTACK_PREP_MS, CLAW_WINDUP_MS,
+  // 12TH ROUND PART B: exported for automated QA only (real-timing/position
+  // verification of the RUN interval unification, ESCAPE attack-hold
+  // extension, and zigzag) — never read by any gameplay code itself.
+  GABRIEL_ESCAPE_RUN_FRAME_MS, GABRIEL_ESCAPE_ATTACK_HOLD_MS, CLAW_SWING_MS,
+  GABRIEL_ZIGZAG_AMPLITUDE_PX, GABRIEL_ZIGZAG_HALF_PERIOD_MS, GABRIEL_ZIGZAG_TRACK_MULT,
   // NEXT ROUND: muzzle/direction fix, SNIPER dodge-window fix, COMBAT
   // quake+debris atmosphere, ESCAPE south-dash pulse, GABRIEL close-attack
   // size, CLEAR-sequence frame removal — exposed for automated testing only.
