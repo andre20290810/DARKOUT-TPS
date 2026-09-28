@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R13';
+const BUILD_VERSION = 'DARKOUT2-R14';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -941,6 +941,33 @@ const AIM_MOVE_SPEED_BASELINE_PX_S = 620;
 const AIM_PLAYER_RAMP_BASELINE_PX = 49.875;
 let LIGHT_RANGE = AIM_RANGE_BASELINE_PX;
 let AIM_RANGE = AIM_RANGE_BASELINE_PX;
+// 14TH ROUND (real-device TOUCH AIM report): root cause of "縦方向だけ反応
+// が悪く、突然大きくジャンプする" — every aimLiveX/Y (and lightPersistX/Y)
+// clamp below used to share this ONE symmetric AIM_RANGE (=Math.max(w,h),
+// see resize()'s own comment) for BOTH axes, while the REAL visible-
+// position clamp in getAimPoint()/getFlashlightCenter() is correctly
+// per-axis (cssW for X, cssH for Y — AIM_SCREEN_SAFE_MARGIN_PX either way).
+// On this game's fixed landscape layout (cssW > cssH), AIM_RANGE = cssW —
+// so aimLiveY was allowed to silently accumulate up to +/-cssW internally
+// even though the real vertical screen room is only ~cssH. Pushing straight
+// up/down kept building this invisible surplus past the point where the
+// ON-SCREEN reticle was already pinned at the visible top/bottom edge; on
+// releasing or reversing, the stick then had to "unwind" that whole
+// surplus before the visible point moved again at all — reading exactly as
+// "反応しない、その後突然ジャンプする", worse vertically than horizontally
+// because AIM_RANGE already happened to equal cssW (no X-axis mismatch).
+// Fixed with genuinely separate per-axis ranges (X bounded by cssW, Y by
+// cssH — the same "worst-case single-axis distance to an edge" reasoning
+// resize()'s own comment already uses, just correctly scoped per axis
+// instead of forcing one shared value for both) — see resize() below for
+// where these are set, and every X/Y clamp site further down in this file
+// for where AIM_RANGE was split into AIM_RANGE_X/AIM_RANGE_Y. AIM_RANGE
+// itself is left in place unchanged (still Math.max(w,h)) since
+// AIM_MOVE_SPEED_PX_S/AIM_PLAYER_RAMP_PX/LIGHT_RANGE below still correctly
+// use it as a single speed-scaling ratio, not a hard positional bound —
+// only the hard clamps needed the per-axis split.
+let AIM_RANGE_X = AIM_RANGE_BASELINE_PX;
+let AIM_RANGE_Y = AIM_RANGE_BASELINE_PX;
 let AIM_PLAYER_RAMP_PX = AIM_PLAYER_RAMP_BASELINE_PX;
 
 // PART 4 (3rd round): deadzone is intentionally the SAME as MOVE's on BOTH
@@ -1075,7 +1102,11 @@ const FIRE_HAPTIC_STRONG = 0.15;
 // sites (never enumerated/edited individually) automatically reflects
 // whatever LIFE setting is currently selected, satisfying spec section 47's
 // "既存の共通player HP stateを使用する" with zero changes to any of them.
-let PLAYER_MAX_HP = 100;
+// 14TH ROUND (real-device play report): 100 as a default proved too low in
+// actual play — options changed to 500/1000/2000/INFINITE (was 100/300/500/
+// INFINITE) and the default raised to 500 accordingly. Same mutable-
+// PLAYER_MAX_HP architecture, no new call sites needed.
+let PLAYER_MAX_HP = 500;
 // 5TH ROUND PART 12: short damage-blink duration — brief enough not to
 // obscure gameplay, clearly visible as an immediate "you were just hit"
 // cue. Never overlaps the moment damage is possible again: damage is only
@@ -2699,11 +2730,44 @@ if (DEBUG_MODE && r10DbgCopyBtnEl) {
 // missing, per the prototype's "never block on missing art" rule).
 // ---------------------------------------------------------------------
 
+// 14TH ROUND (real PC report: "非常に長いLOADING時間の末にLOAD ERROR") — root
+// cause investigation found NO app-level timeout/retry existed anywhere for
+// a stalled image request: checkAssetsReady() only ever classified an image
+// as failed once the BROWSER ITSELF gave up (img.complete && naturalWidth
+// ===0), and browsers can leave a stalled/slow connection pending for a very
+// long time before doing that on their own — explaining "extremely long
+// wait, then LOAD ERROR" with nothing in between to recover it. Fixed with a
+// bounded per-image stall watchdog: if an image hasn't finished loading
+// within IMAGE_LOAD_STALL_TIMEOUT_MS of its OWN load attempt starting,
+// re-trigger a fresh request (a cache-busting query param forces a genuine
+// new connection instead of a same-URL no-op some browsers apply) up to
+// IMAGE_LOAD_MAX_RETRIES times before conceding to the existing failedPaths/
+// LOAD ERROR path — see checkAssetsReady()'s own retry-scan addition.
+// Reassigning the SAME Image object's .src (never swapping the object
+// itself) is required here since every ASSETS.* entry holds a direct
+// reference to this exact object for rendering — ~9 duplicate loadImg()
+// calls for a few paths were also found during this investigation (separate,
+// minor, left alone this round — out of scope for the LOAD ERROR fix itself
+// and not a correctness bug, just a few extra KB of redundant requests).
+const IMAGE_LOAD_STALL_TIMEOUT_MS = 15000;
+const IMAGE_LOAD_MAX_RETRIES = 3;
+const imgLoadStartedAt = new Map();
+const imgRetryCount = new Map();
 function loadImg(src) {
   const img = new Image();
   img.decoding = 'async';
   img.src = src;
+  imgLoadStartedAt.set(img, performance.now());
+  imgRetryCount.set(img, 0);
   return img;
+}
+function retryStalledImage(img) {
+  const retries = imgRetryCount.get(img) || 0;
+  imgRetryCount.set(img, retries + 1);
+  imgLoadStartedAt.set(img, performance.now());
+  const baseSrc = img.src.split('&_retry=')[0];
+  img.src = baseSrc + (baseSrc.includes('?') ? '&' : '?') + '_retry=' + (retries + 1) + '_' + Date.now();
+  if (DEBUG_MODE) r10DebugLog('LOADING: stalled image retry ' + (retries + 1) + '/' + IMAGE_LOAD_MAX_RETRIES + ': ' + baseSrc);
 }
 
 // 2ND-ROUND PART 2/3: ROID1/ROID2 direction-specific SEARCH art (5 frames
@@ -3392,13 +3456,48 @@ function checkAssetsReady(now) {
     if (imgReady(img)) {
       loaded++;
     } else if (img.complete && img.naturalWidth === 0) {
-      failedPaths.push(img.src);
-      if (!loadFailureLogged.has(img.src)) {
-        loadFailureLogged.add(img.src);
-        console.error('[loading] REQUIRED image failed to load:', img.src);
+      // 14TH ROUND: a genuine browser-reported failure (404/network error/
+      // decode failure) now gets real retry attempts (a transient mobile/PC
+      // network drop is not necessarily permanent) before conceding —
+      // previously this pushed straight to failedPaths/LOAD ERROR on the
+      // very first failure, with no recovery attempt at all.
+      const retries = imgRetryCount.get(img) || 0;
+      if (retries < IMAGE_LOAD_MAX_RETRIES) {
+        retryStalledImage(img);
+        pendingPaths.push(img.src);
+      } else {
+        failedPaths.push(img.src);
+        if (!loadFailureLogged.has(img.src)) {
+          loadFailureLogged.add(img.src);
+          console.error('[loading] REQUIRED image failed to load after ' + retries + ' retries:', img.src);
+        }
       }
     } else {
-      pendingPaths.push(img.src);
+      // 14TH ROUND: root cause of "非常に長いLOADING時間の末にLOAD ERROR" —
+      // a merely-pending (never errored) image used to have NO bound at all
+      // here; it stayed in pendingPaths indefinitely until the BROWSER's own
+      // (often very long, uncontrolled) timeout eventually fired an error.
+      // Now proactively retried after IMAGE_LOAD_STALL_TIMEOUT_MS of no
+      // progress, and only conceded as failed (bounded total wait ≈
+      // STALL_TIMEOUT*(MAX_RETRIES+1) per asset) once retries are exhausted
+      // and it is STILL stuck — so the user gets a real, bounded outcome
+      // (recovery via retry, or an honest LOAD ERROR) instead of an
+      // unbounded silent hang.
+      const startedAt = imgLoadStartedAt.get(img);
+      const retries = imgRetryCount.get(img) || 0;
+      const stalled = startedAt != null && (now - startedAt) > IMAGE_LOAD_STALL_TIMEOUT_MS;
+      if (stalled && retries < IMAGE_LOAD_MAX_RETRIES) {
+        retryStalledImage(img);
+        pendingPaths.push(img.src);
+      } else if (stalled) {
+        failedPaths.push(img.src);
+        if (!loadFailureLogged.has(img.src)) {
+          loadFailureLogged.add(img.src);
+          console.error('[loading] REQUIRED image stalled after ' + retries + ' retries, giving up:', img.src);
+        }
+      } else {
+        pendingPaths.push(img.src);
+      }
     }
   }
   // BGM: diagnostic-only, never blocks the percentage/100% (see the
@@ -4204,10 +4303,11 @@ Object.defineProperty(state.player, 'hp', {
   enumerable: true,
   configurable: true,
 });
-// PLAYER LIFE mode itself (100|300|500|'infinite') — stored on state.player
-// alongside every other per-player setting, default 100 (spec section 44's
-// "標準初期値は100"). See setPlayerLifeMode() below, the sole writer.
-state.player.lifeMode = 100;
+// PLAYER LIFE mode itself (500|1000|2000|'infinite') — stored on
+// state.player alongside every other per-player setting. 14TH ROUND: default
+// raised from 100 to 500 (real-device play report: 100 was too low). See
+// setPlayerLifeMode() below, the sole writer.
+state.player.lifeMode = 500;
 
 // fixed-size particle pool (avoid per-shot allocation churn)
 const PARTICLE_POOL_SIZE = 48;
@@ -4577,6 +4677,12 @@ function resize() {
   // sweep feel is preserved instead of becoming sluggish on a big canvas.
   AIM_RANGE = Math.max(w, h);
   LIGHT_RANGE = AIM_RANGE;
+  // 14TH ROUND: per-axis hard clamp bounds — see the AIM_RANGE_X/
+  // AIM_RANGE_Y declaration's own comment for the full root-cause writeup.
+  // AIM_RANGE itself (above) is untouched and still drives the speed ratio
+  // right below, unchanged.
+  AIM_RANGE_X = w;
+  AIM_RANGE_Y = h;
   AIM_MOVE_SPEED_PX_S = AIM_MOVE_SPEED_BASELINE_PX_S * (AIM_RANGE / AIM_RANGE_BASELINE_PX);
   // AIM OPERATING-AREA ROUND: same scale ratio as AIM_MOVE_SPEED_PX_S — see
   // AIM_PLAYER_RAMP_PX's own comment for why a fixed pixel ramp left a
@@ -5513,13 +5619,18 @@ function setTouchControlsVisible(visible) {
 }
 setTouchControlsVisible(state.touchControlsVisible);
 
-// 13TH ROUND (spec sections 43-48): PLAYER LIFE — 100/300/500/INFINITE.
-// mode is 100|300|500|'infinite'. Applies to COMBAT and ESCAPE alike
-// (spec section 47) since both already read/write the SAME
-// state.player.hp/PLAYER_MAX_HP this reassigns — no per-mode branching
-// needed anywhere else. current/max are set equal to the newly selected
-// value immediately (spec section 45's own worked examples), including
-// when switching INTO or OUT OF INFINITE.
+// 13TH ROUND (spec sections 43-48): PLAYER LIFE. 14TH ROUND: options changed
+// to 500/1000/2000/INFINITE (was 100/300/500/INFINITE) — mode is now
+// 500|1000|2000|'infinite'. Applies to COMBAT and ESCAPE alike (spec
+// section 47) since both already read/write the SAME state.player.hp/
+// PLAYER_MAX_HP this reassigns — no per-mode branching needed anywhere
+// else. current/max are set equal to the newly selected value immediately
+// (spec section 45's own worked examples), including when switching INTO
+// or OUT OF INFINITE. INFINITE's own underlying PLAYER_MAX_HP is left at a
+// fixed 500 (an explicit flag — p.infiniteLife — blocks real damage, per
+// spec's own "not a huge HP number" requirement; this number is only ever
+// used for the pre-infiniteLife-check HUD ratio math, never actually
+// depleted).
 function setPlayerLifeMode(mode) {
   const p = state.player;
   p.lifeMode = mode;
@@ -6072,14 +6183,14 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
   // only once that full range is exhausted, never silently before it.
   const strafeDeltaThisFrame = p.strafeOffset - strafeOffsetAtFrameStart;
   if (strafeDeltaThisFrame !== 0) {
-    p.aimLiveX = clamp(p.aimLiveX - strafeDeltaThisFrame, -AIM_RANGE, AIM_RANGE);
+    p.aimLiveX = clamp(p.aimLiveX - strafeDeltaThisFrame, -AIM_RANGE_X, AIM_RANGE_X);
     // 26TH ROUND item 5: getFlashlightCenter()'s base now ALSO includes
     // strafeOffset (to match getAimPoint()'s base exactly, for "AIM CENTER
     // = SPOTLIGHT CENTER") — so it needs the exact same anti-drift
     // compensation AIM just got above, or SPOTLIGHT would visibly slide
     // out of sync with AIM the instant the player strafes (same root cause
     // as the ROID1 aim-drift bug this pattern originally fixed).
-    p.lightPersistX = clamp(p.lightPersistX - strafeDeltaThisFrame, -AIM_RANGE, AIM_RANGE);
+    p.lightPersistX = clamp(p.lightPersistX - strafeDeltaThisFrame, -AIM_RANGE_X, AIM_RANGE_X);
   }
 
   // NORTH/SOUTH world scroll (unchanged — the world still scrolls past a
@@ -6202,12 +6313,12 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     const hitPt = getEffectiveHitPoint(rect);
     const baseX = state.centerX + p.strafeOffset;
     const baseY = state.horizonY + state.cssH * 0.06;
-    const targetLiveX = clamp(hitPt.x - baseX - p.aimManualOffsetX, -AIM_RANGE, AIM_RANGE);
+    const targetLiveX = clamp(hitPt.x - baseX - p.aimManualOffsetX, -AIM_RANGE_X, AIM_RANGE_X);
     // 6TH ADJUSTMENT ROUND (spec sections 3/6): the body-avoidance clamp
     // that used to cap targetLiveY here (getCombatAimSouthLimit()) is
     // removed — FOCUS converges on the enemy's real effective-hit point
     // with no object-collision restriction, exactly like manual AIM.
-    const targetLiveY = clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE, AIM_RANGE);
+    const targetLiveY = clamp(hitPt.y - baseY - p.aimManualOffsetY, -AIM_RANGE_Y, AIM_RANGE_Y);
     const approachT = Math.min(1, dt * AUTO_AIM_APPROACH_RATE);
     p.aimLiveX += (targetLiveX - p.aimLiveX) * approachT;
     p.aimLiveY += (targetLiveY - p.aimLiveY) * approachT;
@@ -6228,8 +6339,8 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // means state.input.aimX/Y is exactly 0 while the stick is neutral, so
     // this is naturally a no-op (position frozen) without any special-case
     // branch for "stick released".
-    p.aimLiveX = clamp(p.aimLiveX + state.input.aimX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
-    p.aimLiveY = clamp(p.aimLiveY + state.input.aimY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
+    p.aimLiveX = clamp(p.aimLiveX + state.input.aimX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE_X, AIM_RANGE_X);
+    p.aimLiveY = clamp(p.aimLiveY + state.input.aimY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE_Y, AIM_RANGE_Y);
     // 6TH ADJUSTMENT ROUND (spec sections 3/6): the body-avoidance
     // accumulator clamp that used to sit here is removed along with the
     // rest of the coordinate-level south-limit system — see
@@ -6248,8 +6359,8 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
     // position). Only runs outside FOCUS — FOCUS owns p.lightPersistX/Y
     // exclusively above, the identical mutual-exclusion rule aimLiveX/Y
     // already uses.
-    p.lightPersistX = clamp(p.lightPersistX + state.input.lightX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
-    p.lightPersistY = clamp(p.lightPersistY + state.input.lightY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE, AIM_RANGE);
+    p.lightPersistX = clamp(p.lightPersistX + state.input.lightX * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE_X, AIM_RANGE_X);
+    p.lightPersistY = clamp(p.lightPersistY + state.input.lightY * AIM_MOVE_SPEED_PX_S * dt, -AIM_RANGE_Y, AIM_RANGE_Y);
     // 6TH ADJUSTMENT ROUND: SPOTLIGHT's own body-avoidance accumulator
     // clamp is removed too — see p.aimLiveY's identical comment above.
   }
@@ -9882,7 +9993,30 @@ function computeEnemyDrawRect() {
     // shrink the frozen RUN frame for no real reason.
     const gabrielWindupSizeMult = (isGabriel && !gabrielEscapeRunFrame && (e.attackState === 'telegraph' || e.attackState === 'counterApproach'))
       ? (GABRIEL_WALK_AVG_VISIBLE_FRAC / GABRIEL_WINDUP_VISIBLE_FRAC) : 1;
-    const drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost * gabrielWindupSizeMult;
+    let drawH = worldHeight * proj.scale * closeBoost * adamMeleeSizeBoost * gabrielWindupSizeMult;
+    // 14TH ROUND (real-device report): ADAM's own melee-attack pose (impact/
+    // counterAttack — the adamMeleeSizeBoost states) computes drawH purely
+    // from world-Z perspective scale * accumulated multipliers (currently
+    // ADAM_CLAW_RELEASE_SIZE_MULT≈2.12x on top of the close-range closeBoost,
+    // itself built up additively across several past "make the attack
+    // bigger" rounds — see that constant's own comment) with NO relation to
+    // the actual viewport size at all. That comfortably fits a ~720-1080px-
+    // tall PC canvas but overflows a ~390-430px-tall mobile landscape screen
+    // at the identical world-Z (worldHeight=560 * a near-1.0 point-blank
+    // proj.scale * ~2.12 alone already exceeds 1000px, before closeBoost).
+    // Clamped here to a safe fraction of the REAL viewport height —
+    // ADAM-only (isGabriel excluded, per this round's explicit "GABRIELの
+    //第12次調整内容を不用意に変更しないこと"), and only for the melee-attack
+    // pose specifically (idle/approach/telegraph sizing above is completely
+    // untouched) — so the close-range size boost/impact stays exactly as
+    // designed on any screen where it already fit (PC, where this Math.min
+    // is a no-op since drawH already sits under the cap), and is simply
+    // capped — never rescaled up — on a screen too short to show it at full
+    // size, instead of overflowing off-screen.
+    if (!isGabriel && adamMeleeSizeBoost > 1) {
+      const ADAM_ATTACK_MAX_DRAWH_FRAC = 0.92;
+      drawH = Math.min(drawH, state.cssH * ADAM_ATTACK_MAX_DRAWH_FRAC);
+    }
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
     const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));
@@ -11815,8 +11949,36 @@ function renderPlayer(theme) {
     dx = cx - frame.bodyCenterXFrac * drawW;
     dy = bottomY - frame.bodyBottomFrac * drawH;
   } else {
-    drawH = img.naturalHeight * baseScale * p.scale * dashSideScale;
-    drawW = img.naturalWidth * baseScale * p.scale * dashSideScale;
+    // 14TH ROUND (real-device report): root cause of "北方向を向いた主人公
+    // spriteの方が南方向より明らかに大きく見える" — measured (Python/Pillow
+    // alpha-channel scan, same "never guessed" standard every other frame
+    // in this file already uses) the real visible-body fraction of every
+    // direction's own source canvas: player_north_aim/walk_1/2/3/dash_*.png
+    // all sit at ~97.6%-98.2% visible (almost no padding), and this generic
+    // branch draws them at their full, undiminished naturalHeight*baseScale*
+    // p.scale — effectively ~100% of standingBodyHeightPx. SOUTH WALK (the
+    // usingSouthWalkPose branch above), by contrast, already renders at
+    // SOUTH_WALK_COMBAT_SCALE(0.80) of that exact same standingBodyHeightPx
+    // target, per the 12th round's own explicit, real-device-verified fix —
+    // a fix this round's own instruction explicitly forbids undoing. That
+    // leaves a real, measurable 1/0.80=1.25x gap between SOUTH's current
+    // (correctly reduced, keep-as-is) size and every other direction's
+    // still-undiminished size — exactly matching the reported "north reads
+    // bigger" symptom, root-caused to a genuine code-level scale mismatch,
+    // not a guess. Fix: apply the SAME 0.80 multiplier here too (reusing
+    // SOUTH_WALK_COMBAT_SCALE by name rather than inventing a second
+    // constant with an identical value, since it is deliberately the same
+    // number for the same reason — matching SOUTH's now-correct size,
+    // rather than a coincidence) so NORTH/EAST/WEST's default pose, and
+    // NORTH/EAST/WEST DASH, all land at the same real visible body height
+    // SOUTH WALK already does — never re-inflating SOUTH back up, only
+    // bringing the other directions down to match it. COVER and SOUTH DASH
+    // keep their own separately-tuned ratios (COVER_HEIGHT_RATIO/
+    // SOUTH_DASH_SCALE_MULT) untouched — neither is named in this round's
+    // report, and both already have their own dedicated, previously-tuned
+    // branches above, never reaching this one.
+    drawH = img.naturalHeight * baseScale * p.scale * dashSideScale * SOUTH_WALK_COMBAT_SCALE;
+    drawW = img.naturalWidth * baseScale * p.scale * dashSideScale * SOUTH_WALK_COMBAT_SCALE;
     dx = cx - drawW / 2;
     dy = bottomY - drawH;
   }
@@ -14886,6 +15048,24 @@ function frame(ts) {
     renderEnemyTelegraphs(theme);
   } else {
     renderEnemy(theme);
+    // 14TH ROUND (real-device report): root cause of "DRONEが主人公spriteの
+    // 上へオーバーレイして見える" — renderDroneWave() (DRONE#2/#3, staged at
+    // DRONE_WAVE_EXTRA_Z=[1000,1280], always much farther than the player)
+    // used to be called near the very end of this function, AFTER
+    // renderPlayer() below — a FIXED draw order with no relation to either
+    // object's actual world-Z, same bug class already fixed for barrels/
+    // debris/missiles elsewhere in this file (see their own comments). Since
+    // player world-Z never approaches these wave-extra depths in COMBAT (the
+    // player has no world-Z of its own here at all — see renderPlayer()'s
+    // fixed foreground anchor), a DRONE that is always farther than the
+    // player must always draw before the player, never after. Moved here,
+    // right alongside DRONE#1 (state.enemy, this same renderEnemy() call) —
+    // both draw pre-mask/pre-player now, so the player sprite correctly
+    // covers any on-screen overlap with DRONE#2/#3 same as it already does
+    // with DRONE#1, and the wave extras are now also correctly dimmed by
+    // renderFlashlightMask() outside the lit circle (previously always full-
+    // brightness, another inconsistency versus DRONE#1's own rendering).
+    renderDroneWave();
     // 7TH ROUND PART 18 ("射撃エフェクトが主人公より前面にオーバーレイされ
     // ており不自然"): renderParticles() (the muzzle flash + all other
     // particle types) used to run AFTER renderPlayer(), drawing the flash on
@@ -14991,11 +15171,6 @@ function frame(ts) {
     // where the flashlight is pointed — see renderEnemyTelegraphs()'s own
     // comment for the bug this fixes.
     renderEnemyTelegraphs(theme);
-    // 30TH ROUND item 17: DRONE WAVE 2 — no-op unless active. Drawn post-mask
-    // (same reasoning as renderEnemyTelegraphs()/renderBlasts() above: a
-    // SNIPER lock/bolt telegraph must stay legible outside the lit circle),
-    // right alongside the singleton enemy's own telegraphs.
-    renderDroneWave();
     // 12TH ROUND PART A (spec section 2): crosshair OFF outside the live
     // COMBAT phase, same gate/reasoning as renderFlashlightMask() above —
     // a genuine no-draw (not re-centered), never shown before the NEXT
@@ -15200,6 +15375,8 @@ window.__darkoutTps = {
   // exposed for automated testing only.
   isPlayerActivelyFiring,
   get AIM_RANGE() { return AIM_RANGE; },
+  get AIM_RANGE_X() { return AIM_RANGE_X; },
+  get AIM_RANGE_Y() { return AIM_RANGE_Y; },
   get LIGHT_RANGE() { return LIGHT_RANGE; },
   get AIM_MOVE_SPEED_PX_S() { return AIM_MOVE_SPEED_PX_S; },
   distanceDamageMultiplier, isWithinEffectiveDamageRange,

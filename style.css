@@ -113,7 +113,21 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* 14TH ROUND (real-device report): was justify-content:center, directly
+     overlapping the intro video's own baked-in "DARK OUT2" title card —
+     measured via a real extracted video frame (ffmpeg, ~7s mark, the
+     title's visible moment): the title text occupies roughly the 38%-57%
+     vertical band of the 1920x864 source frame. Moved to the lower portion
+     via justify-content:flex-end + a vh-based (not fixed-px) bottom
+     padding, so it clears that band on both a narrow mobile-landscape
+     viewport and a wide PC one (object-fit:cover crops the video's
+     LEFT/RIGHT on a narrower-than-source aspect ratio, never its
+     TOP/BOTTOM for any realistic landscape viewport here, so the title's
+     own vertical position stays consistent across devices) — 9vh keeps a
+     clear gap above the true bottom edge too, so it's never clipped on a
+     short window. */
+  justify-content: flex-end;
+  padding-bottom: 9vh;
   gap: 14px;
   opacity: 1;
   transition: opacity 0.6s ease;
@@ -303,7 +317,20 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* 14TH ROUND (real PC report): was justify-content:center with no
+     max-height/overflow-y, inside an ancestor chain (html/body/#game-root)
+     that is entirely overflow:hidden with scrolling actively disabled
+     (touch-action:none/overscroll-behavior:none). On a short PC browser
+     window (wide-but-short, well under the ~720px-tall viewport the R13
+     Playwright QA happened to test), the centered flex column overflows
+     symmetrically and the bottommost child (#pc-download-row, the newest
+     addition) silently falls outside the visible/clickable area with no
+     way to scroll to it — same bug class #pause-panel already solves with
+     its own max-height+overflow-y (see its comment). Mirrored here so
+     every child, including a future addition, stays reachable on any
+     window height instead of failing again the same way. */
+  justify-content: flex-start;
+  overflow-y: auto;
   gap: 14px;
   background: #05070a;
   padding: 20px;

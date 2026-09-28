@@ -211,8 +211,20 @@
        looped (plays once through from GAME CLEAR onward) — beginEnding()
        in game.js pauses #bgm-audio and plays this exactly once (guarded by
        state.run.endingBgmStarted), and RESULT's own 60-second gate reads
-       this element's real currentTime, never a setTimeout. -->
-  <audio id="ending-bgm-audio" src="assets/audio/enter_into_eternity.mp3" preload="auto"></audio>
+       this element's real currentTime, never a setTimeout.
+       14TH ROUND (PC LOAD ERROR investigation): preload was "auto", so this
+       4.8MB file was fetched eagerly at page load — never gating the
+       LOADING screen itself (audio never blocks the % gate, see
+       checkAssetsReady()'s own comment), but still competing for the same
+       limited browser connection pool/bandwidth against the ~84MB of
+       REQUIRED images during the exact window real-device PC reports showed
+       as abnormally slow. ENDING is only reachable after a full playthrough
+       (many minutes of lead time), so there is no benefit to fetching it
+       this early — changed to preload="none" so the browser defers the
+       request entirely until beginEnding()'s own .play() call actually
+       needs it, freeing bandwidth for the required images during the
+       critical initial load. -->
+  <audio id="ending-bgm-audio" src="assets/audio/enter_into_eternity.mp3" preload="none"></audio>
 
   <!-- 28TH ROUND item 7: visible guide for the case where the mode-select
        tap/press did NOT actually unlock audio (real-device autoplay-policy
@@ -379,9 +391,9 @@
            setPlayerLifeMode() in game.js) rather than a huge HP number. -->
       <div class="pause-menu-label">PLAYER LIFE</div>
       <div id="player-life-row">
-        <button type="button" tabindex="-1" data-life="100" class="pause-menu-btn player-life-btn active">100</button>
-        <button type="button" tabindex="-1" data-life="300" class="pause-menu-btn player-life-btn">300</button>
-        <button type="button" tabindex="-1" data-life="500" class="pause-menu-btn player-life-btn">500</button>
+        <button type="button" tabindex="-1" data-life="500" class="pause-menu-btn player-life-btn active">500</button>
+        <button type="button" tabindex="-1" data-life="1000" class="pause-menu-btn player-life-btn">1000</button>
+        <button type="button" tabindex="-1" data-life="2000" class="pause-menu-btn player-life-btn">2000</button>
         <button type="button" tabindex="-1" data-life="infinite" class="pause-menu-btn player-life-btn">INFINITE</button>
       </div>
 
