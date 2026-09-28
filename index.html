@@ -490,8 +490,26 @@
            below RESUME per explicit spec. Connects to the SAME real
            beginRunEnding()/ENDING/RESULT flow a genuine game-clear uses —
            no separate/fake ENDING implementation (see its click handler in
-           game.js). -->
-      <button type="button" tabindex="-1" id="pause-ending-btn" class="pause-menu-btn">ENDING</button>
+           game.js).
+           17TH ROUND: real-device report — ENDING BGM sometimes started
+           mid-game during ordinary PAUSE/RESUME cycling. The play()-time
+           guards themselves were re-verified correct (10-cycle Playwright
+           QA: zero unintended play() calls — see game.js's own comment on
+           the phase guard), but this button sits directly below RESUME with
+           identical styling and a plain "ENDING" label — on a real touch
+           screen, a mis-tap landing just south of RESUME (exactly the kind
+           of repeated open/close/open/close operation the report
+           describes) can land on this REAL, always-live button instead,
+           which genuinely does start ENDING/its BGM by design (this is a
+           legitimate trigger path, not a bug — see §25 of the round spec).
+           Given the spec explicitly requires this button's own function to
+           keep working unchanged (a direct tap must still reach ENDING/
+           RESULT for QA), the fix here is UI-only: extra spacing +
+           an unambiguous "(TEST)" label so it reads as a deliberate
+           developer action, not a normal menu item — never a hidden/
+           removed/confirm-gated button, so no existing QA automation that
+           clicks it directly is affected. -->
+      <button type="button" tabindex="-1" id="pause-ending-btn" class="pause-menu-btn pause-menu-btn-ending-test">ENDING (TEST)</button>
     </div>
   </div>
 

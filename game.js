@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R16';
+const BUILD_VERSION = 'DARKOUT2-R17';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1057,12 +1057,20 @@ let controllerAimSensitivity = AIM_SENSITIVITY_DEFAULT;
 // equivalent of sensitivity=1.0 — a full touch-stick deflection crossed the
 // entire screen in ~0.245s REGARDLESS of the CONTROLLER AIM SENSITIVITY
 // slider (which never touched the touch branch — see the input-merge
-// block's own comment). Tuned to ~1.36s edge-to-edge at full deflection:
-// slower than gamepad's own HIGH (fast turns are less needed on touch,
-// where a virtual-stick drag saturates to full deflection quickly/
-// naturally, unlike a physical stick's resistance), but still fast enough
-// to complete a real turn in a bit over a second when genuinely needed.
-const TOUCH_AIM_SENSITIVITY = 0.18;
+// block's own comment). R15 tuned this to ~1.36s edge-to-edge at full
+// deflection. 17TH ROUND: real-device report — even at 1.36s, sustained
+// full-deflection drag still overshoots small (20-50px) target adjustments
+// too easily, making precise crosshair placement hard. Measured (844x390
+// mobile viewport, same applyAimCurve()): at 0.18, 25%/50%/100% input gave
+// 4.55/84.72/619.67 px/s respectively, moderate 60% input reached a 20px
+// target in 0.183s / 50px in 0.433s — too fast to stop deliberately on a
+// small offset. Halved to 0.09 (not an arbitrary round-number drop — chosen
+// specifically to land full-screen-cross time at ~2x R15's own 1.36s,
+// verified via the same simulation: 2.733s edge-to-edge at 100%, and 60%
+// input now takes 0.283s/0.683s to reach 20px/50px respectively), giving
+// roughly double the time window for fine positioning at every input level
+// while still able to sweep the full screen in well under 3s when needed.
+const TOUCH_AIM_SENSITIVITY = 0.09;
 
 const FIRE_COOLDOWN_MS = 130;
 // 12TH ROUND (item 9): MAG_SIZE 12->30. RESERVE_MAX scaled by the SAME
@@ -6040,7 +6048,19 @@ function togglePauseMenu() {
     // bgmAudioEl) — only if ENDING has actually begun at least once this
     // run, so an early PAUSE/RESUME during ordinary COMBAT/ESCAPE never
     // starts this track prematurely.
-    if (state.run.endingBgmStarted && endingBgmAudioEl && endingBgmAudioEl.paused) {
+    // 17TH ROUND (spec section 43): added an explicit state.run.phase
+    // guard on TOP of the existing endingBgmStarted flag — defense-in-
+    // depth so that even if some future/unnoticed code path ever set
+    // endingBgmStarted=true outside a genuine ENDING transition, this
+    // RESUME handler still could not itself start real ENDING playback
+    // unless the run is actually IN 'ENDING' or the following 'RESULT'
+    // phase (BGM plays uninterrupted across that transition — see
+    // beginEnding()'s own "music uninterrupted" comment). Re-verified via
+    // a 10-cycle PAUSE/RESUME Playwright QA during ordinary COMBAT that
+    // this guard (and the pre-existing endingBgmStarted one) both already
+    // produced zero unintended play() calls — this hardens the guard
+    // rather than fixing a confirmed logic defect in it.
+    if (state.run.endingBgmStarted && (state.run.phase === 'ENDING' || state.run.phase === 'RESULT') && endingBgmAudioEl && endingBgmAudioEl.paused) {
       const pe = endingBgmAudioEl.play();
       if (pe && pe.catch) {
         pe.catch((err) => { if (DEBUG_MODE) r10DebugLog('ENDING BGM RESUME PLAY REJECTED: ' + (err && err.name)); });
@@ -10154,6 +10174,36 @@ function computeEnemyDrawRect() {
       const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
       drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
     }
+    // 17TH ROUND: full attackState-by-attackState trace (same methodology
+    // used to find GABRIEL's approach-spike below) found ADAM has the SAME
+    // bug class, worse in magnitude — 'approach' and 'recovery' both use
+    // set.idle (ADAM's normal standing pose is deliberately NOT swapped to
+    // the release sprite during recovery, unlike GABRIEL's R12B PART B
+    // behavior — see gabrielRetreatHoldingAttackSprite's own isGabriel-only
+    // gate, intentionally left alone here), and neither state was ever
+    // covered by any clamp. Both ease e.z down to/through ADAM_Z_MIN (the
+    // exact same close range telegraph/impact hold at), so at that range
+    // set.idle's own drawH was fully unclamped — measured 415px/106.3% of a
+    // 390px mobile viewport at approach's tail (literally off-screen, worse
+    // than telegraph's pre-fix 105%), and 'recovery' opens at that identical
+    // 106.3% the instant it starts (same z, same idle sprite) despite
+    // immediately following impact's own clamped 92%. Fixed by capping each
+    // to the pose it's adjacent to in the sequence: 'approach' shares
+    // telegraph's WINDUP cap (0.75) so it ramps up and hands off to
+    // telegraph at nearly the same size; 'recovery' is capped at the same
+    // ADAM_ATTACK_MAX_DRAWH_FRAC (0.92) impact already uses, so it opens
+    // continuous with impact's own ending size and then tapers down
+    // naturally as e.z eases back out during the recovery tween — never a
+    // renewed spike back toward the idle sprite's raw close-range size.
+    // NORMAL/idle sizing at any distance OTHER than these two close-range
+    // windows, and every other ADAM behavior, are completely untouched.
+    if (!isGabriel && e.attackState === 'approach') {
+      const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
+      drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
+    } else if (!isGabriel && e.attackState === 'recovery') {
+      const ADAM_ATTACK_MAX_DRAWH_FRAC = 0.92;
+      drawH = Math.min(drawH, state.cssH * ADAM_ATTACK_MAX_DRAWH_FRAC);
+    }
     // R16: real-device report — GABRIEL's ESCAPE windup/attack sprites read
     // as unnaturally huge on a short mobile-landscape screen (measured at
     // 844x390: telegraph=88.3%/impact=91.1% of viewport height, ~1.9-2.0x
@@ -10179,8 +10229,31 @@ function computeEnemyDrawRect() {
     // RUN/idle sizing and every R12-protected GABRIEL timing/behavior are
     // completely untouched — this only clamps drawH for these two pose
     // families.
+    // 17TH ROUND: real-device report — a sprite BIGGER than the (already-
+    // clamped) ATTACK pose was still appearing somewhere in the pre-attack
+    // sequence. Full attackState-by-attackState trace (844x390 mobile)
+    // found it: 'approach' (the RUN-cycle sprite GABRIEL shows while
+    // closing the distance, via gabrielEscapeRunActive below) was NEVER
+    // covered by the telegraph/impact clamps above, yet by the END of
+    // approach e.z has eased down to the SAME GABRIEL_Z_MIN telegraph holds
+    // at — so its drawH there was the full UNCLAMPED value (measured 344px/
+    // 88.3% of viewport), i.e. BIGGER than both the clamped TELEGRAPH
+    // (234px/60.1%) that immediately follows AND the clamped ATTACK (281px/
+    // 72.0%) — a real spike-then-drop-then-rise (32.8% far -> 88.3% at
+    // approach's tail -> 60.1% telegraph -> 72.0% impact), exactly the kind
+    // of non-monotonic jump this round's spec bans. Fix: 'approach' now
+    // shares the SAME WINDUP cap as telegraph/counterApproach (it already
+    // eases toward the identical zMin, so capping it identically makes the
+    // approach glide smoothly up to the cap and telegraph pick up at almost
+    // the same size, instead of spiking past it). Re-verified after this
+    // fix: 32.8% -> ramps up through 43/56% -> plateaus at 62%(cap) through
+    // the rest of approach -> 60.1% telegraph -> 72.0% impact — monotonic,
+    // no reversal. 'blink' (still at pre-approach distance, never as close
+    // as zMin) was measured unaffected either way and is deliberately left
+    // out of this list — this only widens the WINDUP cap's scope, not a new
+    // clamp family.
     if (isGabriel) {
-      if (e.attackState === 'telegraph' || e.attackState === 'counterApproach') {
+      if (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'approach') {
         const GABRIEL_WINDUP_MAX_DRAWH_FRAC = 0.62;
         drawH = Math.min(drawH, state.cssH * GABRIEL_WINDUP_MAX_DRAWH_FRAC);
       } else if (e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) {
@@ -10229,7 +10302,37 @@ function computeEnemyDrawRect() {
     // 1.02) — reused here rather than re-measuring, so this can never drift
     // out of sync with wherever the player actually stands.
     if (state.gameMode === 'escape') {
-      const footY = escapePlayerFootY();
+      // 17TH ROUND: root cause of "GABRIELが主人公を追い越して手前へ出て
+      //見える" (still reproducible despite the FOLLOWUP HOTFIX clamp above)
+      // — escapePlayerFootY() is the player's RAW, unclamped bottomY
+      // formula, but renderEscapePlayer() almost always further raises the
+      // player's ACTUAL rendered bottom above that via its own stage-label-
+      // overlap clamp (computeEscapePlayerRectClamped(), see its own
+      // comment) — measured (844x390 viewport, es.depthPos sweep -1..0.5,
+      // i.e. the entire NORTH-to-neutral range, not an edge case): the
+      // label clamp fires and the player's real visual bottom sits 9.8-
+      // 78.8px HIGHER on screen than escapePlayerFootY() assumed (32.8px at
+      // the neutral depthPos=0 default alone). GABRIEL's clamp against the
+      // stale unclamped value let it sit up to that full gap BELOW the
+      // player's real rendered position — visually passing the player while
+      // technically satisfying the old clamp. Fixed by computing the SAME
+      // label-clamped rect renderEscapePlayer() itself will draw this exact
+      // frame (same inputs: depthPos, dashScalePulse, current run frame,
+      // JUMP hop) and clamping against ITS real bottom edge instead of the
+      // raw formula — synchronous and always correct regardless of render
+      // order (renderEnemy() runs before renderEscapePlayer() in the draw
+      // list, so reading a per-frame-stamped value would be one frame
+      // stale; recomputing here has no such lag). Pure function, no shared-
+      // state mutation, safe to call a second time per frame.
+      const playerFrame = ASSETS_PLAYER_ESCAPE_RUN[state.escape.runFrame];
+      let playerRawBottomY = state.cssH * 1.02 - (state.escape.depthPos || 0) * ESCAPE_DEPTH_SCREEN_RANGE_PX;
+      if (state.escape.freeJumping) {
+        const jumpT = clamp((performance.now() - state.escape.freeJumpStartedAt) / COLLAPSE_JUMP_MS, 0, 1);
+        playerRawBottomY -= Math.sin(jumpT * Math.PI) * COLLAPSE_JUMP_ARC_PX;
+      }
+      const playerCx = state.centerX + state.player.strafeOffset;
+      const playerClamped = computeEscapePlayerRectClamped(playerCx, playerRawBottomY, playerFrame, state.escape.depthPos, state.escape.dashScalePulse);
+      const footY = playerClamped.rect.dy + playerClamped.rect.drawH;
       if (drawBottomY > footY) drawBottomY = footY;
     } else if (state.gameMode === 'combat') {
       // FOLLOWUP HOTFIX: the player's own bottomY (state.cssH*1.02) can sit

@@ -994,6 +994,15 @@ html, body {
   border-radius: 4px;
 }
 .pause-menu-btn:active { background: rgba(255,255,255,0.22); }
+/* 17TH ROUND: real-device report — ENDING BGM sometimes started mid-game
+   during ordinary PAUSE/RESUME. Root cause: #pause-ending-btn (a real,
+   always-live QA/test trigger for the genuine ENDING flow — see its own
+   index.html comment) sits directly below RESUME with identical spacing/
+   styling, making it an easy accidental mis-tap target on a touch screen
+   during repeated open/close cycling. Extra top margin (visual separation
+   only — no functional/hit-area/z-index change) makes an accidental tap
+   meaningfully less likely without touching the button's own behavior. */
+.pause-menu-btn-ending-test { margin-top: 18px; }
 
 /* 7TH ROUND PART 11: CONTROLLER AIM SENSITIVITY — same visual family as
    the existing .theme-btn/.enemy-btn active-highlight pattern, just placed
