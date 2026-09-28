@@ -561,37 +561,58 @@
       <div class="touch-pad-label">AIM</div>
       <div class="touch-stick"></div>
     </div>
-    <!-- COMBAT-only: was #touch-fire, same held-button FIRE mechanism,
-         relabeled SHOT. 11TH ROUND (spec sections 18-22): moved from its
-         old far-left position (above MOVE stick) to DASH's LEFT side —
-         see .touch-btn-pos-left's own comment in style.css for the
-         semicircle-panel redesign this and the other 5 action buttons
-         below now share. -->
-    <button type="button" tabindex="-1" id="touch-shot" class="touch-btn touch-btn-pos-left">SHOT</button>
-    <!-- Single DASH button for BOTH modes (position mirrors the removed
-         right-side stick). Direction is read from the MOVE stick's CURRENT
-         position at the moment of press and dispatched to the SAME
-         existing directional dash actions (northDash/southDash/westDash/
-         eastDash in COMBAT; northBackstep/southDash/westDash/eastDash in
-         ESCAPE) GAMEPAD already uses — input routing only, no dash
-         mechanics/distance/i-frame/sprite change (spec section 23/25). A
-         centered/neutral MOVE stick is a deliberate no-op (see the
-         completion report's STOP item for this exact case). -->
-    <button type="button" tabindex="-1" id="touch-dash" class="touch-btn-round">DASH</button>
-    <button type="button" tabindex="-1" id="touch-reload" class="touch-btn touch-btn-pos-right">RELOAD</button>
-    <button type="button" tabindex="-1" id="touch-focus" class="touch-btn touch-btn-pos-top">FOCUS</button>
-    <!-- ESCAPE-only. JUMP: was #touch-dash-jump, unchanged mechanism,
-         relabeled/repositioned. 8TH ROUND (spec sections 2-4): SHADOW is now
-         TWO explicit buttons (WEST SHADOW / EAST SHADOW) instead of one
-         MOVE-stick-direction-inferred button — each wired directly to its
-         own existing westDecoy/eastDecoy action (see game.js). 11TH ROUND
-         (spec sections 23-24): all three ESCAPE-only buttons now share the
-         SAME cardinal semicircle-panel classes COMBAT's SHOT/FOCUS/RELOAD
-         use — DASHの左=EAST SHADOW, DASHの上=WEST SHADOW, DASHの右=JUMP —
-         so both modes render the identical panel geometry. -->
-    <button type="button" tabindex="-1" id="touch-jump" class="touch-btn touch-btn-pos-right touch-escape-only">JUMP</button>
-    <button type="button" tabindex="-1" id="touch-shadow-east" class="touch-btn touch-btn-pos-left touch-escape-only">EAST<br>SHADOW</button>
-    <button type="button" tabindex="-1" id="touch-shadow-west" class="touch-btn touch-btn-pos-top touch-escape-only">WEST<br>SHADOW</button>
+    <!-- 16TH ROUND (spec sections 12-22, 34-35, 49-54): the OLD 11TH-round
+         layout ("DASH-centered semicircle split into 3") was only ever a
+         POSITION concept — 3 independently-shaped rounded-rect buttons
+         placed at cardinal offsets around a round DASH button, not a real
+         single semicircle panel — real-device feedback said it still read
+         as "DASH is the big center button" with SHOT off to the side.
+         Redesigned into a genuine ONE-PIECE semicircle control cluster per
+         mode: a large center circle (COMBAT=SHOT, ESCAPE=DASH — the role
+         that swaps, per spec section 13) with an SVG semicircle panel
+         behind/around it, split into 3 equal 60° pie-wedge segments (LEFT/
+         TOP/RIGHT) whose VISUAL shape and TOUCH hit area are the same SVG
+         <path> (shape-accurate hit-testing, not a bounding rectangle —
+         spec section 16/50's own explicit requirement), each wedge tapping
+         directly (no separate invisible overlay). Two separate wrap groups
+         (COMBAT / ESCAPE) share an identical geometry (same radii/angles/
+         center anchor point, spec section 20's "デザイン言語...共通化する")
+         and swap visibility via the SAME existing body.escape-mode
+         mechanism every other COMBAT/ESCAPE-only element already uses —
+         see style.css's own #touch-combat-fan-wrap/#touch-escape-fan-wrap
+         rules. Element ids for every REUSED action (SHOT/FOCUS/RELOAD/JUMP/
+         WEST SHADOW/EAST SHADOW) are kept identical to before — only their
+         DOM shape/position changed — so game.js's existing wireButton()
+         wiring for each needs no id-level change; only DASH gains a second,
+         COMBAT-only wedge element (#touch-combat-dash) since it is now a
+         circle in ESCAPE but a wedge in COMBAT, wired to the SAME shared
+         handler as #touch-dash (see game.js's own comment). -->
+    <div id="touch-combat-fan-wrap" class="touch-fan-wrap">
+      <svg id="touch-combat-fan" class="touch-fan-svg" viewBox="-150 -140 300 140" preserveAspectRatio="xMidYMax meet">
+        <path id="touch-combat-dash" class="touch-fan-wedge" d="M-29,-50.23 L-70,-121.24 A140,140 0 0,0 -140,0 L-58,0 A58,58 0 0,1 -29,-50.23 Z"></path>
+        <path id="touch-focus" class="touch-fan-wedge" d="M29,-50.23 L70,-121.24 A140,140 0 0,0 -70,-121.24 L-29,-50.23 A58,58 0 0,1 29,-50.23 Z"></path>
+        <path id="touch-reload" class="touch-fan-wedge" d="M58,0 L140,0 A140,140 0 0,0 70,-121.24 L29,-50.23 A58,58 0 0,1 58,0 Z"></path>
+        <line class="touch-fan-divider" x1="-29" y1="-50.23" x2="-70" y2="-121.24"></line>
+        <line class="touch-fan-divider" x1="29" y1="-50.23" x2="70" y2="-121.24"></line>
+        <text class="touch-fan-label" x="-86" y="-50">DASH</text>
+        <text class="touch-fan-label" x="0" y="-95">FOCUS</text>
+        <text class="touch-fan-label" x="86" y="-50">RELOAD</text>
+      </svg>
+      <button type="button" tabindex="-1" id="touch-shot" class="touch-btn-round touch-fan-center">SHOT</button>
+    </div>
+    <div id="touch-escape-fan-wrap" class="touch-fan-wrap touch-escape-only">
+      <svg id="touch-escape-fan" class="touch-fan-svg" viewBox="-150 -140 300 140" preserveAspectRatio="xMidYMax meet">
+        <path id="touch-shadow-west" class="touch-fan-wedge" d="M-29,-50.23 L-70,-121.24 A140,140 0 0,0 -140,0 L-58,0 A58,58 0 0,1 -29,-50.23 Z"></path>
+        <path id="touch-jump" class="touch-fan-wedge" d="M29,-50.23 L70,-121.24 A140,140 0 0,0 -70,-121.24 L-29,-50.23 A58,58 0 0,1 29,-50.23 Z"></path>
+        <path id="touch-shadow-east" class="touch-fan-wedge" d="M58,0 L140,0 A140,140 0 0,0 70,-121.24 L29,-50.23 A58,58 0 0,1 58,0 Z"></path>
+        <line class="touch-fan-divider" x1="-29" y1="-50.23" x2="-70" y2="-121.24"></line>
+        <line class="touch-fan-divider" x1="29" y1="-50.23" x2="70" y2="-121.24"></line>
+        <text class="touch-fan-label" x="-86" y="-50">WEST<tspan x="-86" dy="11">SHADOW</tspan></text>
+        <text class="touch-fan-label" x="0" y="-95">JUMP</text>
+        <text class="touch-fan-label" x="86" y="-50">EAST<tspan x="86" dy="11">SHADOW</tspan></text>
+      </svg>
+      <button type="button" tabindex="-1" id="touch-dash" class="touch-btn-round touch-fan-center">DASH</button>
+    </div>
   </div>
 
 </div>

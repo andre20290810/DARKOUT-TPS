@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R15';
+const BUILD_VERSION = 'DARKOUT2-R16';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1925,6 +1925,11 @@ const droneSquadBarFillEls = [
   document.getElementById('drone-squad-bar-fill-1'),
   document.getElementById('drone-squad-bar-fill-2'),
 ];
+// 16TH ROUND (spec sections 10, 47): row-level refs so updateHud() can mark
+// which drone is CURRENTLY the fought one (bar 0 — always state.enemy,
+// whichever generation is active — via an 'active' class) versus still-
+// waiting/already-folded-in background extras (bars 1/2, always 'inactive').
+const droneSquadRowEls = document.querySelectorAll('.drone-squad-row');
 // PART 29/30 (4th round follow-up): main gameplay BGM — real audio file now
 // provided (assets/audio/after_the_limits.mp3). See tryStartBgm()/
 // togglePauseMenu() for the actual lifecycle.
@@ -5468,7 +5473,7 @@ function touchMoveDominantDir(deadzone) {
   return x < 0 ? 'west' : 'east';
 }
 const TOUCH_DASH_DEADZONE = 0.35;
-wireButton('touch-dash', () => {
+function handleTouchDashPress() {
   const dir = touchMoveDominantDir(TOUCH_DASH_DEADZONE);
   if (!dir) return; // neutral MOVE stick — no-op, see this block's own comment
   if (state.gameMode === 'escape') {
@@ -5482,7 +5487,18 @@ wireButton('touch-dash', () => {
     else if (dir === 'west') state.actions.westDash = true;
     else state.actions.eastDash = true;
   }
-});
+}
+// 16TH ROUND (spec sections 13-14, 49): DASH is now a CIRCLE only in
+// ESCAPE (#touch-dash, the fan's center button there); in COMBAT it is one
+// of the 3 wedge segments (#touch-combat-dash — SHOT takes over the center
+// circle instead, per spec section 13). Both elements share this exact
+// same handler (handleTouchDashPress() already branches on
+// state.gameMode internally) — no duplicated dash-routing logic, and only
+// one of the two DOM elements is ever visible at a time (COMBAT/ESCAPE
+// visibility toggle, see style.css's #touch-combat-fan-wrap/.touch-escape-
+// only rules), so there is no risk of a stray double-fire from the other.
+wireButton('touch-dash', handleTouchDashPress);
+wireButton('touch-combat-dash', handleTouchDashPress);
 // 8TH ROUND (spec sections 2-3): SHADOW is now TWO explicit buttons (WEST
 // SHADOW / EAST SHADOW, index.html) instead of ONE button whose side was
 // inferred from the MOVE stick's current horizontal position — on a real
@@ -7747,6 +7763,17 @@ function spawnDroneWave2(now) {
       screenX: 0, screenY: 0, scale: 1,
       lastDamageHitAt: 0,
       deathUntil: 0,
+      // 16TH ROUND (spec sections 2-6): sequential-combat redesign — this
+      // extra starts as a purely COSMETIC "next drone waiting in the fog"
+      // (background patrol only, never damageable/targetable — see
+      // resolveDroneWaveBulletHit()'s own comment). `consumed` flips true
+      // the instant it is PROMOTED (see promoteNextDroneWaveTarget()) — at
+      // that point it stops rendering entirely and its HP bar reads 0%,
+      // because it has been folded into a freshly-respawned state.enemy
+      // (the SAME singleton drone AI/attack/hit-test/FOCUS pipeline #1
+      // already used, reused rather than duplicated) rather than ever being
+      // "killed" as a separate entity in its own right.
+      consumed: false,
     });
   }
   dw.active = true;
@@ -7776,37 +7803,21 @@ function resolveDroneWaveSniperImpact(d, now) {
   }
 }
 
-// Per-bullet hit-test against DRONE #2/#3 (the WAVE-2 extras), called from
-// updateBullets() BEFORE it falls through to the normal state.enemy hit-
-// test — 13TH ROUND: state.enemy (DRONE #1) is genuinely alive/hittable
-// through that normal path during this encounter, so a miss here (bullet
-// not near either extra) correctly falls through to it. Returns true once
-// a bullet has been consumed by a wave drone (hit OR out-of-effective-range
-// spark), so updateBullets() knows not to also run its own state.enemy-
-// based resolution for that same bullet.
+// 16TH ROUND (spec sections 2-3/9/41-42): root cause of "3体が同時に撃てる
+//対象として見えている" — this function used to be a genuine per-bullet hit-
+// test against DRONE #2/#3 (the WAVE-2 extras), letting the player damage
+// ANY of the 3 drones simultaneously (no "current target" concept existed).
+// Per the new sequential-combat design, #2/#3 are now purely COSMETIC
+// background dressing (behind a fog layer) until PROMOTED — see
+// promoteNextDroneWaveTarget() — at which point they stop being a separate
+// entity altogether (folded into a freshly-respawned state.enemy, the SAME
+// singleton hit-test/FOCUS/damage pipeline already used for DRONE #1).
+// There is therefore no longer any bullet-vs-extra hit-test at all: this is
+// now a permanent no-op, kept (not deleted) only so its original call site
+// in updateBullets() and its own history stay intact — see that call site's
+// own comment for why a bullet is simply left to fall through to the
+// normal state.enemy hit-test unconditionally now.
 function resolveDroneWaveBulletHit(b, now) {
-  const dw = state.droneWave;
-  for (const d of dw.extra) {
-    if (d.state === 'dead' || d.state === 'dying') continue;
-    const dist = Math.hypot(b.x2 - d.screenX, b.y2 - d.screenY);
-    if (dist > DRONE_WAVE_HIT_RADIUS_PX) continue;
-    spawnPlayerImpact(b.x2, b.y2, now);
-    const distMult = distanceDamageMultiplier(d.z);
-    if (distMult <= 0) {
-      if (DEBUG_MODE) r10DebugLog('DRONE WAVE: DAMAGE BLOCKED (out of effective range)');
-      return true;
-    }
-    const scaledDamage = Math.round(BULLET_DAMAGE * distMult);
-    d.hp = Math.max(0, d.hp - scaledDamage);
-    d.lastDamageHitAt = now;
-    if (DEBUG_MODE) r10DebugLog('DRONE WAVE HIT lane=' + d.lane + ' damage=' + scaledDamage + ' hp=' + d.hp + '/' + d.maxHp);
-    if (d.hp <= 0 && d.state !== 'dying') {
-      d.state = 'dying';
-      d.deathUntil = now + DRONE_WAVE_DEATH_MS;
-      spawnBlast(d.screenX, d.screenY, now, { scale: 0.65, big: false, shockwave: false });
-    }
-    return true;
-  }
   return false;
 }
 
@@ -7831,10 +7842,15 @@ function resolveDroneWaveBulletHit(b, now) {
 function updateDroneWave(dt, now) {
   const dw = state.droneWave;
   if (!dw.active) return;
-  let allExtrasDead = true;
   for (const d of dw.extra) {
-    if (d.state === 'dead') continue;
-    allExtrasDead = false;
+    // 16TH ROUND (spec sections 2-6): a PROMOTED extra is no longer a
+    // separate entity at all (folded into state.enemy — see
+    // promoteNextDroneWaveTarget()), so it needs no further per-frame
+    // update; 'dead' is kept only as a legacy/defensive check (nothing sets
+    // it anymore under the new design — see resolveDroneWaveBulletHit()'s
+    // own comment — but a stale value from a future code path should still
+    // skip cleanly here rather than animate a drone nobody can see).
+    if (d.consumed || d.state === 'dead') continue;
 
     let descendOffsetY = 0;
 
@@ -7878,54 +7894,93 @@ function updateDroneWave(dt, now) {
     d.screenY = proj.y + descendOffsetY;
     d.scale = proj.scale;
   }
-  if (allExtrasDead) dw.allExtrasDead = true;
-  if (!dw.simultaneousMode) {
-    // Dormant "3 extras after WAVE-1 singleton death" reinforcement concept
-    // (never triggered by any live code path — see this system's own
-    // history comment) — left fully intact, unchanged AUTO-vs-MANUAL split.
-    if (allExtrasDead) {
-      dw.active = false;
-      if (state.autoMode.active) {
-        advanceEnemyRotation(now);
-      } else {
-        triggerClearSequence(now, 'combat');
-      }
-    }
-    return;
-  }
-  // 13TH ROUND (spec section 8): the run's opening 3-DRONE encounter now
-  // clears only once BOTH sides are down — DRONE #1 (the real state.enemy
-  // singleton, going through its own completely normal death sequence —
-  // see onEnemyDefeated()'s own new droneWave-aware branch for the other
-  // half of this two-sided check) AND #2/#3 (dw.extra, checked here).
-  // Whichever side finishes LAST is the one that actually fires the clear;
-  // the side that finishes first just records itself as done and waits.
-  if (allExtrasDead) dw.active = false;
-  if (allExtrasDead && state.enemy.deathState === 'gone') {
-    dw.simultaneousMode = false;
-    // ROUTE_COMMON has 3 consecutive 'drone' steps (0,1,2) modeling the old
-    // sequential 3-fight beat this single simultaneous encounter now
-    // replaces entirely — advanceRouteStep()'s own normal +1 (fired via
-    // triggerClearSequence -> decideNextRunStep -> advanceRouteStep once
-    // the clear cutscene finishes) needs 2 MORE steps added here so the run
-    // lands on step 3 (the ADAM SPHERE ESCAPE step), not step 1.
-    state.run.routeStep += 2;
-    triggerClearSequence(now, 'combat');
-  }
+  // 16TH ROUND (spec sections 2-6, 40): the old "wait for BOTH DRONE #1 AND
+  // every extra to independently reach a 'dead' state" two-sided clear check
+  // that used to live here is removed — under sequential combat, extras
+  // never die as separate entities at all (see resolveDroneWaveBulletHit()'s
+  // own comment: no damage ever reaches them; they are either untouched
+  // background dressing or already PROMOTED/folded into state.enemy). The
+  // real end-of-encounter condition is now driven entirely from
+  // onEnemyDefeated()'s own droneWave branch: state.enemy's normal death
+  // fires promoteNextDroneWaveTarget() first, and only calls
+  // triggerClearSequence() once that reports "no extra left to promote" —
+  // see that function and its own comment for the single source of truth.
+  // The `!dw.simultaneousMode` dormant "3 extras after WAVE-1 singleton
+  // death" reinforcement branch this function used to also guard here was
+  // already documented (every prior round back to its introduction) as
+  // never triggered by any live code path — it existed only as an unused
+  // historical scaffold, gated on a flag (dw.allExtrasDead) this function no
+  // longer maintains under the new sequential-combat design. Since it was
+  // already provably dead code, not merely dormant-but-reachable behavior,
+  // it is removed here rather than kept as a second, now doubly-inert copy.
 }
 
-// Draws every alive/descending/dying WAVE-2 extra (body sprite + its own
-// SNIPER lock box/bolt telegraph, mirroring renderEnemyTelegraphs()'s sniper
-// block) — a self-contained render pass, called alongside renderEnemy()/
-// renderEnemyTelegraphs() in frame()'s COMBAT branch only (WAVE 2 never
-// triggers in ESCAPE — see updateEnemyCore()'s own gate).
+// 16TH ROUND (spec sections 2-6, 39-40): the single source of truth for the
+// sequential 3-DRONE encounter's "who fights next" transition. Called from
+// onEnemyDefeated() the instant the CURRENT active drone (always
+// state.enemy — DRONE #1, then #2, then #3, one at a time) finishes its own
+// completely normal death sequence. Finds the next un-consumed background
+// extra (dw.extra, in array order — [0]=#2, [1]=#3), and if one exists,
+// PROMOTES it: marks it consumed (renderDroneWave()/updateDroneWave() then
+// skip it entirely, and its own HP bar reads 0%, per spec section 10's
+// "現在戦闘中のDRONEが視覚的に分かるようにする" — the newly-active drone is
+// always bar 0, since it is always state.enemy), then re-spawns state.enemy
+// as a fresh 'drone' via the EXACT SAME spawnEnemy() every other enemy type
+// already uses (full HP, clean attack state, no new/duplicated entity or
+// attack system — spec section 38's own explicit "既存の3体管理を最大限再
+// 利用する... 新しい別DRONE systemを二重実装しないこと"), positioned at the
+// promoted extra's own last real z/lane so it doesn't visually teleport.
+// spawnEnemy() itself unconditionally wipes state.droneWave as one of its
+// own side effects (see its own comment — every OTHER spawn call wants that
+// wipe; this is the one call site that doesn't), so the relevant fields are
+// snapshotted first and restored immediately after. Returns true if a
+// promotion happened (caller must NOT clear combat), false if every extra
+// is already consumed (caller should proceed with the real, final clear).
+function promoteNextDroneWaveTarget(now) {
+  const dw = state.droneWave;
+  const next = dw.extra.find((d) => !d.consumed);
+  if (!next) return false;
+  next.consumed = true;
+  const spawnZ = next.z, spawnLane = next.lane;
+  const savedExtra = dw.extra;
+  spawnEnemy('drone');
+  dw.active = true;
+  dw.extra = savedExtra;
+  dw.simultaneousMode = true;
+  dw.allExtrasDead = false;
+  state.enemy.z = spawnZ;
+  state.enemy.lane = spawnLane;
+  state.enemy.laneBase = spawnLane;
+  state.enemy.laneTarget = spawnLane;
+  if (DEBUG_MODE) r10DebugLog('DRONE WAVE: promoted next drone to active target (z=' + spawnZ + ')');
+  return true;
+}
+
+// Draws every un-consumed background WAVE-2 extra (body sprite only — the
+// lock/fire telegraph blocks below are unreachable now, see
+// resolveDroneWaveBulletHit()'s own comment: extras never attack, so
+// d.state never becomes lock_red/lock_yellow/fire; kept only because
+// deleting them buys nothing and this function's own state machine could
+// legitimately grow that capability back some future round without a
+// second rewrite). 16TH ROUND (spec sections 2,8,46): iterates dw.extra
+// BACKWARDS (index 1=#3 first, then 0=#2) so the FARTHER drone always
+// draws first/underneath and the nearer one draws second/on top — the
+// correct depth compositing order (see this file's own history of "farther
+// must draw first" fixes for barrels/debris/missiles/this exact DRONE
+// system in earlier rounds) — the old forward iteration had this backwards
+// between the two extras themselves (harmless before since they rarely
+// visibly overlapped, but now matters since renderDroneWaveFog() draws
+// between them). Consumed extras (promoted into state.enemy — see
+// promoteNextDroneWaveTarget()) are skipped entirely: they are no longer a
+// separate visible entity at all.
 function renderDroneWave() {
   const dw = state.droneWave;
   if (!dw.active) return;
   const now = performance.now();
   const img = DRONE_SPRITES.search[2].img;
-  for (const d of dw.extra) {
-    if (d.state === 'dead') continue;
+  for (let i = dw.extra.length - 1; i >= 0; i--) {
+    const d = dw.extra[i];
+    if (d.consumed || d.state === 'dead') continue;
     const drawH = DRONE_WORLD_HEIGHT * d.scale;
     const drawW = drawH * (img && img.naturalWidth ? img.naturalWidth / img.naturalHeight : 0.8);
     ctx.save();
@@ -7961,6 +8016,52 @@ function renderDroneWave() {
       ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
       ctx.restore();
     }
+  }
+}
+
+// 16TH ROUND (spec sections 2,7-9,44-46): visual-only "the next drone is
+// there, but it isn't the current target" mist layer — a soft radial-
+// gradient patch, never a hard black wall and never a real collision
+// object (targeting/damage is entirely handled by state — see
+// resolveDroneWaveBulletHit()'s/promoteNextDroneWaveTarget()'s own
+// comments — spec section 9's explicit "collision objectにして弾を物理的
+// に止める方法だけに依存しない"). Positioned at a FIXED depth between each
+// pair of drone slots (DRONE_WAVE_FOG_Z), so it reads as "a layer of mist
+// standing between them" regardless of either drone's own lateral patrol
+// position. Two independent layers, each visible only while its own
+// corresponding extra has not yet been PROMOTED (spec section 44's own
+// state table: FOG #1 hides once DRONE #2 is promoted, FOG #2 hides once
+// DRONE #3 is promoted). Called from frame() between renderDroneWave()
+// (the farther, still-waiting drones — drawn first/underneath) and
+// renderEnemy() (the current active drone — drawn last/nearest), so the
+// depth compositing genuinely matches world-Z: farther drone -> fog ->
+// nearer drone -> fog -> active drone -> player — never a fixed/arbitrary
+// draw order unrelated to actual depth (see this file's own repeated
+// "R14で修正したdraw order問題を再発させないこと" history for exactly the
+// bug class this ordering avoids).
+const DRONE_WAVE_FOG_Z = [950, 1140];
+// 16TH ROUND: 0.5 measured (real pixel read-back) as only subtly distinct
+// against this corridor's already near-black background — raised for
+// legibility. Still translucent (never opaque/a hard wall), per spec
+// section 7's explicit ban on a "完全な黒い壁".
+const DRONE_WAVE_FOG_OPACITY = 0.68;
+function renderDroneWaveFog() {
+  const dw = state.droneWave;
+  if (!dw.active || !dw.simultaneousMode) return;
+  for (let i = 0; i < dw.extra.length; i++) {
+    if (dw.extra[i].consumed) continue;
+    const fogZ = DRONE_WAVE_FOG_Z[i] != null ? DRONE_WAVE_FOG_Z[i] : DRONE_WAVE_FOG_Z[DRONE_WAVE_FOG_Z.length - 1];
+    const proj = project(0, CORRIDOR_FLOOR_Y - DRONE_WORLD_HEIGHT * 0.55, fogZ);
+    const bandH = DRONE_WORLD_HEIGHT * proj.scale * 1.6;
+    const bandW = Math.max(state.cssW * 0.55, DRONE_WORLD_HEIGHT * proj.scale * 3.2);
+    ctx.save();
+    const grad = ctx.createRadialGradient(proj.x, proj.y, 0, proj.x, proj.y, bandW / 2);
+    grad.addColorStop(0, 'rgba(18,20,24,' + DRONE_WAVE_FOG_OPACITY + ')');
+    grad.addColorStop(0.6, 'rgba(18,20,24,' + (DRONE_WAVE_FOG_OPACITY * 0.75) + ')');
+    grad.addColorStop(1, 'rgba(18,20,24,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(proj.x - bandW / 2, proj.y - bandH / 2, bandW, bandH);
+    ctx.restore();
   }
 }
 
@@ -10031,6 +10132,61 @@ function computeEnemyDrawRect() {
     if (!isGabriel && adamMeleeSizeBoost > 1) {
       const ADAM_ATTACK_MAX_DRAWH_FRAC = 0.92;
       drawH = Math.min(drawH, state.cssH * ADAM_ATTACK_MAX_DRAWH_FRAC);
+    }
+    // R16 ADAM REVIEW: re-measuring the R14 92% clamp against this round's
+    // same player-bike-relative methodology found it still correct for
+    // impact/counterAttack (measured 92% of a 390px mobile viewport, ~2.0x
+    // player height — deliberately more dramatic than GABRIEL's own release
+    // pose, matching ADAM's role as the heavier final-boss encounter — left
+    // UNCHANGED, per this round's explicit "don't touch ADAM if already
+    // natural"). But the SAME measurement found ADAM's telegraph/
+    // counterApproach (windup) pose was NEVER covered by that clamp at all
+    // (its own ADAM_CLAW_APPROACH_SIZE_MULT=0.99 never satisfies the
+    // `adamMeleeSizeBoost > 1` gate above) and measured 105% of that same
+    // mobile viewport height — literally clipping off-screen, a genuine bug
+    // independent of GABRIEL's issue, not a copy-tuning decision. Capped
+    // here the same way, with its own ADAM-specific fraction (not GABRIEL's
+    // 0.62) chosen so normal(57.5%) -> windup -> attack(92%) reads as one
+    // smooth escalation instead of a spike then a plateau. Idle/normal
+    // sizing and the impact/counterAttack multiplier chain above are
+    // completely untouched.
+    if (!isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach')) {
+      const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
+      drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
+    }
+    // R16: real-device report — GABRIEL's ESCAPE windup/attack sprites read
+    // as unnaturally huge on a short mobile-landscape screen (measured at
+    // 844x390: telegraph=88.3%/impact=91.1% of viewport height, ~1.9-2.0x
+    // the player's own bike sprite height at the same moment), even though
+    // GABRIEL carries no ADAM-style size multiplier — the oversizing is
+    // purely proj.scale at GABRIEL_Z_MIN on a short viewport (confirmed via
+    // measurement to be IDENTICAL in COMBAT and ESCAPE, so this is a shared-
+    // formula proximity effect, not an ESCAPE-only bug). Same TYPE of fix as
+    // ADAM's clamp above, but with GABRIEL-specific fractions (not a copy of
+    // 0.92) derived from the actual measured player-bike comparison: RUN
+    // already sits close to the player's own height (~47.8%), so the two
+    // caps below are chosen to keep a smooth RUN->WINDUP->ATTACK size
+    // progression (47.8% -> 62% -> 72%) instead of the old abrupt +40pt jump,
+    // while ATTACK still lands ~1.5x taller than the player bike (dramatic
+    // impact kept, screen no longer dominated). WINDUP covers telegraph/
+    // counterApproach (the two states that draw set.windup); ATTACK covers
+    // impact/counterAttack AND recovery/cooldown (gabrielRetreatHoldingAttack
+    // Sprite — same set.release image held through the retreat, per the 12TH
+    // ROUND PART B behavior), so the sprite never pops back up in size the
+    // instant the retreat states begin. On PC-height viewports this is a
+    // no-op (measured 1280x720: telegraph=47.8%/impact=49.3%, already well
+    // under both caps) — purely a short-viewport safety cap, like ADAM's.
+    // RUN/idle sizing and every R12-protected GABRIEL timing/behavior are
+    // completely untouched — this only clamps drawH for these two pose
+    // families.
+    if (isGabriel) {
+      if (e.attackState === 'telegraph' || e.attackState === 'counterApproach') {
+        const GABRIEL_WINDUP_MAX_DRAWH_FRAC = 0.62;
+        drawH = Math.min(drawH, state.cssH * GABRIEL_WINDUP_MAX_DRAWH_FRAC);
+      } else if (e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) {
+        const GABRIEL_ATTACK_MAX_DRAWH_FRAC = 0.72;
+        drawH = Math.min(drawH, state.cssH * GABRIEL_ATTACK_MAX_DRAWH_FRAC);
+      }
     }
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
@@ -13466,6 +13622,21 @@ function updateHud() {
       const pct = Math.max(0, Math.round((d.hp / d.maxHp) * 100));
       droneSquadBarFillEls[i + 1].style.width = pct + '%';
     }
+    // 16TH ROUND (spec sections 10, 47): bar 0 is ALWAYS the drone the
+    // player is currently fighting (whichever generation state.enemy
+    // presently represents — see promoteNextDroneWaveTarget()), so it is
+    // always the highlighted 'active' row; bars 1/2 are always background
+    // (still waiting behind FOG, or already folded into bar 0) and stay
+    // dimmed — never removed, per spec section 10's own explicit "HPゲージ
+    // を完全に消す必要はない".
+    if (droneSquadRowEls.length >= 3) {
+      droneSquadRowEls[0].classList.add('active');
+      droneSquadRowEls[0].classList.remove('inactive');
+      droneSquadRowEls[1].classList.add('inactive');
+      droneSquadRowEls[1].classList.remove('active');
+      droneSquadRowEls[2].classList.add('inactive');
+      droneSquadRowEls[2].classList.remove('active');
+    }
   } else {
     enemyHudEl.hidden = false;
     droneSquadHudEl.hidden = true;
@@ -13861,22 +14032,22 @@ function onEnemyDefeated(now, defeated) {
     if (DEBUG_MODE) r10DebugLog('ROUTE: A_FINAL_PRE_ADAM sphere defeated by HP=0 before its 30s timer — defeat recorded once, route held until the timer fires (see checkAFinalPreAdamTransform())');
     return;
   }
-  // 13TH ROUND (spec section 8): the run's opening 3-DRONE encounter is a
-  // two-sided completion check — DRONE #1 (state.enemy, reaching this
-  // function via its own completely normal death sequence) and DRONE #2/#3
-  // (state.droneWave.extra, tracked by updateDroneWave()'s own allExtrasDead
-  // flag) must BOTH be dead before combat actually clears. Score/history
-  // bookkeeping above already ran normally for this defeat either way —
-  // only the CLEAR SEQUENCE trigger itself is gated here. See
-  // updateDroneWave()'s own comment for the other half of this check
-  // (fires instead, from there, if the extras happen to finish last).
+  // 16TH ROUND (spec sections 2-6, 39-40): the run's opening 3-DRONE
+  // encounter is now SEQUENTIAL, not simultaneous — whichever drone is
+  // currently active (always state.enemy, reaching this function via its
+  // own completely normal death sequence) triggers a check for a next
+  // background extra to PROMOTE (see promoteNextDroneWaveTarget()'s own
+  // comment for the full design). Only once every extra has already been
+  // promoted-and-defeated does this fall through to the real CLEAR
+  // SEQUENCE. Score/history bookkeeping above already ran normally for
+  // this defeat either way — only the CLEAR SEQUENCE trigger is gated here.
   if (defeated && type === 'drone' && state.droneWave.simultaneousMode) {
-    if (!state.droneWave.allExtrasDead) {
-      if (DEBUG_MODE) r10DebugLog('RUN FLOW: DRONE #1 defeated, waiting on DRONE #2/#3 before CLEAR SEQUENCE');
+    if (promoteNextDroneWaveTarget(now)) {
+      if (DEBUG_MODE) r10DebugLog('RUN FLOW: DRONE defeated, next DRONE promoted to active — CLEAR SEQUENCE withheld');
       return;
     }
     state.droneWave.simultaneousMode = false;
-    r.routeStep += 2; // see updateDroneWave()'s own identical comment for why +2
+    r.routeStep += 2; // see the pre-16TH-ROUND comment history for why +2 (ROUTE_COMMON's 3 consecutive 'drone' steps collapse into this one encounter)
     triggerClearSequence(now, 'combat');
     return;
   }
@@ -14092,24 +14263,27 @@ function updateCombatIntroPhase(now) {
     // 3-extra-drone infrastructure. That round's own implementation
     // neutered the just-spawned singleton entirely and used all 3 wave-
     // extra slots as "drone #1/#2/#3" together.
-    // 13TH ROUND (spec sections 3-8): real-device report — the 3 drones
-    // read as one clump at a shared depth, and any of the 3 could fire.
-    // Redesigned: the singleton spawnEnemy('drone') above is now DRONE #1
-    // ITSELF, left completely alive/normal (no neutering at all) — it
-    // updates/renders/attacks exactly like the original 1-DRONE fight
-    // always did (spec section 4's own explicit "従来の単体戦の位置を維持"
-    // is satisfied automatically this way, with zero new DRONE #1-specific
-    // code). Only 2 wave-extra slots are spawned now (DRONE #2/#3,
-    // DRONE_WAVE_EXTRA_COUNT reduced from 3 to 2 — see that constant's own
-    // comment), staged farther back and patrolling independently. Combat
-    // clear now requires BOTH DRONE #1 (state.enemy) AND both extras dead —
-    // see onEnemyDefeated()'s own droneWave-aware branch and
-    // updateDroneWave()'s own two-sided completion check.
+    // 13TH ROUND (spec sections 3-8, HISTORICAL): real-device report — the 3
+    // drones read as one clump at a shared depth, and any of the 3 could
+    // fire simultaneously. 16TH ROUND (spec sections 1-6): re-investigated
+    // again — even after 13/14TH round's depth/draw-order fixes, the 3
+    // drones still all read as live, simultaneously-targetable enemies
+    // (draw order and depth staging alone don't communicate "only one of
+    // these is currently fightable"). Redesigned into genuine SEQUENTIAL
+    // combat: the singleton spawnEnemy('drone') above is DRONE #1, fully
+    // alive/normal/attacking from the start (unchanged). The 2 wave-extra
+    // slots spawned below (DRONE #2/#3) are now purely cosmetic background
+    // dressing — never damageable, never a FOCUS/attack participant (see
+    // resolveDroneWaveBulletHit()'s own comment) — sitting behind a FOG
+    // layer (see renderDroneWaveFog()) until PROMOTED one at a time, each
+    // promotion re-spawning state.enemy as the next real fight (see
+    // promoteNextDroneWaveTarget()). Combat clears only once DRONE #1, #2,
+    // and #3 have EACH gone through this promote-then-defeat cycle in turn.
     if (r.introEnemyType === 'drone' && r.routeSection === 'COMMON' && r.routeStep === 0) {
       spawnDroneWave2(now);
       state.droneWave.simultaneousMode = true;
       state.droneWave.allExtrasDead = false;
-      if (DEBUG_MODE) r10DebugLog('RUN FLOW: first DRONE encounter — DRONE #1 (singleton) + 2 background extras (DRONE WAVE simultaneousMode)');
+      if (DEBUG_MODE) r10DebugLog('RUN FLOW: first DRONE encounter — DRONE #1 active, #2/#3 waiting behind FOG (sequential DRONE WAVE)');
     }
     return;
   }
@@ -15082,7 +15256,6 @@ function frame(ts) {
     // MODE are decoupled).
     renderEnemyTelegraphs(theme);
   } else {
-    renderEnemy(theme);
     // 14TH ROUND (real-device report): root cause of "DRONEが主人公spriteの
     // 上へオーバーレイして見える" — renderDroneWave() (DRONE#2/#3, staged at
     // DRONE_WAVE_EXTRA_Z=[1000,1280], always much farther than the player)
@@ -15093,14 +15266,24 @@ function frame(ts) {
     // player world-Z never approaches these wave-extra depths in COMBAT (the
     // player has no world-Z of its own here at all — see renderPlayer()'s
     // fixed foreground anchor), a DRONE that is always farther than the
-    // player must always draw before the player, never after. Moved here,
-    // right alongside DRONE#1 (state.enemy, this same renderEnemy() call) —
-    // both draw pre-mask/pre-player now, so the player sprite correctly
-    // covers any on-screen overlap with DRONE#2/#3 same as it already does
-    // with DRONE#1, and the wave extras are now also correctly dimmed by
+    // player must always draw before the player, never after — both draw
+    // pre-mask/pre-player now, so the player sprite correctly covers any
+    // on-screen overlap with DRONE#2/#3 same as it already does with
+    // DRONE#1, and the wave extras are now also correctly dimmed by
     // renderFlashlightMask() outside the lit circle (previously always full-
     // brightness, another inconsistency versus DRONE#1's own rendering).
+    // 16TH ROUND (spec section 8): renderDroneWave() (the farther, still-
+    // waiting background extras) now draws BEFORE renderEnemy() (the
+    // current, nearer active drone) rather than after — the correct depth
+    // order between the two, which the 14th round's own fix never actually
+    // got right (it only fixed extras-vs-player, not extras-vs-active-
+    // drone). renderDroneWaveFog() sits between them so the mist layer
+    // genuinely composites "in front of the farther waiting drone(s), behind
+    // the current active one", matching real world-Z instead of a fixed,
+    // unrelated draw order (see that function's own comment).
     renderDroneWave();
+    renderDroneWaveFog();
+    renderEnemy(theme);
     // 7TH ROUND PART 18 ("射撃エフェクトが主人公より前面にオーバーレイされ
     // ており不自然"): renderParticles() (the muzzle flash + all other
     // particle types) used to run AFTER renderPlayer(), drawing the flash on
