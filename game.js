@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R11';
+const BUILD_VERSION = 'DARKOUT2-R12A';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -442,7 +442,18 @@ const COLLAPSE_DEBRIS_ROTATION_SPEED_MIN = 2.4; // rad/sec, magnitude only — s
 const COLLAPSE_DEBRIS_ROTATION_SPEED_MAX = 5.2;
 const COLLAPSE_DEBRIS_HIT_Z_MAX = 340;        // only checked for a player hit while still this close/near (real physical intersection window)
 const COLLAPSE_DEBRIS_HALF_W_PX = 30;         // collision half-width in screen px, checked against player screen X
-const COLLAPSE_DEBRIS_CULL_Z = 1500;          // despawned once it has rolled this far into the distance (naturally shrunk to near-nothing by perspective)
+const COLLAPSE_DEBRIS_CULL_Z = 1500;          // despawned once it has rolled this far into the distance (naturally shrunk to near-nothing by perspective) — kept as a secondary safety-net cull; COLLAPSE_DEBRIS_LIFETIME_MS below is now the primary/authoritative one and fires well before this in normal play
+// 12TH ROUND PART A (spec section 7): real-device report — a debris piece
+// stayed active for ~2-3s (however long fall+bounce+roll happened to take
+// before naturally reaching COLLAPSE_DEBRIS_CULL_Z, which is pure distance,
+// not time). Spec asks for a fixed ~1.0s lifetime instead, measured from
+// when the piece actually starts being active/displayed (ob.spawnAt — the
+// 'pending'->'falling' transition; see spawnCollapseObstacles()/
+// advanceCollapseWorldZ()) — see ob.activeUntil's own spawn-site comment
+// for how this is applied as a genuine full removal (render+update+
+// collision+damage all read the SAME state.escape.collapse.obstacles array
+// this splices out of), not a visual-only fade/hide.
+const COLLAPSE_DEBRIS_LIFETIME_MS = 1000;
 const COLLAPSE_DEBRIS_DAMAGE = 26;
 // 26TH ROUND item 9: JUMP peak height doubled (was 46px).
 const COLLAPSE_JUMP_ARC_PX = 92;           // peak visual height (screen px) of the JUMP hop
@@ -740,6 +751,18 @@ const GABRIEL_ESCAPE_RUN_FRAME_MS = 160 / 1.5;
 // (WALK_BACK_SPEED, set in an earlier round) and every other direction's
 // walk cadence (p.walkTimer/p.walkFrame) are untouched.
 const SOUTH_WALK_FRAME_SEC = 0.07 / 0.70;
+// 12TH ROUND PART A (spec section 1): real-device report — COMBAT's SOUTH
+// WALK sprite (usingSouthWalkPose branch in renderPlayer(), COMBAT-only —
+// ESCAPE has its own entirely separate renderEscapePlayer()/asset set, see
+// that function's own southWalkFrames-free body) still reads noticeably
+// larger than the other 3 directions despite already targeting the SAME
+// standingBodyHeightPx as every other pose. Spec gives an exact multiplier
+// directly ("newScale = currentScale * 0.80") rather than asking for a
+// re-measurement of the source photos' bodyTopFrac/bodyBottomFrac — applied
+// as a render-time-only scale correction (no source image edited), scoped
+// to ONLY this one pose branch. NORTH/EAST/WEST walk, SOUTH DASH, COVER,
+// AIM/fire pose, and ESCAPE's own player rendering are all unaffected.
+const SOUTH_WALK_COMBAT_SCALE = 0.80;
 // 9TH ROUND (item 29): was 480 (identical to GABRIEL_WORLD_HEIGHT), which
 // read as "ADAM looks the same size as GABRIEL" on real devices — bumped
 // ~15% larger. computeEnemyDrawRect() derives drawH directly from this
@@ -1754,9 +1777,22 @@ const centerWarningEl = document.getElementById('hud-center-warning');
 // 4th round: enemy HP gauge (PART 23) + FOCUS gauge (PART 17/18) — neither
 // existed before this round (see PHASE 9's root-cause report: there was no
 // boss HP gauge markup at all, only the player's own #hp-bar-*).
+// 12TH ROUND PART A (spec sections 5-6): single HUD "WARNING" element paired
+// with #distance-readout (EXIT) — see updateHud()'s own block.
+const exitWarningReadoutEl = document.getElementById('exit-warning-readout');
 const enemyNameEl = document.getElementById('enemy-name');
 const enemyHpFillEl = document.getElementById('enemy-hp-bar-fill');
 const focusFillEl = document.getElementById('focus-bar-fill');
+// 12TH ROUND PART A (spec section 3): 3-bar HUD, shown only during the
+// run's opening 3-simultaneous-DRONE encounter (state.droneWave.
+// simultaneousMode) — see updateHud()'s own drone-squad block.
+const enemyHudEl = document.getElementById('enemy-hud');
+const droneSquadHudEl = document.getElementById('drone-squad-hud');
+const droneSquadBarFillEls = [
+  document.getElementById('drone-squad-bar-fill-0'),
+  document.getElementById('drone-squad-bar-fill-1'),
+  document.getElementById('drone-squad-bar-fill-2'),
+];
 // PART 29/30 (4th round follow-up): main gameplay BGM — real audio file now
 // provided (assets/audio/after_the_limits.mp3). See tryStartBgm()/
 // togglePauseMenu() for the actual lifecycle.
@@ -3722,6 +3758,9 @@ const state = {
     // run can never leak into a fresh one.
     timeLeftSec: ESCAPE_TIME_LIMIT_SEC,
     lastTimeLeftDisplayedSec: -1,
+    // 12TH ROUND PART A (spec sections 5-6): dirty-check for the single
+    // EXIT-paired "WARNING" HUD element — see updateHud()'s own block.
+    lastExitWarningShown: false,
   },
 
   // NEXT ROUND (spec section 7): COMBAT MODE's own lightweight quake+falling
@@ -3844,7 +3883,15 @@ const state = {
   // renderDroneWave(), plus a small addition in updateBullets()). Reset
   // fresh by spawnEnemy() on every new spawn so a stale wave can never leak
   // into a different encounter/enemy-type selection.
-  droneWave: { active: false, wave2Triggered: false, extra: [] },
+  // 12TH ROUND PART A (spec section 3): simultaneousMode marks the ONE
+  // special case where these SAME 3 wave-extra slots are used to represent
+  // ALL 3 drones of the very first COMBAT of the run at once (see
+  // updateCombatIntroPhase()'s spawn site), rather than the dormant "3
+  // reinforcements after WAVE 1 dies" concept described above — kept as its
+  // own flag so that original concept's own code (still fully intact, just
+  // never triggered) needs zero changes and stays distinguishable from this
+  // new trigger path.
+  droneWave: { active: false, wave2Triggered: false, simultaneousMode: false, extra: [] },
 
   // 9TH ROUND (item 30-35): the shared "escape the darkness" CLEAR
   // SEQUENCE — gate appears -> opens -> player runs through -> light
@@ -6245,7 +6292,29 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     // derived from the true post-dash landing spot, not a guess.
     const newStrafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     if (imgReady(frameNow.img)) {
-      const ghostCx = oldCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
+      // 12TH ROUND PART A (spec section 4): real-device report — the WEST
+      // ghost appeared on the player's EAST (wrong) side whenever the dash
+      // wasn't screen-edge-clamped, and only looked correct (west-shifted)
+      // right at the west edge. Root cause: ghostCx was the A/B MIDPOINT
+      // measured from oldCx (the PRE-dash position, a "fixed" snapshot of
+      // where the player used to be) — so on an unclamped dash the ghost
+      // always ended up sitting BETWEEN the start and landing point, i.e.
+      // on the AWAY side of the just-landed body, never past it. The one
+      // "correct-looking" case (near the west edge) was really just the
+      // clamp fully cancelling p.strafeOffset's movement (newStrafeOffset
+      // === p.strafeOffset), making old and new position coincide — pure
+      // coincidence, not a real fix. Per spec's explicit instruction to use
+      // coordinates relative to the player's CURRENT position rather than
+      // a fixed/stale one, ghostCx is now measured from newCx — the
+      // player's actual POST-dash landed position — extended the same half-
+      // distance further in the dash direction, so the ghost always reads
+      // as "just past where the player now stands, in the direction they
+      // just moved" regardless of start position. Verified at screen-
+      // center, west-edge and east-edge for both directions (see round's
+      // own QA script) — west DASH's existing ~15deg west tilt is
+      // unchanged; east DASH is now the exact mirror.
+      const newCx = state.centerX + newStrafeOffset;
+      const ghostCx = newCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
       // DIAGNOSIS ROUND (spec sections 9-10): computeEscapePlayerRectClamped()
       // (not the raw computeEscapePlayerDrawRect()) so the ghost's own tire
       // sits on the SAME label-clamped ground line renderEscapePlayer() will
@@ -6463,7 +6532,13 @@ function advanceCollapseWorldZ(forwardDelta, dt, now) {
       }
     }
 
-    if (ob.z >= COLLAPSE_DEBRIS_CULL_Z) debris.splice(i, 1);
+    // 12TH ROUND PART A (spec section 7): now.activeUntil is the primary
+    // ~1.0s lifetime cull (see spawnCollapseObstacles()); the Z-based cull
+    // stays as a secondary safety net. Either one fully splices the piece
+    // out of the SAME array render/the hit-test above/this very update loop
+    // all read, so a culled piece is instantly gone from all four at once —
+    // never render-hidden while still colliding.
+    if (ob.z >= COLLAPSE_DEBRIS_CULL_Z || now >= ob.activeUntil) debris.splice(i, 1);
   }
 }
 
@@ -6506,10 +6581,11 @@ function spawnCollapseObstacles(now) {
     const scaleAtZ = FOCAL / (FOCAL + z);
     const playerWorldXAtZ = state.player.strafeOffset / scaleAtZ;
     const laneOffset = (Math.random() * 2 - 1) * COLLAPSE_DEBRIS_DANGER_LANE_HALF_WIDTH;
+    const spawnAt = now + idx * COLLAPSE_DEBRIS_STAGGER_MS;
     debris.push({
       seed: Math.random() * 1000,
       state: 'pending',
-      spawnAt: now + idx * COLLAPSE_DEBRIS_STAGGER_MS,
+      spawnAt,
       z,
       worldX: playerWorldXAtZ + laneOffset,
       fallHeight: COLLAPSE_DEBRIS_DROP_HEIGHT * (0.85 + Math.random() * 0.3),
@@ -6522,6 +6598,10 @@ function spawnCollapseObstacles(now) {
       rotationSpeed: rollDirSign * (COLLAPSE_DEBRIS_ROTATION_SPEED_MIN + Math.random() * (COLLAPSE_DEBRIS_ROTATION_SPEED_MAX - COLLAPSE_DEBRIS_ROTATION_SPEED_MIN)),
       resolved: false, hit: false,
       landed: false, // 30TH ROUND item 13: set true on the real first ground touch, see advanceCollapseWorldZ()
+      // 12TH ROUND PART A (spec section 7): ~1.0s lifetime from this piece's
+      // own active/display start (spawnAt) — see advanceCollapseWorldZ()'s
+      // cull check, the sole place this is read.
+      activeUntil: spawnAt + COLLAPSE_DEBRIS_LIFETIME_MS,
     });
   }
   // 30TH ROUND item 13: ground warning telegraph timing — computed once per
@@ -6805,24 +6885,20 @@ function renderCollapseObstacles(zFilter) {
         ctx.ellipse(warnProj.x, warnProj.y, warnW / 2, warnH / 2, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
-        // 6TH ADJUSTMENT ROUND (spec section 14): a literal "WARNING!!" cue,
-        // added on top of the existing ground marker above — deliberately
-        // reuses that marker's own warnProj/warnScale/fadeIn/pulse (the SAME
-        // ob.worldX/ob.z source of truth spawnCollapseObstacles() already
-        // derives the real landing point from) instead of computing its own
-        // position or timing, so the two can never drift apart. Placed just
-        // above the ellipse so the pair reads as one landing-site telegraph,
-        // not a screen-wide generic alert.
-        if (warnScale > 0.05) {
-          ctx.save();
-          ctx.globalAlpha = fadeIn * pulse;
-          ctx.font = `bold ${Math.round(15 * warnScale + 8)}px sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'bottom';
-          ctx.fillStyle = 'rgba(255,120,90,0.95)';
-          ctx.fillText('WARNING!!', warnProj.x, warnProj.y - warnH / 2 - 4);
-          ctx.restore();
-        }
+        // 12TH ROUND PART A (spec sections 5-6): the per-debris "WARNING!!"
+        // canvas text (added 6TH ADJUSTMENT ROUND) is REMOVED from here —
+        // real-device report showed up to 3 overlapping "WARNING" texts
+        // whenever multiple debris pieces were in this same warning window
+        // simultaneously, since this whole render pass runs once per debris
+        // piece (root cause: exactly the "each debris's own render loop
+        // draws its own WARNING" pattern the round's own investigation
+        // checklist named directly). WARNING is now a single HUD element
+        // paired with the EXIT distance readout instead (see updateHud()'s
+        // own new block, driven by a single "is ANY debris currently in its
+        // warning window" boolean) — never a world-position text tied to
+        // any one debris instance. The pale ground-marker ellipse just above
+        // is untouched and still drawn per-debris, per spec's explicit
+        // "瓦礫オブジェクト自体は変更しない" — only the WARNING TEXT moved.
       }
     }
     if (ob.state === 'pending') continue; // not fallen yet — nothing else to draw
@@ -7474,7 +7550,29 @@ function updateDroneWave(dt, now) {
     d.screenY = proj.y + descendOffsetY;
     d.scale = proj.scale;
   }
-  if (allDead) {
+  if (allDead && dw.simultaneousMode) {
+    // 12TH ROUND PART A (spec section 3): the first COMBAT of the run —
+    // all 3 simultaneous drones share these same wave-extra slots (see
+    // updateCombatIntroPhase()'s spawn site), and state.enemy itself was
+    // deliberately neutered (deathState forced to 'gone', never going
+    // through onEnemyDefeated()) rather than counted as one of the 3, so
+    // this dedicated branch is this encounter's ONLY clear trigger — never
+    // routed through the autoMode.active check below, which (autoMode
+    // defaults true and is never flipped false by the real route-driven
+    // path — only by the manual pause-menu ENEMY SELECT) would otherwise
+    // hijack a real run into advanceEnemyRotation()'s unrelated debug
+    // AUTO_SEQUENCE cycle instead of the fixed ROUTE table.
+    dw.active = false;
+    dw.simultaneousMode = false;
+    // ROUTE_COMMON has 3 consecutive 'drone' steps (0,1,2) modeling the old
+    // sequential 3-fight beat this single simultaneous encounter now
+    // replaces entirely — advanceRouteStep()'s own normal +1 (fired via
+    // triggerClearSequence -> decideNextRunStep -> advanceRouteStep once
+    // the clear cutscene finishes) needs 2 MORE steps added here so the run
+    // lands on step 3 (the ADAM SPHERE ESCAPE step), not step 1.
+    state.run.routeStep += 2;
+    triggerClearSequence(now, 'combat');
+  } else if (allDead) {
     dw.active = false;
     // FOLLOWUP HOTFIX: mirrors the exact same AUTO-vs-MANUAL split every
     // other enemy defeat already uses (see updateEnemyCore() above) — AUTO
@@ -8042,6 +8140,7 @@ function spawnEnemy(type) {
   // WAVE 2 can never leak from a previous encounter into this one.
   state.droneWave.active = false;
   state.droneWave.wave2Triggered = false;
+  state.droneWave.simultaneousMode = false;
   state.droneWave.extra = [];
   e.type = type;
   // 9TH ROUND (item 25/27-28): GABRIEL/ADAM used to spawn at the same
@@ -11410,7 +11509,14 @@ function renderPlayer(theme) {
     // fixed screen point (cx, bottomY) every frame — no vertical jitter on
     // frame switch (item 7).
     const standingBodyHeightPx = ASSETS.player.aim.naturalHeight * baseScale * p.scale;
-    const bodyScale = computeBodyVisualScale(southWalkFrame, standingBodyHeightPx);
+    // 12TH ROUND PART A (spec section 1): SOUTH_WALK_COMBAT_SCALE (0.80)
+    // applied on top of the existing same-as-standing target height — see
+    // that constant's own comment for why (real-device size mismatch,
+    // exact multiplier given directly by spec). bodyScale still derives
+    // from computeBodyVisualScale()'s real per-frame measurement, so the
+    // 3 south-walk photos stay mutually consistent with each other; only
+    // the overall target size is now 80% of what it was.
+    const bodyScale = computeBodyVisualScale(southWalkFrame, standingBodyHeightPx) * SOUTH_WALK_COMBAT_SCALE;
     drawW = southWalkFrame.img.naturalWidth * bodyScale;
     drawH = southWalkFrame.img.naturalHeight * bodyScale;
     dx = cx - southWalkFrame.bodyCenterXFrac * drawW;
@@ -12816,6 +12922,27 @@ function updateHud() {
     }
   }
 
+  // 12TH ROUND PART A (spec sections 5-6): "WARNING" is now a single HUD
+  // element paired with EXIT (directly below #distance-readout), driven by
+  // one boolean — whether ANY debris piece is currently in its own
+  // pre-landing warning window (!ob.landed && now>=ob.warningStartAt, the
+  // exact same condition renderCollapseObstacles() already checks per piece
+  // for its ground-marker ellipse) — never per-debris text, so at most ONE
+  // "WARNING" can ever show regardless of how many pieces are active.
+  if (exitWarningReadoutEl) {
+    const nowTs = performance.now();
+    const obstacles = state.escape.collapse.obstacles;
+    let anyWarning = false;
+    for (let i = 0; i < obstacles.length; i++) {
+      const ob = obstacles[i];
+      if (!ob.landed && nowTs >= ob.warningStartAt) { anyWarning = true; break; }
+    }
+    if (anyWarning !== state.escape.lastExitWarningShown) {
+      exitWarningReadoutEl.hidden = !anyWarning;
+      state.escape.lastExitWarningShown = anyWarning;
+    }
+  }
+
   // 10TH ROUND (items 25-26): single AMMO readout, current/MAGAZINE
   // CAPACITY, directly under FOCUS — plus a "RELOADING..." line while
   // reloading so 0-ammo is never a silent dead end on screen. p.reserve is
@@ -12852,15 +12979,35 @@ function updateHud() {
     p.lastStealthText = stealthText;
   }
 
-  // PART 23: enemy HP gauge — always reflects the CURRENT enemy's own
-  // hp/maxHp (reset to 100% by spawnEnemy() on every switch, per spec), and
-  // the name label switches with it. Clamped to 0 so a mid-death-effect
-  // frame never shows a negative-width bar.
-  const e = state.enemy;
-  const ehpPct = Math.max(0, Math.round((e.hp / e.maxHp) * 100));
-  if (ehpPct !== e.lastHpFillPct) { enemyHpFillEl.style.width = ehpPct + '%'; e.lastHpFillPct = ehpPct; }
-  const enemyName = ENEMY_LABEL[e.type] || e.type.toUpperCase();
-  if (enemyName !== e.lastNameText) { enemyNameEl.textContent = enemyName; e.lastNameText = enemyName; }
+  // 12TH ROUND PART A (spec section 3): during the 3-simultaneous-DRONE
+  // opening encounter, state.enemy itself is deliberately neutered
+  // (deathState='gone', hp/maxHp meaningless — see updateCombatIntroPhase())
+  // so the single #enemy-hud bar is swapped out for the 3-bar
+  // #drone-squad-hud instead, driven by state.droneWave.extra[].hp/maxHp —
+  // #enemy-hud's own PART 23 logic below is completely unchanged and simply
+  // does not run in this one special case.
+  if (state.droneWave.simultaneousMode) {
+    enemyHudEl.hidden = true;
+    droneSquadHudEl.hidden = false;
+    const extras = state.droneWave.extra;
+    for (let i = 0; i < droneSquadBarFillEls.length; i++) {
+      const d = extras[i];
+      const pct = d ? Math.max(0, Math.round((d.hp / d.maxHp) * 100)) : 0;
+      droneSquadBarFillEls[i].style.width = pct + '%';
+    }
+  } else {
+    enemyHudEl.hidden = false;
+    droneSquadHudEl.hidden = true;
+    // PART 23: enemy HP gauge — always reflects the CURRENT enemy's own
+    // hp/maxHp (reset to 100% by spawnEnemy() on every switch, per spec), and
+    // the name label switches with it. Clamped to 0 so a mid-death-effect
+    // frame never shows a negative-width bar.
+    const e = state.enemy;
+    const ehpPct = Math.max(0, Math.round((e.hp / e.maxHp) * 100));
+    if (ehpPct !== e.lastHpFillPct) { enemyHpFillEl.style.width = ehpPct + '%'; e.lastHpFillPct = ehpPct; }
+    const enemyName = ENEMY_LABEL[e.type] || e.type.toUpperCase();
+    if (enemyName !== e.lastNameText) { enemyNameEl.textContent = enemyName; e.lastNameText = enemyName; }
+  }
 
   // PART 17: FOCUS gauge.
   const focusPct = Math.round((p.focus / FOCUS_MAX) * 100);
@@ -13448,6 +13595,32 @@ function updateCombatIntroPhase(now) {
     if (elapsed < RUN_INTRO_EMPTY_MS) return;
     r.enemyRevealed = true;
     spawnEnemy(r.introEnemyType);
+    // 12TH ROUND PART A (spec section 3): the run's very first COMBAT
+    // (COMMON route, step 0) is DRONE, and real-device testing showed the
+    // 3-drone fight the game is meant to open with instead played out as 3
+    // SEPARATE sequential single-drone fights (ROUTE_COMMON's own 3
+    // consecutive 'drone' entries, steps 0-2). Root cause: no code ever
+    // spawned more than the one singleton state.enemy per encounter. Fix
+    // reuses the dormant "DRONE WAVE 2" 3-extra-drone infrastructure
+    // (spawnDroneWave2()/updateDroneWave()/renderDroneWave(), already fully
+    // wired into updateBullets()/the frame loop — see state.droneWave's own
+    // comment) that a prior round built for a different purpose (3
+    // reinforcements AFTER a singleton's death) and then reverted, rather
+    // than writing a second competing multi-enemy system: all 3 drones of
+    // THIS encounter become wave-extra slots — including drone #1 — while
+    // the just-spawned singleton state.enemy is immediately neutered
+    // (deathState forced straight to 'gone', bypassing the death transition
+    // entirely, so onEnemyDefeated()/CLEAR SEQUENCE never fires for it) so
+    // it never renders, updates, attacks, or absorbs bullets a second time
+    // alongside its 3 wave-extra stand-ins — exactly the same "state.enemy
+    // stays deathState!=='alive' for the whole WAVE-2 window" assumption
+    // updateBullets()'s own DRONE WAVE 2 hit-test comment already documents.
+    if (r.introEnemyType === 'drone' && r.routeSection === 'COMMON' && r.routeStep === 0) {
+      state.enemy.deathState = 'gone';
+      spawnDroneWave2(now);
+      state.droneWave.simultaneousMode = true;
+      if (DEBUG_MODE) r10DebugLog('RUN FLOW: first DRONE encounter — spawning 3 simultaneous drones (DRONE WAVE simultaneousMode)');
+    }
     return;
   }
   if (elapsed < RUN_INTRO_EMPTY_MS + RUN_INTRO_REVEAL_MS) return;
@@ -14433,7 +14606,22 @@ function frame(ts) {
     // ONCE, after the mask (below), never before it. The barrel-foreground
     // "behind the drum can" redraw moves with it (was previously paired
     // with this now-removed early draw).
-    renderFlashlightMask();
+    // 12TH ROUND PART A (spec section 2): real-device report — the
+    // flashlight/crosshair stayed visible through the "戦闘間インターバル"
+    // (the COMBAT_INTRO reveal beat between one enemy's defeat and the
+    // next enemy's real fight starting), since this whole branch is gated
+    // only on gameMode!=='escape' — true for EVERY COMBAT-mode run.phase
+    // (COMBAT_INTRO/COMBAT/EVACUATION_WARNING/etc.), not just the live
+    // fight. renderFlashlightMask() is self-contained (draws to its own
+    // offscreen darkCanvas, then drawImage()s the result onto ctx — no
+    // lasting composite-mode/state leak onto ctx either way) so simply
+    // skipping the call outside phase==='COMBAT' cleanly removes the
+    // darkness-mask/light-cone for that duration, not just dims it —
+    // matching spec's explicit "中央へ戻すのではなく完全に非表示" for the
+    // reticle below applied the same way here. warningLight's own emissive
+    // glow (a stage decoration, not "the flashlight") is intentionally left
+    // unconditional.
+    if (state.run.phase === 'COMBAT') renderFlashlightMask();
     // FOLLOWUP HOTFIX: warningLight's own pure-emissive glow redraw — see
     // renderWarningLightsEmissive()'s own comment for exactly why this is
     // safe (no line/bar geometry, never the generic corridor pass) where
@@ -14509,7 +14697,11 @@ function frame(ts) {
     // SNIPER lock/bolt telegraph must stay legible outside the lit circle),
     // right alongside the singleton enemy's own telegraphs.
     renderDroneWave();
-    renderAimReticle();
+    // 12TH ROUND PART A (spec section 2): crosshair OFF outside the live
+    // COMBAT phase, same gate/reasoning as renderFlashlightMask() above —
+    // a genuine no-draw (not re-centered), never shown before the NEXT
+    // fight's own phase==='COMBAT' begins.
+    if (state.run.phase === 'COMBAT') renderAimReticle();
   }
 
   // 9TH ROUND (item 30-35): drawn last so it overlays the whole scene

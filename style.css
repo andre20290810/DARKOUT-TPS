@@ -551,6 +551,23 @@ html, body {
   text-shadow: 0 0 8px rgba(120,180,255,0.5), 0 1px 2px rgba(0,0,0,0.8);
   pointer-events: none;
 }
+/* 12TH ROUND PART A (spec sections 5-6): directly below #distance-readout
+   (EXIT) — same horizontal centering, stacked with EXIT's own line height
+   (12px font + its own vertical rhythm) below it. Hidden by default; shown
+   by updateHud() only while at least one debris piece is in its
+   pre-landing warning window. */
+#exit-warning-readout {
+  position: absolute;
+  top: calc(max(8px, env(safe-area-inset-top)) + 30px + 16px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #ff785a;
+  text-shadow: 0 0 8px rgba(255,90,60,0.55), 0 1px 2px rgba(0,0,0,0.8);
+  pointer-events: none;
+}
 
 /* RUN FLOW SYSTEM: shared transition banner (COMBAT_INTRO/EVACUATION_
    WARNING/ESCAPE_COMPLETE/GAME_OVER short text beats). Sits above the HUD,
@@ -727,6 +744,47 @@ html, body {
   overflow: hidden;
 }
 #enemy-hp-bar-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #ffcf5c, #ff8a3b);
+  transition: width 0.15s ease-out;
+}
+
+/* 12TH ROUND PART A (spec section 3): dedicated 3-bar HUD for the run's
+   opening 3-simultaneous-DRONE encounter. Same position/style language as
+   #enemy-hud directly above (top-right, right-aligned, same 140px bar
+   width) so it reads as "the same HUD, showing 3 entries instead of 1" —
+   stacked with an explicit gap between rows so no two bars ever overlap. */
+#drone-squad-hud {
+  position: absolute;
+  top: 54px;
+  right: max(14px, env(safe-area-inset-right));
+  text-align: right;
+  z-index: 45;
+}
+.drone-squad-row {
+  margin-bottom: 6px;
+}
+.drone-squad-row:last-child {
+  margin-bottom: 0;
+}
+.drone-squad-name {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ffcf5c;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  margin-bottom: 2px;
+}
+.drone-squad-bar-track {
+  width: 140px;
+  height: 8px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.drone-squad-bar-fill {
   width: 100%;
   height: 100%;
   background: linear-gradient(90deg, #ffcf5c, #ff8a3b);
@@ -1227,6 +1285,7 @@ body.escape-mode #escape-timeleft-readout { display: block; }
 body.escape-mode #ammo-hud,
 body.escape-mode #stealth-readout,
 body.escape-mode #enemy-hud,
+body.escape-mode #drone-squad-hud,
 body.escape-mode #focus-hud,
 body.escape-mode #touch-shot,
 body.escape-mode #touch-reload,

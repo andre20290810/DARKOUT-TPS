@@ -232,6 +232,18 @@
       <div id="enemy-name">ROID 1</div>
       <div id="enemy-hp-bar-track"><div id="enemy-hp-bar-fill"></div></div>
     </div>
+    <!-- 12TH ROUND PART A (spec section 3): dedicated 3-bar HUD for the
+         run's opening 3-simultaneous-DRONE encounter (state.droneWave.
+         simultaneousMode) — #enemy-hud above stays the single-enemy display
+         for every other encounter and is simply hidden while this is shown
+         (see updateHud() in game.js), never repurposed/reused as bar #1, so
+         no other encounter's HUD logic needs to change at all. Hidden by
+         default; each bar is independently non-overlapping. -->
+    <div id="drone-squad-hud" hidden>
+      <div class="drone-squad-row"><div class="drone-squad-name">DRONE 1</div><div class="drone-squad-bar-track"><div id="drone-squad-bar-fill-0" class="drone-squad-bar-fill"></div></div></div>
+      <div class="drone-squad-row"><div class="drone-squad-name">DRONE 2</div><div class="drone-squad-bar-track"><div id="drone-squad-bar-fill-1" class="drone-squad-bar-fill"></div></div></div>
+      <div class="drone-squad-row"><div class="drone-squad-name">DRONE 3</div><div class="drone-squad-bar-track"><div id="drone-squad-bar-fill-2" class="drone-squad-bar-fill"></div></div></div>
+    </div>
     <!-- 4th round PART 17: FOCUS gauge (LB / AUTO AIM resource). -->
     <div id="focus-hud">
       <div id="focus-label">FOCUS</div>
@@ -255,6 +267,15 @@
          updated by updateHud() in game.js. Deliberately NOT a "STAGE 1/5"
          counter, per the explicit spec instruction. -->
     <div id="distance-readout">EXIT <span id="distance-readout-value">15000</span>m</div>
+    <!-- 12TH ROUND PART A (spec sections 5-6): "WARNING" is now a HUD
+         element paired with EXIT (directly below it), not text drawn at
+         each falling debris piece's own world position — see
+         renderCollapseObstacles() in game.js, whose old per-debris
+         'WARNING!!' draw is removed. Shown/hidden by updateHud() from a
+         single boolean (ANY debris currently in its pre-landing warning
+         window), so at most ONE "WARNING" is ever visible no matter how
+         many debris pieces are active simultaneously. -->
+    <div id="exit-warning-readout" hidden>WARNING</div>
   </div>
 
   <!-- RUN FLOW SYSTEM: shared short banner reused across every transition
