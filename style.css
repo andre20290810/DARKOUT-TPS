@@ -390,6 +390,25 @@ html, body {
   text-decoration: none;
 }
 
+#pc-download-row {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+#pc-download-link {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #9fffb0;
+  text-decoration: underline;
+}
+#pc-download-hint {
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: #6e7d88;
+}
+
 #scene-canvas {
   position: absolute;
   inset: 0;
@@ -556,16 +575,22 @@ html, body {
    (12px font + its own vertical rhythm) below it. Hidden by default; shown
    by updateHud() only while at least one debris piece is in its
    pre-landing warning window. */
+/* 13TH ROUND (spec section 17): real-device report — WARNING read too
+   small under EXIT. Font-size roughly 1.5x'd (11px -> 17px); the vertical
+   offset below #distance-readout is nudged out slightly (16px -> 19px) to
+   keep clearance from the now-taller text, so it never visually collides
+   with EXIT above it. Position (directly under EXIT)/max-1-shown/no-per-
+   debris-duplicate behavior are all untouched — only size changed here. */
 #exit-warning-readout {
   position: absolute;
-  top: calc(max(8px, env(safe-area-inset-top)) + 30px + 16px);
+  top: calc(max(8px, env(safe-area-inset-top)) + 30px + 19px);
   left: 50%;
   transform: translateX(-50%);
-  font-size: 11px;
+  font-size: 17px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   color: #ff785a;
-  text-shadow: 0 0 8px rgba(255,90,60,0.55), 0 1px 2px rgba(0,0,0,0.8);
+  text-shadow: 0 0 10px rgba(255,90,60,0.6), 0 1px 2px rgba(0,0,0,0.85);
   pointer-events: none;
 }
 
@@ -943,19 +968,48 @@ html, body {
   text-align: center;
   margin-top: 4px;
 }
-#aim-sens-row {
+/* 13TH ROUND (spec sections 19-20): horizontal slider + native tick marks
+   replacing the old 3-button SLOW/STANDARD/FAST row — see index.html's own
+   comment. */
+/* 13TH ROUND (spec sections 43-48): PLAYER LIFE — 4 buttons in one row,
+   same even-division pattern the old AIM SENSITIVITY row used, with a
+   smaller font/padding than the base .pause-menu-btn so "INFINITE" still
+   fits comfortably at the panel's narrow (min-width:220px) end without
+   overlapping neighboring hit areas (spec section 48's own explicit
+   "hit areaを重ねないこと" / narrow-landscape-phone requirement). */
+#player-life-row {
   display: flex;
-  gap: 6px;
+  gap: 5px;
 }
-.aim-sens-btn {
+.player-life-btn {
   flex: 1;
-  font-size: 10px;
-  padding: 8px 6px;
+  font-size: 9px;
+  padding: 8px 3px;
+  text-align: center;
 }
-.aim-sens-btn.active {
+.player-life-btn.active {
   background: rgba(80,180,255,0.35);
   border-color: rgba(120,200,255,0.8);
   color: #fff;
+}
+#aim-sens-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px 8px;
+}
+.aim-sens-edge-label {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: #9fb0bd;
+  flex: 0 0 auto;
+}
+#aim-sens-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 20px;
+  accent-color: #5cb4ff;
+  cursor: pointer;
 }
 
 #debug-panel {
@@ -1073,9 +1127,25 @@ html, body {
    and center, rather than pinning to a screen corner. selectEnemy()/
    setGameMode()/theme-btn click handlers are completely unchanged; only
    this positioning (and the DOM location in index.html) moved. */
-#theme-switch, #gamemode-switch, #enemy-switch {
+#theme-switch, #gamemode-switch {
   display: flex;
   flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+}
+/* 13TH ROUND (spec section 18): ENEMY SELECT restructured into two explicit
+   rows (see index.html's own comment) instead of one flex-wrap row that
+   wrapped unevenly. #enemy-switch is now just a column stacking the two
+   row divs; each row is its own centered flex row with even gaps —
+   row 2 (GABRIEL/ADAM SPHERE/ADAM) reads as 3 evenly-spaced buttons,
+   never one alone off-center. */
+#enemy-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#enemy-switch-row1, #enemy-switch-row2 {
+  display: flex;
   gap: 4px;
   justify-content: center;
 }
@@ -1272,9 +1342,15 @@ html, body {
    body.escape-mode is only ever present while state.gameMode === 'escape'. */
 .touch-escape-only { display: none; }
 body.escape-mode .touch-escape-only { display: block; }
+/* 13TH ROUND (spec section 42): real-device report — SURVIVE text read too
+   small. Font-size roughly 1.5x'd (10px -> 15px). This element sits inside
+   #hud-top-left's own flex column (column-flow, gap:3px, no fixed child
+   offsets) alongside LIFE/AMMO, so the larger box is naturally
+   accommodated without any manual position/gap edits — verified via
+   SIMULATED QA (no overlap with LIFE/FOCUS/AMMO). */
 #escape-timeleft-readout {
   display: none;
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.05em;
   /* 12TH ROUND (items 48-49): SURVIVE MM:SS readout — red, per spec. */

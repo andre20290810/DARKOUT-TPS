@@ -180,6 +180,22 @@
       <div id="controller-store-question" data-en="DON'T HAVE A WIRELESS CONTROLLER?" data-ja="ワイヤレスコントローラーをお持ちでないですか?">DON'T HAVE A WIRELESS CONTROLLER?</div>
       <a id="controller-store-link" href="#" target="_blank" rel="noopener" data-en="GET A WIRELESS CONTROLLER" data-ja="ワイヤレスコントローラーを購入する">GET A WIRELESS CONTROLLER</a>
     </div>
+    <!-- 13TH ROUND (spec sections 29-35): PC DOWNLOAD. This static site's own
+         files (index.html/game.js/style.css/assets/) are ALREADY a
+         self-contained, relative-path-only HTML5 package (verified: no
+         fetch()/XHR/localStorage/getImageData/absolute-URL dependency
+         anywhere in game.js, and a direct file:// launch loads with zero
+         console errors and zero failed asset requests). Rather than build
+         and commit a second, duplicate multi-hundred-MB binary package into
+         this repo, the DOWNLOAD button links to GitHub's own built-in
+         "download repository as ZIP" archive endpoint for this exact
+         branch — extracting it and opening index.html directly (double-
+         click, no server, no installer) reproduces the verified file://
+         launch. -->
+    <div id="pc-download-row">
+      <a id="pc-download-link" href="https://github.com/andre20290810/DARKOUT-TPS/archive/refs/heads/main.zip" data-en="DOWNLOAD FOR PC (ZIP)" data-ja="PC版をダウンロード（ZIP）">DOWNLOAD FOR PC (ZIP)</a>
+      <div id="pc-download-hint" data-en="Unzip, then open index.html in your browser." data-ja="解凍後、index.htmlをブラウザで開いてください">Unzip, then open index.html in your browser.</div>
+    </div>
   </div>
 
   <!-- Main gameplay BGM ("AFTER THE LIMITS"). loop: this is a continuous
@@ -356,13 +372,56 @@
   <div id="pause-menu" hidden>
     <div id="pause-panel">
       <div id="pause-title">PAUSE</div>
-      <button type="button" tabindex="-1" id="touch-controls-toggle" class="pause-menu-btn">TOUCH CONTROLS : OFF</button>
-      <div id="aim-sens-label" class="pause-menu-label">CONTROLLER AIM SENSITIVITY</div>
-      <div id="aim-sens-row">
-        <button type="button" tabindex="-1" data-sens="slow" class="pause-menu-btn aim-sens-btn">SLOW</button>
-        <button type="button" tabindex="-1" data-sens="standard" class="pause-menu-btn aim-sens-btn active">STANDARD</button>
-        <button type="button" tabindex="-1" data-sens="fast" class="pause-menu-btn aim-sens-btn">FAST</button>
+      <!-- 13TH ROUND (spec sections 43-48): PLAYER LIFE — placed above TOUCH
+           CONTROLS per explicit spec ("TOUCH CONTROL ON/OFFより上へ配置").
+           100 is the default/standard value (spec section 44); INFINITE
+           blocks normal-damage HP loss via state.player.infiniteLife (see
+           setPlayerLifeMode() in game.js) rather than a huge HP number. -->
+      <div class="pause-menu-label">PLAYER LIFE</div>
+      <div id="player-life-row">
+        <button type="button" tabindex="-1" data-life="100" class="pause-menu-btn player-life-btn active">100</button>
+        <button type="button" tabindex="-1" data-life="300" class="pause-menu-btn player-life-btn">300</button>
+        <button type="button" tabindex="-1" data-life="500" class="pause-menu-btn player-life-btn">500</button>
+        <button type="button" tabindex="-1" data-life="infinite" class="pause-menu-btn player-life-btn">INFINITE</button>
       </div>
+
+      <button type="button" tabindex="-1" id="touch-controls-toggle" class="pause-menu-btn">TOUCH CONTROLS : OFF</button>
+      <!-- 13TH ROUND (spec sections 19-24): replaced the old 3-button SLOW/
+           STANDARD/FAST row with a real horizontal slider + tick marks, per
+           explicit real-device report that the button-only UI wasn't
+           reading as the requested "目盛り" presentation. The underlying
+           storage/apply mechanism (controllerAimSensitivity in game.js,
+           read fresh every frame, applied identically to both LIGHT and
+           CROSSHAIR — see that variable's own comment) is completely
+           unchanged; only this control surface changed. Native <datalist>
+           ticks (list="aim-sens-ticks") give the "multiple visible steps,
+           not just 3 points" requirement without hand-drawn tick markup.
+           SLOW/STANDARD/FAST preset VALUES (0.5/0.7/1.0, see
+           AIM_SENSITIVITY_PRESETS in game.js) are unchanged and still sit
+           on this exact slider range as three of its many tick positions. -->
+      <div id="aim-sens-label" class="pause-menu-label">CONTROLLER AIM SENSITIVITY</div>
+      <div id="aim-sens-slider-row">
+        <span class="aim-sens-edge-label">SLOW</span>
+        <input type="range" tabindex="-1" id="aim-sens-slider" min="0.30" max="1.00" step="0.01" list="aim-sens-ticks">
+        <span class="aim-sens-edge-label">FAST</span>
+      </div>
+      <datalist id="aim-sens-ticks">
+        <option value="0.30"></option>
+        <option value="0.35"></option>
+        <option value="0.40"></option>
+        <option value="0.45"></option>
+        <option value="0.50"></option>
+        <option value="0.55"></option>
+        <option value="0.60"></option>
+        <option value="0.65"></option>
+        <option value="0.70"></option>
+        <option value="0.75"></option>
+        <option value="0.80"></option>
+        <option value="0.85"></option>
+        <option value="0.90"></option>
+        <option value="0.95"></option>
+        <option value="1.00"></option>
+      </datalist>
 
       <div class="pause-menu-label">STAGE TYPE</div>
       <div id="theme-switch">
@@ -378,14 +437,25 @@
       </div>
 
       <div class="pause-menu-label">ENEMY SELECT / AUTO MODE</div>
+      <!-- 13TH ROUND (spec section 18): real-device report — the old single
+           flex-wrap row (7 variable-width buttons) wrapped unevenly (ADAM
+           alone, off-center, on its own row-2). Restructured into two
+           explicit row divs so row 2 (GABRIEL/ADAM SPHERE/ADAM) is always
+           exactly those 3 buttons, evenly spaced — see #enemy-switch-row2's
+           own CSS. Selection values/data-enemy attributes/event wiring are
+           completely unchanged — this is a pure layout restructure. -->
       <div id="enemy-switch">
-        <button type="button" tabindex="-1" data-enemy="auto" class="enemy-btn active">AUTO</button>
-        <button type="button" tabindex="-1" data-enemy="drone" class="enemy-btn">DRONE</button>
-        <button type="button" tabindex="-1" data-enemy="roid1" class="enemy-btn">ROID 1</button>
-        <button type="button" tabindex="-1" data-enemy="roid2" class="enemy-btn">ROID 2</button>
-        <button type="button" tabindex="-1" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
-        <button type="button" tabindex="-1" data-enemy="adamSphere" class="enemy-btn">ADAM SPHERE</button>
-        <button type="button" tabindex="-1" data-enemy="adam" class="enemy-btn">ADAM</button>
+        <div id="enemy-switch-row1">
+          <button type="button" tabindex="-1" data-enemy="auto" class="enemy-btn active">AUTO</button>
+          <button type="button" tabindex="-1" data-enemy="drone" class="enemy-btn">DRONE</button>
+          <button type="button" tabindex="-1" data-enemy="roid1" class="enemy-btn">ROID 1</button>
+          <button type="button" tabindex="-1" data-enemy="roid2" class="enemy-btn">ROID 2</button>
+        </div>
+        <div id="enemy-switch-row2">
+          <button type="button" tabindex="-1" data-enemy="gabriel" class="enemy-btn">GABRIEL</button>
+          <button type="button" tabindex="-1" data-enemy="adamSphere" class="enemy-btn">ADAM SPHERE</button>
+          <button type="button" tabindex="-1" data-enemy="adam" class="enemy-btn">ADAM</button>
+        </div>
       </div>
 
       <div class="pause-menu-label">DEBUG</div>
@@ -396,6 +466,12 @@
       </div>
 
       <button type="button" tabindex="-1" id="pause-resume-btn" class="pause-menu-btn">RESUME</button>
+      <!-- 13TH ROUND (spec sections 38-41): ENDING test button, directly
+           below RESUME per explicit spec. Connects to the SAME real
+           beginRunEnding()/ENDING/RESULT flow a genuine game-clear uses —
+           no separate/fake ENDING implementation (see its click handler in
+           game.js). -->
+      <button type="button" tabindex="-1" id="pause-ending-btn" class="pause-menu-btn">ENDING</button>
     </div>
   </div>
 

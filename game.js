@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R12';
+const BUILD_VERSION = 'DARKOUT2-R13';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1000,7 +1000,7 @@ const AIM_LIGHT_CLAMP_MARGIN_PX = 6;
 const AIM_PLAYER_MARGIN_PX = 14;
 
 // 7TH ROUND PART 11: CONTROLLER-only AIM sensitivity, adjustable from
-// PAUSE (see #aim-sens-row in index.html / the click handlers below).
+// PAUSE (see #aim-sens-slider in index.html / its input listener below).
 // Applied ONLY to the gamepad's own curved aim axis before it's written
 // into state.input.aimX/Y — TOUCH AIM's contribution is read completely
 // unaffected by this, per spec ("TOUCH側とは必要に応じて別管理").
@@ -1016,7 +1016,17 @@ const AIM_PLAYER_MARGIN_PX = 14;
 // LEFT STICK LIGHT (applyLightCurve()) and player MOVE never read this at
 // all, so neither is affected by this change (item 38).
 const AIM_SENSITIVITY_PRESETS = { slow: 0.5, standard: 0.7, fast: 1.0 };
-let controllerAimSensitivity = AIM_SENSITIVITY_PRESETS.standard;
+// 13TH ROUND (spec sections 21-22): real-device report — the initial AIM
+// speed still read as too fast. Spec's own explicit formula: DEFAULT =
+// SLOW's existing effective value x 0.90 (never "10% of the slider's own
+// range" — a literal multiplier on the real SLOW number). SLOW itself
+// (AIM_SENSITIVITY_PRESETS.slow, 0.5) is unchanged; only the actual
+// starting value changes, to 0.5*0.90=0.45 — below the slider's old
+// min (which was effectively SLOW's own 0.5), so #aim-sens-slider's own
+// min="0.30" in index.html was widened to comfortably fit this new default
+// with room below it too.
+const AIM_SENSITIVITY_DEFAULT = AIM_SENSITIVITY_PRESETS.slow * 0.90;
+let controllerAimSensitivity = AIM_SENSITIVITY_DEFAULT;
 
 const FIRE_COOLDOWN_MS = 130;
 // 12TH ROUND (item 9): MAG_SIZE 12->30. RESERVE_MAX scaled by the SAME
@@ -1054,13 +1064,18 @@ const FIRE_HAPTIC_DURATION_MS = 70;
 const FIRE_HAPTIC_WEAK = 0.35;
 const FIRE_HAPTIC_STRONG = 0.15;
 
-// 5TH ROUND PART 11: 5x the previous value (100 -> 500), per spec — the
-// current definition is read and multiplied, not a guessed replacement
-// number. Existing damage values (SNIPER_DAMAGE/MISSILE_DAMAGE/CLAW_DAMAGE)
-// are intentionally left unchanged this round.
-// 12TH ROUND (item 10): current value (500) read and doubled, per spec —
-// not a guessed replacement number.
-const PLAYER_MAX_HP = 100 * 5 * 2;
+// 5TH ROUND PART 11/12TH ROUND item 10 (HISTORICAL): was progressively
+// multiplied up to 1000 (100 -> 500 -> 1000) across earlier rounds.
+// 13TH ROUND (spec sections 43-48): real-device request — a genuine
+// PLAYER LIFE setting (100/300/500/INFINITE, PAUSE MENU, default 100) is
+// introduced; PLAYER_MAX_HP itself is now the mutable "current max" every
+// existing hp-ratio/HUD/ROUTE-JUDGEMENT read site throughout this file
+// already reads — becoming `let` and being reassigned by
+// setPlayerLifeMode() below means every one of those many existing call
+// sites (never enumerated/edited individually) automatically reflects
+// whatever LIFE setting is currently selected, satisfying spec section 47's
+// "既存の共通player HP stateを使用する" with zero changes to any of them.
+let PLAYER_MAX_HP = 100;
 // 5TH ROUND PART 12: short damage-blink duration — brief enough not to
 // obscure gameplay, clearly visible as an immediate "you were just hit"
 // cue. Never overlaps the moment damage is possible again: damage is only
@@ -1403,24 +1418,54 @@ const SNIPER_DAMAGE = 16;
 // NEXT ROUND (spec section 4): real hit-radius check at resolve time —
 // mirrors SWEEP_HIT_RADIUS_PX's existing role for SWEEP FIRE.
 const SNIPER_HIT_RADIUS_PX = 46;
-// 30TH ROUND item 17: DRONE WAVE 2 — 3 extra Drones, spread across LEFT/
-// CENTER/RIGHT lanes so they never overlap (world-x offsets, same scale as
-// the debris danger-lane spread already tuned this round), each with its
-// own real SNIPER-style attack cycle (reuses SNIPER_LOCK_RED_MS/LOCK_
-// YELLOW_MS/FIRE_TRAVEL_MS/IMPACT_MS/DRONE_SNIPER_COOLDOWN_MS/SNIPER_DAMAGE/
-// SNIPER_HIT_RADIUS_PX above verbatim — never a new/duplicated attack
-// system, and explicitly never MISSILE per spec). Half ENEMY_MAX_HP each
-// (150) — 3 simultaneous full-HP(300) Drones would make WAVE 2 far tankier
-// than WAVE 1 for no stated reason; halved keeps the total WAVE-2 HP pool
-// roughly comparable to one extra full Drone, spread across 3 targets.
-const DRONE_WAVE_EXTRA_COUNT = 3;
-const DRONE_WAVE_LANE_OFFSETS = [-170, 0, 170]; // left / center / right
+// 30TH ROUND item 17 (HISTORICAL): DRONE WAVE 2 — originally 3 extra Drones
+// at one shared engagement depth, each with its own real SNIPER-style attack
+// cycle. 12TH ROUND PART A repurposed this as "DRONE #2/#3" of the run's
+// opening 3-simultaneous-DRONE encounter (state.droneWave.simultaneousMode)
+// — see updateCombatIntroPhase()'s spawn site.
+// 13TH ROUND (spec sections 3-8): real-device report — all 3 drones read as
+// "a single clump side by side" (same DRONE_WAVE_Z depth, fixed non-moving
+// lanes) instead of a staged formation, and all 3 could fire on the player
+// at once. Redesigned: DRONE #1 is no longer one of these wave slots at
+// all — it is now the REAL state.enemy singleton, spawned/updated/rendered
+// through the exact same unmodified path the original 1-DRONE fight always
+// used (so its own position/depth/scale/movement/attack are automatically
+// "the old single-DRONE fight, unchanged" by construction, per spec section
+// 4 — no new code needed for DRONE #1 itself). Only DRONE #2/#3 remain as
+// wave-extra slots now (DRONE_WAVE_EXTRA_COUNT: 3->2), staged at
+// progressively farther DEPTHS (DRONE_WAVE_EXTRA_Z, not one shared Z) so
+// existing perspective/depth scaling alone makes them read as farther back
+// and smaller — no manual scale override. Each also gets its own
+// independent lateral patrol (see updateDroneWave()'s own movement block)
+// instead of a static fixed lane, with a distinct phase per extra so they
+// never move in visible lockstep. Neither still attacks (spec section 7:
+// "攻撃するのは最前列DRONE#1のみ") — updateDroneWave()'s own state machine
+// no longer transitions extras past 'idle' into the SNIPER lock/fire chain
+// at all; damage/death/independent-HP stay fully live (spec section 7's
+// own "被弾判定/死亡判定は独立したまま維持").
+const DRONE_WAVE_EXTRA_COUNT = 2;
 const DRONE_WAVE_HP = 150;
-const DRONE_WAVE_DESCEND_STAGGER_MS = 350; // gap between each of the 3 starting their own descent — never simultaneous
+const DRONE_WAVE_DESCEND_STAGGER_MS = 350; // gap between each extra starting their own descent — never simultaneous
 const DRONE_WAVE_DESCEND_MS = 650;
 const DRONE_WAVE_DESCEND_DROP_PX = 240; // how far above its resting screen-Y each one starts
-const DRONE_WAVE_GRACE_MS = 700; // brief pause after landing before it can begin attacking
-const DRONE_WAVE_Z = 420; // fixed engagement depth for all 3 (roughly mid COMBAT range)
+const DRONE_WAVE_GRACE_MS = 700; // brief pause after landing before independent patrol movement begins
+// 13TH ROUND: DRONE #1 (the real singleton) operates roughly in the 550-900
+// world-Z range (spawnEnemy()'s default 900, easing down via the shared
+// idle-state autonomous approach toward approachZMinForRoid()'s own
+// dynamically-computed floor — see updateEnemy()'s COMBAT-mode idle branch).
+// #2/#3 are staged comfortably FARTHER than that whole range so the front-
+// to-back ordering (spec's own "PLAYER / DRONE#1(most front) / DRONE#2 /
+// DRONE#3(most back)" diagram) can never invert during the fight, clamped
+// well under ENEMY_Z_MAX(1500).
+const DRONE_WAVE_EXTRA_Z = [1000, 1280];
+// 13TH ROUND: independent lateral patrol for #2/#3 — reuses the SAME
+// sinusoidal time-driven pattern (never player-position-driven, so it can
+// never look like player-tracking) DRONE's own singleton patrol already
+// uses (DRONE_PATROL_LANE_AMPLITUDE_PX/DRONE_PATROL_PERIOD_MS, already
+// confirmed "clearly visible, never overlapping" on screen), each extra
+// given a distinct phase offset (below) so #2/#3 are never in visible
+// lockstep with each other or with DRONE #1's own independent patrol.
+const DRONE_WAVE_PATROL_PHASE_OFFSETS = [2.05, 4.35]; // radians, arbitrary but fixed/distinct per extra
 const DRONE_WAVE_HIT_RADIUS_PX = SNIPER_HIT_RADIUS_PX + 4; // slightly larger than the sniper lock radius — the wave drone's own screen-space body hit test, independent of computeEnemyDrawRect() (that path stays state.enemy-only)
 const DRONE_WAVE_DEATH_MS = 500; // short explode-then-gone window per extra Drone, distinct from the (longer) singleton DEATH_EXPLODE_MS since these are half-HP support units
 
@@ -1806,6 +1851,7 @@ const canvas = document.getElementById('scene-canvas');
 const ctx = canvas.getContext('2d');
 
 const hpFillEl = document.getElementById('hp-bar-fill');
+const hpLabelEl = document.getElementById('hp-label');
 // 10TH ROUND (items 25-27): AMMO consolidated to ONE readout, #ammo-hud
 // (below #focus-hud) — the old top-right #ammo-readout (current/RESERVE)
 // and the 9TH ROUND under-HP readout (current/MAGAZINE) both duplicated
@@ -3420,24 +3466,29 @@ if (loadingReloadBtnEl) {
 }
 
 // ---------------------------------------------------------------------
-// BOOT FLOW ROUND: official title/intro video — see index.html's
-// #intro-video comment for the element itself. Two-phase playback:
-//   (1) LOADING < 100%: clamped to a short 0.0-1.5s SEGMENT LOOP, driven by
-//       requestAnimationFrame so the loop-back only ever happens once real
-//       playback genuinely crosses the boundary (never a fixed-interval
-//       currentTime rewrite, which is what would make it visibly judder).
-//   (2) LOADING === 100%: released into a normal native full-length
-//       loop (browser-handled, zero further JS per frame).
-// ---------------------------------------------------------------------
-const INTRO_VIDEO_LOOP_END_SEC = 1.5;
-let introVideoFullLoopActive = false;
-function tickIntroVideoSegmentLoop() {
-  requestAnimationFrame(tickIntroVideoSegmentLoop);
-  if (!introVideoEl || introVideoFullLoopActive) return;
-  if (introVideoEl.currentTime >= INTRO_VIDEO_LOOP_END_SEC) {
-    introVideoEl.currentTime = 0;
-  }
-}
+// BOOT FLOW ROUND (HISTORICAL): official title/intro video — see index.
+// html's #intro-video comment for the element itself. Originally a two-
+// phase playback: LOADING<100% clamped to a short 0.0-1.5s SEGMENT LOOP
+// (never showing the video's own title-card reveal, which only appears
+// around the 7s mark of the 8s clip), released into a full native loop
+// only once LOADING reached 100%.
+// 13TH ROUND (spec section 1-2): real-device report — the LOADING-phase
+// clip read as "the replacement video isn't showing", even though the
+// correct file was genuinely loaded — root cause was exactly this 1.5s
+// clamp: LOADING only ever showed the first 1.5s of specified video
+// (a plain walk-in-corridor shot, no title card), so it didn't visually
+// read as "the specified video" the way the full clip (used after 100%)
+// does. Fix: play the SAME full video on a native loop from the very
+// first frame — LOADING (0-100%) and TAP TO START now show the identical,
+// complete, already-specified intro clip; no second/different video
+// asset was found in the repo for a LOADING-only role (see this round's
+// own completion report for the asset investigation), so per this
+// round's explicit "don't substitute a different asset on your own
+// guess" instruction, no new video file was introduced — only the
+// playback-window restriction was removed. This also naturally satisfies
+// "no new black-frame/stutter at the 100% transition": there is no
+// longer any transition to make (both phases already play identically).
+let introVideoFullLoopActive = true;
 // Called once at boot (see the bottom of this file). play() before any
 // user gesture only succeeds because the element is muted+playsinline
 // (see index.html) — this is exactly what iOS Safari's autoplay policy
@@ -3445,23 +3496,20 @@ function tickIntroVideoSegmentLoop() {
 // separately, at TAP TO START (handleTapToStart() below).
 function initIntroVideo() {
   if (!introVideoEl) return;
+  introVideoEl.loop = true;
   const p = introVideoEl.play();
   if (p && p.catch) {
     p.catch((err) => {
       if (DEBUG_MODE) r10DebugLog('INTRO VIDEO PLAY REJECTED: ' + (err && err.name ? err.name : String(err)));
     });
   }
-  requestAnimationFrame(tickIntroVideoSegmentLoop);
 }
-// spec explicitly allows (and expects) one visible jump back to 0 exactly
-// at this transition, then native loop="" takes over from there.
+// 13TH ROUND: kept as a harmless no-op (still called from the LOADING
+// 100% transition site) — introVideoEl already plays the full native
+// loop from initIntroVideo() above, so there is nothing left to switch.
 function switchIntroVideoToFullLoop() {
   if (!introVideoEl) return;
   introVideoFullLoopActive = true;
-  introVideoEl.loop = true;
-  introVideoEl.currentTime = 0;
-  const p = introVideoEl.play();
-  if (p && p.catch) p.catch(() => {});
 }
 
 // BOOT FLOW ROUND: LOADING-100% transition — releases the video's 0-1.5s
@@ -3937,7 +3985,10 @@ const state = {
   // own flag so that original concept's own code (still fully intact, just
   // never triggered) needs zero changes and stays distinguishable from this
   // new trigger path.
-  droneWave: { active: false, wave2Triggered: false, simultaneousMode: false, extra: [] },
+  // 13TH ROUND: allExtrasDead tracks the "extras finished, waiting on
+  // DRONE #1" half of the two-sided completion check — see
+  // updateDroneWave()/onEnemyDefeated()'s own comments.
+  droneWave: { active: false, wave2Triggered: false, simultaneousMode: false, allExtrasDead: false, extra: [] },
 
   // 9TH ROUND (item 30-35): the shared "escape the darkness" CLEAR
   // SEQUENCE — gate appears -> opens -> player runs through -> light
@@ -4126,6 +4177,37 @@ const state = {
     lastReportAt: 0,
   },
 };
+
+// 13TH ROUND (spec sections 43-48): PLAYER LIFE / INFINITE — state.player.hp
+// is converted to an accessor property backed by _hp right after state
+// finishes initializing above. Every existing read (p.hp) and every
+// existing damage/reset write (p.hp = ... / p.hp = Math.max(0, p.hp - X),
+// scattered across SNIPER/MISSILE/CLAW/SWEEP/debris/ESCAPE damage and the
+// GAME_OVER/route reset sites) keeps working completely unchanged — plain
+// property syntax reads/writes an accessor identically. Only the SETTER's
+// own behavior is new: while state.player.infiniteLife is true, it refuses
+// any decrease, so _hp can never reach 0 — the existing, untouched
+// `state.player.hp <= 0` check in frame() that actually calls
+// triggerGameOver() simply never observes that happening. A single, central
+// choke point, per spec's own explicit preference for "an explicit flag"
+// over inflating hp to some huge number, and without needing to find/edit
+// every individual damage call site.
+state.player._hp = state.player.hp;
+delete state.player.hp;
+state.player.infiniteLife = false;
+Object.defineProperty(state.player, 'hp', {
+  get() { return this._hp; },
+  set(v) {
+    if (this.infiniteLife && v < this._hp) return;
+    this._hp = v;
+  },
+  enumerable: true,
+  configurable: true,
+});
+// PLAYER LIFE mode itself (100|300|500|'infinite') — stored on state.player
+// alongside every other per-player setting, default 100 (spec section 44's
+// "標準初期値は100"). See setPlayerLifeMode() below, the sole writer.
+state.player.lifeMode = 100;
 
 // fixed-size particle pool (avoid per-shot allocation churn)
 const PARTICLE_POOL_SIZE = 48;
@@ -5415,6 +5497,7 @@ document.querySelectorAll('.enemy-btn').forEach((btn) => {
 const pauseMenuEl = document.getElementById('pause-menu');
 const touchControlsEl = document.getElementById('touch-controls');
 const touchToggleBtnEl = document.getElementById('touch-controls-toggle');
+const aimSensSliderEl = document.getElementById('aim-sens-slider');
 
 // PART 6/7/8: touch UI defaults to HIDDEN (state.touchControlsVisible
 // starts false) — only [hidden]/a CSS class is ever touched here, the
@@ -5429,6 +5512,31 @@ function setTouchControlsVisible(visible) {
   touchToggleBtnEl.textContent = 'TOUCH CONTROLS : ' + (visible ? 'ON' : 'OFF');
 }
 setTouchControlsVisible(state.touchControlsVisible);
+
+// 13TH ROUND (spec sections 43-48): PLAYER LIFE — 100/300/500/INFINITE.
+// mode is 100|300|500|'infinite'. Applies to COMBAT and ESCAPE alike
+// (spec section 47) since both already read/write the SAME
+// state.player.hp/PLAYER_MAX_HP this reassigns — no per-mode branching
+// needed anywhere else. current/max are set equal to the newly selected
+// value immediately (spec section 45's own worked examples), including
+// when switching INTO or OUT OF INFINITE.
+function setPlayerLifeMode(mode) {
+  const p = state.player;
+  p.lifeMode = mode;
+  p.infiniteLife = mode === 'infinite';
+  PLAYER_MAX_HP = mode === 'infinite' ? 500 : mode;
+  p._hp = PLAYER_MAX_HP; // bypasses the infiniteLife-guarded setter directly — this is a mode-change reset, not damage
+  if (DEBUG_MODE) r10DebugLog('PLAYER LIFE: mode=' + mode + ' max=' + PLAYER_MAX_HP + ' infinite=' + p.infiniteLife);
+}
+document.querySelectorAll('.player-life-btn').forEach((btn) => {
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    document.querySelectorAll('.player-life-btn').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    const raw = btn.dataset.life;
+    setPlayerLifeMode(raw === 'infinite' ? 'infinite' : parseInt(raw, 10));
+  });
+});
 
 // 12TH ROUND (items 6-9): DEBUG DISPLAY ON/OFF — toggles the VISUAL panels
 // (#debug-panel FPS bar + #r10-debug-panel) only; DEBUG COLLECTION
@@ -5817,20 +5925,42 @@ document.getElementById('pause-btn').addEventListener('pointerdown', (e) => { e.
 // it here is low-risk: a single tap on a real <button> element does not
 // need scroll/zoom suppression the way a custom touch-joystick <div> does.
 document.getElementById('pause-resume-btn').addEventListener('pointerdown', () => { togglePauseMenu(); });
+// 13TH ROUND (spec sections 38-41): ENDING test button — closes PAUSE via
+// the SAME togglePauseMenu() RESUME already uses (correctly un-pausing,
+// resuming bgmAudioEl, clearing stale touch-held flags, etc. — see its own
+// comment), THEN calls beginRunEnding() directly: the EXACT SAME function a
+// real A-ROUTE-ADAM/B-ROUTE-FINAL-GABRIEL clear already calls (see
+// decideNextRunStep()'s own isFinalCombat branch) — no second/parallel
+// ENDING state machine. state.score/state.run.totalPlayTimeMs are never
+// touched here, so beginEnding()->updateEndingPhase()->showResultScreen()
+// naturally reads whatever the CURRENT live values are at the instant this
+// button is pressed (spec sections 40's own "固定値を使用しない"), exactly
+// like a genuine playthrough. Order matters: closing PAUSE FIRST means
+// endingBgmAudioEl.play() (inside beginEnding(), called next) starts while
+// state.paused is already false, so it is never immediately paused again by
+// stale pause state (spec section 41's own explicit "ENDING musicがpause
+// されたまま" failure mode).
+document.getElementById('pause-ending-btn').addEventListener('pointerdown', () => {
+  if (state.paused) togglePauseMenu();
+  beginRunEnding(performance.now());
+});
 touchToggleBtnEl.addEventListener('pointerdown', (e) => { e.preventDefault(); setTouchControlsVisible(!state.touchControlsVisible); });
 
-// 7TH ROUND PART 11: CONTROLLER AIM SENSITIVITY (LOW/NORMAL/HIGH) — takes
-// effect immediately (controllerAimSensitivity is read fresh every frame
-// in frame()'s own input section), no separate "apply" step. TOUCH AIM is
-// never affected — see controllerAimSensitivity's own comment.
-document.querySelectorAll('.aim-sens-btn').forEach((btn) => {
-  btn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    document.querySelectorAll('.aim-sens-btn').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    controllerAimSensitivity = AIM_SENSITIVITY_PRESETS[btn.dataset.sens] || AIM_SENSITIVITY_PRESETS.standard;
+// 7TH ROUND PART 11 (HISTORICAL): CONTROLLER AIM SENSITIVITY used to be a
+// 3-button SLOW/STANDARD/FAST row. 13TH ROUND (spec sections 19-24, 21-22):
+// replaced with a real slider (#aim-sens-slider, see index.html) — still
+// takes effect immediately (controllerAimSensitivity is read fresh every
+// frame in frame()'s own input section, unchanged), no separate "apply"
+// step, satisfying spec section 24's explicit "reload不要で反映" without
+// any new plumbing. TOUCH AIM is never affected — see
+// controllerAimSensitivity's own comment. The 'input' event (not 'change')
+// is used so it updates continuously while dragging, not just on release.
+if (aimSensSliderEl) {
+  aimSensSliderEl.value = String(controllerAimSensitivity);
+  aimSensSliderEl.addEventListener('input', () => {
+    controllerAimSensitivity = parseFloat(aimSensSliderEl.value) || AIM_SENSITIVITY_PRESETS.slow;
   });
-});
+}
 
 // ---------------------------------------------------------------------
 // UPDATE
@@ -6338,29 +6468,25 @@ function updateEscapePlayer(dt, now, moveX, moveY, actions) {
     // derived from the true post-dash landing spot, not a guess.
     const newStrafeOffset = Math.max(-maxOff, Math.min(maxOff, p.strafeOffset + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX));
     if (imgReady(frameNow.img)) {
-      // 12TH ROUND PART A (spec section 4): real-device report — the WEST
-      // ghost appeared on the player's EAST (wrong) side whenever the dash
-      // wasn't screen-edge-clamped, and only looked correct (west-shifted)
-      // right at the west edge. Root cause: ghostCx was the A/B MIDPOINT
-      // measured from oldCx (the PRE-dash position, a "fixed" snapshot of
-      // where the player used to be) — so on an unclamped dash the ghost
-      // always ended up sitting BETWEEN the start and landing point, i.e.
-      // on the AWAY side of the just-landed body, never past it. The one
-      // "correct-looking" case (near the west edge) was really just the
-      // clamp fully cancelling p.strafeOffset's movement (newStrafeOffset
-      // === p.strafeOffset), making old and new position coincide — pure
-      // coincidence, not a real fix. Per spec's explicit instruction to use
-      // coordinates relative to the player's CURRENT position rather than
-      // a fixed/stale one, ghostCx is now measured from newCx — the
-      // player's actual POST-dash landed position — extended the same half-
-      // distance further in the dash direction, so the ghost always reads
-      // as "just past where the player now stands, in the direction they
-      // just moved" regardless of start position. Verified at screen-
-      // center, west-edge and east-edge for both directions (see round's
-      // own QA script) — west DASH's existing ~15deg west tilt is
-      // unchanged; east DASH is now the exact mirror.
+      // 12TH ROUND PART A (spec section 4, REVERTED — see 13TH ROUND below):
+      // that round changed ghostCx to be measured from newCx (the POST-dash
+      // landed position) extended further onward, believing the plain A/B
+      // midpoint was the root cause of a reported "ghost on the wrong side"
+      // bug. 13TH ROUND (spec sections 11-15): real-device re-report — this
+      // was itself wrong; the user's explicit, worked-example spec is
+      // unambiguous: "ghostX = midpoint(startX, endX)" — literally the
+      // midpoint between the PRE-dash position (A / oldCx) and the POST-dash
+      // landed position (B / newCx), NEVER B plus a further extension in the
+      // dash direction ("残像はBを基準としてさらに進行方向へ出すものではない"
+      // — spec's own explicit prohibition of exactly the 12TH ROUND formula).
+      // Reverted to the true midpoint of the REAL A and REAL B (newCx already
+      // reflects post-clamp B correctly either way) — see this round's own
+      // QA script for startX/endX/ghostX/expectedMidpointX logged and
+      // verified equal at screen-center/west-edge/east-edge, both directions.
+      // The existing ~15deg west tilt (afterimageAngleRad above) and the
+      // east-direction mirror are both untouched.
       const newCx = state.centerX + newStrafeOffset;
-      const ghostCx = newCx + dashDirSign * ESCAPE_STRAFE_DASH_DISTANCE_PX * 0.5;
+      const ghostCx = (oldCx + newCx) / 2;
       // DIAGNOSIS ROUND (spec sections 9-10): computeEscapePlayerRectClamped()
       // (not the raw computeEscapePlayerDrawRect()) so the ghost's own tire
       // sits on the SAME label-clamped ground line renderEscapePlayer() will
@@ -7464,20 +7590,26 @@ function resolveSniperImpact(now) {
   }
 }
 
-// 30TH ROUND item 17: DRONE WAVE 2 — spawns the 3 EXTRA Drones once the
-// singleton WAVE-1 Drone (state.enemy) has been defeated. Deliberately a
-// fully separate, additive parallel system (state.droneWave.extra[]) rather
-// than any change to state.enemy or its many kind-specific branches — every
-// other boss's single-enemy-instance assumptions (state.enemy is always
-// exactly one thing) stay completely intact; this never writes to
-// state.enemy at all.
+// 30TH ROUND item 17 (HISTORICAL)/13TH ROUND (spec sections 3-8): DRONE
+// WAVE 2 — spawns DRONE #2/#3, the two background formation drones for the
+// run's opening 3-DRONE encounter. Deliberately a fully separate, additive
+// parallel system (state.droneWave.extra[]) rather than any change to
+// state.enemy (DRONE #1, the real singleton) or its many kind-specific
+// branches — every other boss's single-enemy-instance assumptions
+// (state.enemy is always exactly one thing) stay completely intact; this
+// never writes to state.enemy at all. Each extra gets its own DEPTH
+// (DRONE_WAVE_EXTRA_Z[i], staggered farther per index — spec's own "DRONE#1
+// most front / #2 farther / #3 farthest" diagram) and its own PATROL PHASE
+// (DRONE_WAVE_PATROL_PHASE_OFFSETS[i] — see updateDroneWave()'s movement
+// block) so the two never move in lockstep or share a lane.
 function spawnDroneWave2(now) {
   const dw = state.droneWave;
   dw.extra = [];
   for (let i = 0; i < DRONE_WAVE_EXTRA_COUNT; i++) {
     dw.extra.push({
-      lane: DRONE_WAVE_LANE_OFFSETS[i] || 0,
-      z: DRONE_WAVE_Z,
+      lane: 0,
+      z: DRONE_WAVE_EXTRA_Z[i] || DRONE_WAVE_EXTRA_Z[DRONE_WAVE_EXTRA_Z.length - 1],
+      patrolPhaseOffset: DRONE_WAVE_PATROL_PHASE_OFFSETS[i] || (i * 2.4),
       hp: DRONE_WAVE_HP,
       maxHp: DRONE_WAVE_HP,
       state: 'descending',
@@ -7518,12 +7650,14 @@ function resolveDroneWaveSniperImpact(d, now) {
   }
 }
 
-// Per-bullet hit-test against the WAVE-2 extras, called from updateBullets()
-// BEFORE it falls through to the normal state.enemy hit-test (which is
-// naturally a no-op during this window — WAVE 1's own e.deathState is
-// already 'gone'). Returns true once a bullet has been consumed by a wave
-// drone (hit OR out-of-effective-range spark), so updateBullets() knows not
-// to also run its own state.enemy-based resolution for that same bullet.
+// Per-bullet hit-test against DRONE #2/#3 (the WAVE-2 extras), called from
+// updateBullets() BEFORE it falls through to the normal state.enemy hit-
+// test — 13TH ROUND: state.enemy (DRONE #1) is genuinely alive/hittable
+// through that normal path during this encounter, so a miss here (bullet
+// not near either extra) correctly falls through to it. Returns true once
+// a bullet has been consumed by a wave drone (hit OR out-of-effective-range
+// spark), so updateBullets() knows not to also run its own state.enemy-
+// based resolution for that same bullet.
 function resolveDroneWaveBulletHit(b, now) {
   const dw = state.droneWave;
   for (const d of dw.extra) {
@@ -7558,15 +7692,24 @@ function resolveDroneWaveBulletHit(b, now) {
 // COMBAT's normal boss-defeat path uses (triggerClearSequence) — WAVE 1's
 // own defeat deliberately withheld that call (see updateEnemyCore()) so the
 // encounter's real end condition is "all of WAVE 2 down", not just WAVE 1.
+// 13TH ROUND (spec sections 3-8): DRONE #2/#3 no longer roll an attack at
+// all — descending -> grace -> idle (permanent, patrol-only). The old
+// idle->lock_red->lock_yellow->fire->impact->cooldown SNIPER chain is
+// removed from this per-extra state machine entirely (spec section 7:
+// "DRONE#2/#3は攻撃しない" — nothing left here can ever set those states),
+// though resolveDroneWaveSniperImpact()/the SNIPER_LOCK_RED_MS-family
+// constants are left completely untouched elsewhere (still genuinely used
+// by DRONE #1's own normal singleton SNIPER attack and by every other
+// SNIPER-kind enemy) — only THIS extras-only chain had the attack roll
+// removed, not the shared attack system itself.
 function updateDroneWave(dt, now) {
   const dw = state.droneWave;
   if (!dw.active) return;
-  let allDead = true;
+  let allExtrasDead = true;
   for (const d of dw.extra) {
     if (d.state === 'dead') continue;
-    allDead = false;
+    allExtrasDead = false;
 
-    const proj = project(d.lane, CORRIDOR_FLOOR_Y - DRONE_WORLD_HEIGHT * 0.55, d.z);
     let descendOffsetY = 0;
 
     if (d.state === 'dying') {
@@ -7580,49 +7723,28 @@ function updateDroneWave(dt, now) {
         d.attackUntil = now + DRONE_WAVE_GRACE_MS;
       }
     } else if (d.state === 'grace') {
-      if (now >= d.attackUntil) {
-        d.state = 'idle';
-        d.nextIdleCheckAt = now + (400 + Math.random() * 900);
-      }
-    } else if (d.state === 'idle') {
-      if (now >= d.nextIdleCheckAt) {
-        d.state = 'lock_red';
-        d.attackUntil = now + SNIPER_LOCK_RED_MS;
-      }
-    } else if (d.state === 'lock_red' || d.state === 'lock_yellow') {
-      if (d.state === 'lock_red') {
-        const m = playerMarkerPos();
-        d.lockX = m.x; d.lockY = m.y;
-      }
-      if (now >= d.attackUntil) {
-        if (d.state === 'lock_red') {
-          d.state = 'lock_yellow';
-          d.attackUntil = now + SNIPER_LOCK_YELLOW_MS;
-        } else {
-          d.fireFromX = proj.x; d.fireFromY = proj.y + descendOffsetY;
-          d.fireToX = d.lockX; d.fireToY = d.lockY;
-          d.state = 'fire';
-          d.attackUntil = now + SNIPER_FIRE_TRAVEL_MS;
-        }
-      }
-    } else if (d.state === 'fire') {
-      if (now >= d.attackUntil) {
-        d.state = 'impact';
-        d.attackUntil = now + SNIPER_IMPACT_MS;
-        resolveDroneWaveSniperImpact(d, now);
-      }
-    } else if (d.state === 'impact') {
-      if (now >= d.attackUntil) {
-        d.state = 'cooldown';
-        d.attackUntil = now + DRONE_SNIPER_COOLDOWN_MS;
-      }
-    } else if (d.state === 'cooldown') {
-      if (now >= d.attackUntil) {
-        d.state = 'idle';
-        d.nextIdleCheckAt = now + (700 + Math.random() * 1200);
-      }
+      if (now >= d.attackUntil) d.state = 'idle';
+    }
+    // 'idle' has no further transition — this extra simply patrols (below)
+    // for the rest of the encounter, or until it dies.
+
+    // 13TH ROUND (spec sections 5-6): independent real-position lateral
+    // patrol — same time-driven sinusoidal pattern (never player-position-
+    // driven) DRONE #1's own singleton patrol already uses (see
+    // updateEnemyFacing()'s e.type==='drone' branch/DRONE_PATROL_*), each
+    // extra offset by its own fixed patrolPhaseOffset so #2/#3 (and #1,
+    // which runs its own independent copy of this same pattern) are never
+    // in visible lockstep. This writes d.lane itself (the real logic
+    // position project() below reads for BOTH render and — via d.screenX/Y,
+    // resolveDroneWaveBulletHit()'s own hit-test — collision), never a
+    // render-only offset. Runs once landed (grace/idle), not while still
+    // descending or dying.
+    if (d.state === 'grace' || d.state === 'idle') {
+      const patrolPhase = (now % DRONE_PATROL_PERIOD_MS) / DRONE_PATROL_PERIOD_MS;
+      d.lane = Math.sin(patrolPhase * Math.PI * 2 + d.patrolPhaseOffset) * DRONE_PATROL_LANE_AMPLITUDE_PX;
     }
 
+    const proj = project(d.lane, CORRIDOR_FLOOR_Y - DRONE_WORLD_HEIGHT * 0.55, d.z);
     // still descending drones (descendStartedAt in the future) hold at the
     // fully-raised offset until their own staggered start time arrives.
     if (d.state === 'descending' && now < d.descendStartedAt) descendOffsetY = -DRONE_WAVE_DESCEND_DROP_PX;
@@ -7630,19 +7752,30 @@ function updateDroneWave(dt, now) {
     d.screenY = proj.y + descendOffsetY;
     d.scale = proj.scale;
   }
-  if (allDead && dw.simultaneousMode) {
-    // 12TH ROUND PART A (spec section 3): the first COMBAT of the run —
-    // all 3 simultaneous drones share these same wave-extra slots (see
-    // updateCombatIntroPhase()'s spawn site), and state.enemy itself was
-    // deliberately neutered (deathState forced to 'gone', never going
-    // through onEnemyDefeated()) rather than counted as one of the 3, so
-    // this dedicated branch is this encounter's ONLY clear trigger — never
-    // routed through the autoMode.active check below, which (autoMode
-    // defaults true and is never flipped false by the real route-driven
-    // path — only by the manual pause-menu ENEMY SELECT) would otherwise
-    // hijack a real run into advanceEnemyRotation()'s unrelated debug
-    // AUTO_SEQUENCE cycle instead of the fixed ROUTE table.
-    dw.active = false;
+  if (allExtrasDead) dw.allExtrasDead = true;
+  if (!dw.simultaneousMode) {
+    // Dormant "3 extras after WAVE-1 singleton death" reinforcement concept
+    // (never triggered by any live code path — see this system's own
+    // history comment) — left fully intact, unchanged AUTO-vs-MANUAL split.
+    if (allExtrasDead) {
+      dw.active = false;
+      if (state.autoMode.active) {
+        advanceEnemyRotation(now);
+      } else {
+        triggerClearSequence(now, 'combat');
+      }
+    }
+    return;
+  }
+  // 13TH ROUND (spec section 8): the run's opening 3-DRONE encounter now
+  // clears only once BOTH sides are down — DRONE #1 (the real state.enemy
+  // singleton, going through its own completely normal death sequence —
+  // see onEnemyDefeated()'s own new droneWave-aware branch for the other
+  // half of this two-sided check) AND #2/#3 (dw.extra, checked here).
+  // Whichever side finishes LAST is the one that actually fires the clear;
+  // the side that finishes first just records itself as done and waits.
+  if (allExtrasDead) dw.active = false;
+  if (allExtrasDead && state.enemy.deathState === 'gone') {
     dw.simultaneousMode = false;
     // ROUTE_COMMON has 3 consecutive 'drone' steps (0,1,2) modeling the old
     // sequential 3-fight beat this single simultaneous encounter now
@@ -7652,21 +7785,6 @@ function updateDroneWave(dt, now) {
     // lands on step 3 (the ADAM SPHERE ESCAPE step), not step 1.
     state.run.routeStep += 2;
     triggerClearSequence(now, 'combat');
-  } else if (allDead) {
-    dw.active = false;
-    // FOLLOWUP HOTFIX: mirrors the exact same AUTO-vs-MANUAL split every
-    // other enemy defeat already uses (see updateEnemyCore() above) — AUTO
-    // MODE advances straight to the next AUTO_SEQUENCE entry (so the DRONE
-    // encounter, wave included, ends cleanly and the rotation continues —
-    // never a second WAVE 2, since advanceEnemyRotation() calls spawnEnemy()
-    // which both changes e.type and resets droneWave state fresh); MANUAL
-    // real play keeps its existing CLEAR SEQUENCE (gate/whiteout, then
-    // respawns a fresh single DRONE to refight).
-    if (state.autoMode.active) {
-      advanceEnemyRotation(now);
-    } else {
-      triggerClearSequence(now, 'combat');
-    }
   }
 }
 
@@ -8221,6 +8339,7 @@ function spawnEnemy(type) {
   state.droneWave.active = false;
   state.droneWave.wave2Triggered = false;
   state.droneWave.simultaneousMode = false;
+  state.droneWave.allExtrasDead = false;
   state.droneWave.extra = [];
   e.type = type;
   // 9TH ROUND (item 25/27-28): GABRIEL/ADAM used to spawn at the same
@@ -9560,7 +9679,31 @@ function computeEnemyDrawRect() {
     // reuses real existing ADAM attack art) — ADAM-only; GABRIEL's own
     // counterAttack still correctly uses its real gabriel_claw_release.png
     // body sprite via the unchanged branch below.
-    const inAttackPose = e.attackState === 'telegraph' || e.attackState === 'impact'
+    // 13TH ROUND (spec sections 9-10): real-device report — ADAM's telegraph
+    // (the ~0.3s reaction window right after arriving at melee range, before
+    // the strike itself) showed the SAME attackVariants image 'impact' uses,
+    // but at a MUCH smaller computed size (ADAM_CLAW_APPROACH_SIZE_MULT≈0.99x
+    // vs ADAM_CLAW_RELEASE_SIZE_MULT≈2.12x below — same z, same file, ~2.14x
+    // size jump confirmed via direct measurement) — reading exactly as the
+    // reported "攻撃画像を小さくしたような予備動作画像". Root cause: 'telegraph'
+    // was included in inAttackPose, forcing ADAM's telegraph through the
+    // attackVariants branch — even though this very file's own 30TH ROUND
+    // size-multiplier comment ("telegraph/counterApproach are the...about to
+    // strike poses (windup art)") already documented the INTENDED design as
+    // telegraph using the windup pose, never attackVariants; the image-
+    // selection formula itself just never matched that intent. Fix: removed
+    // 'telegraph' from inAttackPose (ADAM's the only reader of this — see the
+    // one remaining use site below), so ADAM's telegraph now correctly falls
+    // through to the SAME `set.windup` branch DEFENSE/counterApproach already
+    // use (the existing claw-raised "ready" pose, no new asset), landing
+    // ADAM's visual chain on approach -> windup(ready) -> attackVariants
+    // (impact, real strike) — no small in-between copy of the attack image.
+    // CLAW_WINDUP_MS/GABRIEL_NON_DEFENSE_ATTACK_PREP_MS (the actual timers
+    // governing how long this window lasts) and the impact-time hit-test are
+    // completely untouched — this is a sprite-selection-only change. GABRIEL
+    // is unaffected (this whole branch is `!isGabriel`-gated; GABRIEL's own
+    // telegraph already always used set.windup directly, never this list).
+    const inAttackPose = e.attackState === 'impact'
       || (!isGabriel && e.attackState === 'counterAttack');
     // 9TH ROUND (item 30-31): while NORMAL/STALKING (attackState==='idle'),
     // GABRIEL cycles its own real 3-frame walk loop (see updateEnemy()'s
@@ -10327,13 +10470,14 @@ function updateBullets(now) {
         continue;
       }
     }
-    // 30TH ROUND item 17: DRONE WAVE 2 — checked BEFORE the normal
-    // state.enemy hit-test below, since WAVE 1 (state.enemy) is already
-    // deathState!=='alive' for the whole WAVE-2 window and would otherwise
-    // just fall into the "enemy not alive" no-op for every shot. A bullet
-    // that hits one of the 3 extras is fully resolved here and skips the
-    // rest of this loop body; a miss falls through unchanged (harmless —
-    // resolves against the dead WAVE-1 singleton exactly as before).
+    // 30TH ROUND item 17 (HISTORICAL)/13TH ROUND: DRONE WAVE 2 (DRONE #2/#3,
+    // the two background extras) — checked BEFORE the normal state.enemy
+    // hit-test below, purely by spatial proximity to each extra's own
+    // screenX/screenY. A bullet that hits one of them is fully resolved
+    // here and skips the rest of this loop body; a miss falls through
+    // unchanged to the normal state.enemy hit-test just below, which since
+    // the 13TH ROUND redesign is DRONE #1 itself — genuinely alive, not the
+    // neutered/dead singleton this comment used to describe.
     if (state.droneWave.active && resolveDroneWaveBulletHit(b, now)) continue;
     if (e.deathState !== 'alive') {
       if (DEBUG_MODE) r10DebugLog('SHOT RESOLVED: enemy not alive (deathState=' + e.deathState + ') — no hit-test run');
@@ -13034,7 +13178,14 @@ function renderAimReticle() {
 
 function updateHud() {
   const p = state.player;
-  const pct = Math.round((p.hp / PLAYER_MAX_HP) * 100);
+  // 13TH ROUND (spec sections 46): INFINITE shows "LIFE ∞" (label swap) with
+  // the bar pinned full, instead of a numeric percentage — p.hp/PLAYER_MAX_HP
+  // would always read 100% anyway (the infiniteLife setter never lets hp
+  // fall below its current value), but the label swap makes the INFINITE
+  // state itself visible at a glance, per spec's own explicit requirement.
+  const hpLabelText = p.infiniteLife ? 'LIFE ∞' : 'HP';
+  if (hpLabelText !== p.lastHpLabelText) { hpLabelEl.textContent = hpLabelText; p.lastHpLabelText = hpLabelText; }
+  const pct = p.infiniteLife ? 100 : Math.round((p.hp / PLAYER_MAX_HP) * 100);
   if (pct !== p.lastHpFillPct) { hpFillEl.style.width = pct + '%'; p.lastHpFillPct = pct; }
 
   // RUN FLOW: DISTANCE TO EXIT — persistent from game start through
@@ -13105,21 +13256,24 @@ function updateHud() {
     p.lastStealthText = stealthText;
   }
 
-  // 12TH ROUND PART A (spec section 3): during the 3-simultaneous-DRONE
-  // opening encounter, state.enemy itself is deliberately neutered
-  // (deathState='gone', hp/maxHp meaningless — see updateCombatIntroPhase())
-  // so the single #enemy-hud bar is swapped out for the 3-bar
-  // #drone-squad-hud instead, driven by state.droneWave.extra[].hp/maxHp —
-  // #enemy-hud's own PART 23 logic below is completely unchanged and simply
-  // does not run in this one special case.
+  // 12TH ROUND PART A (spec section 3, HISTORICAL)/13TH ROUND: during the
+  // 3-simultaneous-DRONE opening encounter, the single #enemy-hud bar is
+  // swapped out for the 3-bar #drone-squad-hud — #enemy-hud's own PART 23
+  // logic below is completely unchanged and simply does not run in this one
+  // special case. 13TH ROUND: bar 0 is now DRONE #1's own REAL hp/maxHp
+  // (state.enemy — no longer neutered, see updateCombatIntroPhase()'s own
+  // comment), bars 1/2 are DRONE #2/#3 (state.droneWave.extra[0]/[1]).
   if (state.droneWave.simultaneousMode) {
     enemyHudEl.hidden = true;
     droneSquadHudEl.hidden = false;
+    const e0 = state.enemy;
+    const pct0 = Math.max(0, Math.round((e0.hp / e0.maxHp) * 100));
+    droneSquadBarFillEls[0].style.width = pct0 + '%';
     const extras = state.droneWave.extra;
-    for (let i = 0; i < droneSquadBarFillEls.length; i++) {
+    for (let i = 0; i < extras.length && i + 1 < droneSquadBarFillEls.length; i++) {
       const d = extras[i];
-      const pct = d ? Math.max(0, Math.round((d.hp / d.maxHp) * 100)) : 0;
-      droneSquadBarFillEls[i].style.width = pct + '%';
+      const pct = Math.max(0, Math.round((d.hp / d.maxHp) * 100));
+      droneSquadBarFillEls[i + 1].style.width = pct + '%';
     }
   } else {
     enemyHudEl.hidden = false;
@@ -13516,6 +13670,25 @@ function onEnemyDefeated(now, defeated) {
     if (DEBUG_MODE) r10DebugLog('ROUTE: A_FINAL_PRE_ADAM sphere defeated by HP=0 before its 30s timer — defeat recorded once, route held until the timer fires (see checkAFinalPreAdamTransform())');
     return;
   }
+  // 13TH ROUND (spec section 8): the run's opening 3-DRONE encounter is a
+  // two-sided completion check — DRONE #1 (state.enemy, reaching this
+  // function via its own completely normal death sequence) and DRONE #2/#3
+  // (state.droneWave.extra, tracked by updateDroneWave()'s own allExtrasDead
+  // flag) must BOTH be dead before combat actually clears. Score/history
+  // bookkeeping above already ran normally for this defeat either way —
+  // only the CLEAR SEQUENCE trigger itself is gated here. See
+  // updateDroneWave()'s own comment for the other half of this check
+  // (fires instead, from there, if the extras happen to finish last).
+  if (defeated && type === 'drone' && state.droneWave.simultaneousMode) {
+    if (!state.droneWave.allExtrasDead) {
+      if (DEBUG_MODE) r10DebugLog('RUN FLOW: DRONE #1 defeated, waiting on DRONE #2/#3 before CLEAR SEQUENCE');
+      return;
+    }
+    state.droneWave.simultaneousMode = false;
+    r.routeStep += 2; // see updateDroneWave()'s own identical comment for why +2
+    triggerClearSequence(now, 'combat');
+    return;
+  }
   triggerClearSequence(now, 'combat');
 }
 
@@ -13721,31 +13894,31 @@ function updateCombatIntroPhase(now) {
     if (elapsed < RUN_INTRO_EMPTY_MS) return;
     r.enemyRevealed = true;
     spawnEnemy(r.introEnemyType);
-    // 12TH ROUND PART A (spec section 3): the run's very first COMBAT
-    // (COMMON route, step 0) is DRONE, and real-device testing showed the
-    // 3-drone fight the game is meant to open with instead played out as 3
-    // SEPARATE sequential single-drone fights (ROUTE_COMMON's own 3
-    // consecutive 'drone' entries, steps 0-2). Root cause: no code ever
-    // spawned more than the one singleton state.enemy per encounter. Fix
-    // reuses the dormant "DRONE WAVE 2" 3-extra-drone infrastructure
-    // (spawnDroneWave2()/updateDroneWave()/renderDroneWave(), already fully
-    // wired into updateBullets()/the frame loop — see state.droneWave's own
-    // comment) that a prior round built for a different purpose (3
-    // reinforcements AFTER a singleton's death) and then reverted, rather
-    // than writing a second competing multi-enemy system: all 3 drones of
-    // THIS encounter become wave-extra slots — including drone #1 — while
-    // the just-spawned singleton state.enemy is immediately neutered
-    // (deathState forced straight to 'gone', bypassing the death transition
-    // entirely, so onEnemyDefeated()/CLEAR SEQUENCE never fires for it) so
-    // it never renders, updates, attacks, or absorbs bullets a second time
-    // alongside its 3 wave-extra stand-ins — exactly the same "state.enemy
-    // stays deathState!=='alive' for the whole WAVE-2 window" assumption
-    // updateBullets()'s own DRONE WAVE 2 hit-test comment already documents.
+    // 12TH ROUND PART A (spec section 3, HISTORICAL): the run's very first
+    // COMBAT (COMMON route, step 0) is DRONE, and the 3-drone fight the game
+    // is meant to open with used to play out as 3 SEPARATE sequential
+    // single-drone fights. Fixed by reusing the dormant "DRONE WAVE 2"
+    // 3-extra-drone infrastructure. That round's own implementation
+    // neutered the just-spawned singleton entirely and used all 3 wave-
+    // extra slots as "drone #1/#2/#3" together.
+    // 13TH ROUND (spec sections 3-8): real-device report — the 3 drones
+    // read as one clump at a shared depth, and any of the 3 could fire.
+    // Redesigned: the singleton spawnEnemy('drone') above is now DRONE #1
+    // ITSELF, left completely alive/normal (no neutering at all) — it
+    // updates/renders/attacks exactly like the original 1-DRONE fight
+    // always did (spec section 4's own explicit "従来の単体戦の位置を維持"
+    // is satisfied automatically this way, with zero new DRONE #1-specific
+    // code). Only 2 wave-extra slots are spawned now (DRONE #2/#3,
+    // DRONE_WAVE_EXTRA_COUNT reduced from 3 to 2 — see that constant's own
+    // comment), staged farther back and patrolling independently. Combat
+    // clear now requires BOTH DRONE #1 (state.enemy) AND both extras dead —
+    // see onEnemyDefeated()'s own droneWave-aware branch and
+    // updateDroneWave()'s own two-sided completion check.
     if (r.introEnemyType === 'drone' && r.routeSection === 'COMMON' && r.routeStep === 0) {
-      state.enemy.deathState = 'gone';
       spawnDroneWave2(now);
       state.droneWave.simultaneousMode = true;
-      if (DEBUG_MODE) r10DebugLog('RUN FLOW: first DRONE encounter — spawning 3 simultaneous drones (DRONE WAVE simultaneousMode)');
+      state.droneWave.allExtrasDead = false;
+      if (DEBUG_MODE) r10DebugLog('RUN FLOW: first DRONE encounter — DRONE #1 (singleton) + 2 background extras (DRONE WAVE simultaneousMode)');
     }
     return;
   }
@@ -14917,7 +15090,7 @@ window.__darkoutTps = {
   checkAssetsReady, REQUIRED_IMAGES, handleModeSelect,
   // BOOT FLOW ROUND: exposed for automated testing only.
   handleTapToStart, showTapToStartPrompt, showLoadError, initIntroVideo,
-  switchIntroVideoToFullLoop, INTRO_VIDEO_LOOP_END_SEC,
+  switchIntroVideoToFullLoop,
   get introVideoFullLoopActive() { return introVideoFullLoopActive; },
   get tapToStartConsumed() { return tapToStartConsumed; },
   get uiLang() { return uiLang; }, applyUiLang,
@@ -14928,7 +15101,7 @@ window.__darkoutTps = {
   // testing only.
   get controllerAimSensitivity() { return controllerAimSensitivity; },
   set controllerAimSensitivity(v) { controllerAimSensitivity = v; },
-  AIM_SENSITIVITY_PRESETS, computePlayerDrawRect,
+  AIM_SENSITIVITY_PRESETS, AIM_SENSITIVITY_DEFAULT, computePlayerDrawRect,
   // AIM OPERATING-AREA ROUND / 6TH ADJUSTMENT ROUND: exposed for automated
   // testing only.
   computePlayerVisualBounds, isPointOverPlayerBody,
@@ -14971,7 +15144,13 @@ window.__darkoutTps = {
   project, perspectiveScaleFromDepth, getEffectiveHitPoint,
   getMissileProjectileVisual, currentPlayerFloorScreenPos, renderMissileProjectiles,
   refreshMissileTargetScreenPos, setDebugPanelVisible,
-  MAG_SIZE, RESERVE_MAX, PLAYER_MAX_HP,
+  MAG_SIZE, RESERVE_MAX,
+  // 13TH ROUND: PLAYER_MAX_HP is now mutable (setPlayerLifeMode()) — a
+  // getter (matching controllerAimSensitivity's own exported pattern just
+  // above) so automated testing always reads the CURRENT value, never a
+  // stale snapshot frozen at module-load time the way a plain shorthand
+  // property would be.
+  get PLAYER_MAX_HP() { return PLAYER_MAX_HP; },
   MISSILE_TARGET_BASE_WORLD_Z, MISSILE_TARGET_WORLD_Z_RANGE,
   MISSILE_PROJECTILE_START_HEIGHT, MISSILE_PROJECTILE_HIT_RADIUS_PX,
   AMBIENT_FLOOR_CRAWL_SPEED, ENEMY_LANE_TRACK_MULT,
@@ -15029,9 +15208,9 @@ window.__darkoutTps = {
   // for automated testing only.
   spawnDroneWave2, updateDroneWave, renderDroneWave,
   resolveDroneWaveSniperImpact, resolveDroneWaveBulletHit,
-  DRONE_WAVE_EXTRA_COUNT, DRONE_WAVE_LANE_OFFSETS, DRONE_WAVE_HP,
+  DRONE_WAVE_EXTRA_COUNT, DRONE_WAVE_EXTRA_Z, DRONE_WAVE_PATROL_PHASE_OFFSETS, DRONE_WAVE_HP,
   DRONE_WAVE_DESCEND_STAGGER_MS, DRONE_WAVE_DESCEND_MS, DRONE_WAVE_GRACE_MS,
-  DRONE_WAVE_Z, DRONE_WAVE_HIT_RADIUS_PX, DRONE_WAVE_DEATH_MS,
+  DRONE_WAVE_HIT_RADIUS_PX, DRONE_WAVE_DEATH_MS,
   // 30TH ROUND items 19-22: DECOY — exposed for automated testing only.
   updateEscapeDecoy, renderEscapeDecoy, playerOrDecoyMarkerPos,
   DECOY_DURATION_MS, DECOY_SCREEN_OFFSET_PX, COLLAPSE_JUMP_COMBO_WINDOW_MS,
@@ -15047,7 +15226,7 @@ window.__darkoutTps = {
   pickNextEnemy, pickFinalBattleEnemy, tickRunDistance,
   beginCombatIntro, beginEvacuationWarning, beginMountTransition,
   beginEscapeStretch, beginDismountTransition, enterEscapeComplete,
-  beginEnding, triggerGameOver, showResultScreen, computeResultRank, setStageTheme,
+  beginEnding, updateEndingPhase, triggerGameOver, showResultScreen, computeResultRank, setStageTheme,
   debugJumpToCombat, debugJumpToEscape, debugJumpToLastStretch, debugJumpToResult,
   RUN_DISTANCE_TOTAL_M, RUN_LAST_STRETCH_M, COMBAT_TIME_LIMIT_SEC,
   RUN_ENDING_RESULT_GATE_SEC, SCORE_PER_DEFEAT,
