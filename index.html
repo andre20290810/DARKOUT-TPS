@@ -594,40 +594,60 @@
          spec section 16/50's own explicit requirement), each wedge tapping
          directly (no separate invisible overlay). Two separate wrap groups
          (COMBAT / ESCAPE) share an identical geometry (same radii/angles/
-         center anchor point, spec section 20's "デザイン言語...共通化する")
-         and swap visibility via the SAME existing body.escape-mode
-         mechanism every other COMBAT/ESCAPE-only element already uses —
-         see style.css's own #touch-combat-fan-wrap/#touch-escape-fan-wrap
-         rules. Element ids for every REUSED action (SHOT/FOCUS/RELOAD/JUMP/
-         WEST SHADOW/EAST SHADOW) are kept identical to before — only their
-         DOM shape/position changed — so game.js's existing wireButton()
-         wiring for each needs no id-level change; only DASH gains a second,
-         COMBAT-only wedge element (#touch-combat-dash) since it is now a
-         circle in ESCAPE but a wedge in COMBAT, wired to the SAME shared
-         handler as #touch-dash (see game.js's own comment). -->
+         center anchor point, spec section 43's "同じデザイン言語") and swap
+         visibility via the SAME existing body.escape-mode mechanism every
+         other COMBAT/ESCAPE-only element already uses — see style.css's own
+         #touch-combat-fan-wrap/#touch-escape-fan-wrap rules.
+         18TH ROUND (spec sections 27-48): full CIRCLE cluster replaces the
+         old upper-semicircle-only fan — upper half stays a 2-way split
+         (FOCUS/RELOAD in COMBAT, EAST SHADOW/WEST SHADOW in ESCAPE, same
+         wedge ids as before, only repositioned/relabeled), the lower half
+         is NEW (COMBAT: 3-way WEST/SOUTH/EAST DASH; ESCAPE: 2-way WEST/EAST
+         DASH). JUMP's wedge is removed entirely from this cluster (spec
+         section 39 — the action itself/its gamepad mapping is untouched,
+         see game.js). The old single ambiguous DASH wedge
+         (#touch-combat-dash, which read the MOVE stick's current direction)
+         is removed too — each new direction wedge below dispatches its OWN
+         explicit direction directly (see game.js's handleTouchWestDash()/
+         handleTouchSouthDash()/handleTouchEastDash()), never inferring from
+         MOVE stick input. ESCAPE's center #touch-dash keeps its EXISTING
+         MOVE-stick-direction-reading behavior unchanged (spec section 36's
+         own explicit "既存DASH actionを維持") — only the two new lower
+         wedges are unambiguous. -->
     <div id="touch-combat-fan-wrap" class="touch-fan-wrap">
-      <svg id="touch-combat-fan" class="touch-fan-svg" viewBox="-150 -140 300 140" preserveAspectRatio="xMidYMax meet">
-        <path id="touch-combat-dash" class="touch-fan-wedge" d="M-29,-50.23 L-70,-121.24 A140,140 0 0,0 -140,0 L-58,0 A58,58 0 0,1 -29,-50.23 Z"></path>
-        <path id="touch-focus" class="touch-fan-wedge" d="M29,-50.23 L70,-121.24 A140,140 0 0,0 -70,-121.24 L-29,-50.23 A58,58 0 0,1 29,-50.23 Z"></path>
-        <path id="touch-reload" class="touch-fan-wedge" d="M58,0 L140,0 A140,140 0 0,0 70,-121.24 L29,-50.23 A58,58 0 0,1 58,0 Z"></path>
-        <line class="touch-fan-divider" x1="-29" y1="-50.23" x2="-70" y2="-121.24"></line>
-        <line class="touch-fan-divider" x1="29" y1="-50.23" x2="70" y2="-121.24"></line>
-        <text class="touch-fan-label" x="-86" y="-50">DASH</text>
-        <text class="touch-fan-label" x="0" y="-95">FOCUS</text>
-        <text class="touch-fan-label" x="86" y="-50">RELOAD</text>
+      <svg id="touch-combat-fan" class="touch-fan-svg" viewBox="-150 -150 300 300" preserveAspectRatio="xMidYMid meet">
+        <path id="touch-focus" class="touch-fan-wedge" d="M0,-58 L0,-140 A140,140 0 0,0 -140,0 L-58,0 A58,58 0 0,1 0,-58 Z"></path>
+        <path id="touch-reload" class="touch-fan-wedge" d="M58,0 L140,0 A140,140 0 0,0 0,-140 L0,-58 A58,58 0 0,1 58,0 Z"></path>
+        <path id="touch-combat-west-dash" class="touch-fan-wedge" d="M-58,0 L-140,0 A140,140 0 0,0 -70,121.24 L-29,50.23 A58,58 0 0,1 -58,0 Z"></path>
+        <path id="touch-combat-south-dash" class="touch-fan-wedge" d="M-29,50.23 L-70,121.24 A140,140 0 0,0 70,121.24 L29,50.23 A58,58 0 0,1 -29,50.23 Z"></path>
+        <path id="touch-combat-east-dash" class="touch-fan-wedge" d="M29,50.23 L70,121.24 A140,140 0 0,0 140,0 L58,0 A58,58 0 0,1 29,50.23 Z"></path>
+        <line class="touch-fan-divider" x1="-58" y1="0" x2="-140" y2="0"></line>
+        <line class="touch-fan-divider" x1="0" y1="-58" x2="0" y2="-140"></line>
+        <line class="touch-fan-divider" x1="58" y1="0" x2="140" y2="0"></line>
+        <line class="touch-fan-divider" x1="-29" y1="50.23" x2="-70" y2="121.24"></line>
+        <line class="touch-fan-divider" x1="29" y1="50.23" x2="70" y2="121.24"></line>
+        <text class="touch-fan-label" x="-67" y="-67">FOCUS</text>
+        <text class="touch-fan-label" x="67" y="-67">RELOAD</text>
+        <text class="touch-fan-label" x="-82" y="44">WEST<tspan x="-82" dy="11">DASH</tspan></text>
+        <text class="touch-fan-label" x="0" y="91">SOUTH<tspan x="0" dy="11">DASH</tspan></text>
+        <text class="touch-fan-label" x="82" y="44">EAST<tspan x="82" dy="11">DASH</tspan></text>
       </svg>
       <button type="button" tabindex="-1" id="touch-shot" class="touch-btn-round touch-fan-center">SHOT</button>
     </div>
     <div id="touch-escape-fan-wrap" class="touch-fan-wrap touch-escape-only">
-      <svg id="touch-escape-fan" class="touch-fan-svg" viewBox="-150 -140 300 140" preserveAspectRatio="xMidYMax meet">
-        <path id="touch-shadow-west" class="touch-fan-wedge" d="M-29,-50.23 L-70,-121.24 A140,140 0 0,0 -140,0 L-58,0 A58,58 0 0,1 -29,-50.23 Z"></path>
-        <path id="touch-jump" class="touch-fan-wedge" d="M29,-50.23 L70,-121.24 A140,140 0 0,0 -70,-121.24 L-29,-50.23 A58,58 0 0,1 29,-50.23 Z"></path>
-        <path id="touch-shadow-east" class="touch-fan-wedge" d="M58,0 L140,0 A140,140 0 0,0 70,-121.24 L29,-50.23 A58,58 0 0,1 58,0 Z"></path>
-        <line class="touch-fan-divider" x1="-29" y1="-50.23" x2="-70" y2="-121.24"></line>
-        <line class="touch-fan-divider" x1="29" y1="-50.23" x2="70" y2="-121.24"></line>
-        <text class="touch-fan-label" x="-86" y="-50">WEST<tspan x="-86" dy="11">SHADOW</tspan></text>
-        <text class="touch-fan-label" x="0" y="-95">JUMP</text>
-        <text class="touch-fan-label" x="86" y="-50">EAST<tspan x="86" dy="11">SHADOW</tspan></text>
+      <svg id="touch-escape-fan" class="touch-fan-svg" viewBox="-150 -150 300 300" preserveAspectRatio="xMidYMid meet">
+        <path id="touch-shadow-east" class="touch-fan-wedge" d="M0,-58 L0,-140 A140,140 0 0,0 -140,0 L-58,0 A58,58 0 0,1 0,-58 Z"></path>
+        <path id="touch-shadow-west" class="touch-fan-wedge" d="M58,0 L140,0 A140,140 0 0,0 0,-140 L0,-58 A58,58 0 0,1 58,0 Z"></path>
+        <path id="touch-escape-west-dash" class="touch-fan-wedge" d="M-58,0 L-140,0 A140,140 0 0,0 0,140 L0,58 A58,58 0 0,1 -58,0 Z"></path>
+        <path id="touch-escape-east-dash" class="touch-fan-wedge" d="M0,58 L0,140 A140,140 0 0,0 140,0 L58,0 A58,58 0 0,1 0,58 Z"></path>
+        <line class="touch-fan-divider" x1="-58" y1="0" x2="-140" y2="0"></line>
+        <line class="touch-fan-divider" x1="0" y1="-58" x2="0" y2="-140"></line>
+        <line class="touch-fan-divider" x1="58" y1="0" x2="140" y2="0"></line>
+        <line class="touch-fan-divider" x1="0" y1="58" x2="0" y2="140"></line>
+        <text class="touch-fan-label" x="-67" y="-67">EAST<tspan x="-67" dy="11">SHADOW</tspan></text>
+        <text class="touch-fan-label" x="67" y="-67">WEST<tspan x="67" dy="11">SHADOW</tspan></text>
+        <text class="touch-fan-label" x="-67" y="67">WEST<tspan x="-67" dy="11">DASH</tspan></text>
+        <text class="touch-fan-label" x="67" y="67">EAST<tspan x="67" dy="11">DASH</tspan></text>
       </svg>
       <button type="button" tabindex="-1" id="touch-dash" class="touch-btn-round touch-fan-center">DASH</button>
     </div>

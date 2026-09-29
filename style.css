@@ -1270,30 +1270,36 @@ html, body {
    cluster that replaces the old #touch-buttons grid + the old right-side
    #touch-aim-pad stick. 8TH/11TH ROUND: hit areas enlarged, then arranged
    as independently-positioned buttons around a round DASH (superseded).
-   16TH ROUND (spec sections 12-22, 49-54): real-device report — that
-   still read as "DASH is the big center button, SHOT is off to the side,"
-   not a single one-piece control cluster. Rebuilt as a genuine semicircle
-   panel: a large CENTER circle (.touch-fan-center — COMBAT=SHOT,
-   ESCAPE=DASH, the role that swaps between modes per spec section 13) with
-   an SVG semicircle (.touch-fan-svg) behind it, split into 3 equal 60°
-   pie-wedge <path> segments (.touch-fan-wedge) whose drawn shape IS their
-   own hit area (SVG path hit-testing is shape-accurate, never a bounding
-   rectangle — spec section 16/50's explicit requirement). .touch-fan-wrap
-   is a ZERO-SIZE anchor positioned at the exact point the OLD .touch-btn-
-   round's own CENTER used to sit (old formula + half its own 108px width/
-   height) — both the SVG and the center button are then centered on THAT
-   single point via left:0/bottom:0 + transform, so COMBAT and ESCAPE
-   render pixel-identical geometry (spec section 20's "デザイン言語...共通
-   化する"), only their labels/actions differ:
-              TOP
-   MOVE       AIM        LEFT ╲    ╱ RIGHT
-   stick      stick           CENTER
-   COMBAT: CENTER=SHOT, LEFT=DASH, TOP=FOCUS, RIGHT=RELOAD.
-   ESCAPE: CENTER=DASH, LEFT=WEST SHADOW, TOP=JUMP, RIGHT=EAST SHADOW. */
+   16TH/17TH ROUND: rebuilt as a one-piece UPPER-semicircle panel (large
+   CENTER circle + a 3-wedge SVG semicircle behind it).
+   18TH ROUND (spec sections 27-48): rebuilt again into a full CIRCLE —
+   the SVG now covers BOTH the upper AND lower half (viewBox -150..150 on
+   both axes, was -150..150 x / -140..0 y), upper 2-way split (FOCUS/
+   RELOAD or EAST SHADOW/WEST SHADOW) + lower 2-or-3-way split (WEST/
+   [SOUTH/]EAST DASH). Each wedge's drawn <path> shape IS still its own hit
+   area (SVG path hit-testing is shape-accurate, never a bounding rectangle
+   — spec section 44's explicit requirement). .touch-fan-wrap stays a
+   ZERO-SIZE anchor at the cluster's true CENTER point — both the SVG and
+   the center button are centered on that single point via left:0/bottom:0
+   + an IDENTICAL translate(-50%,50%) transform (the SVG's viewBox is now
+   symmetric around its own local origin, so this centers it exactly the
+   same way the center button was already centered — previously the SVG
+   only needed horizontal centering since its old geometry never extended
+   below the anchor). COMBAT and ESCAPE share the same radii/angles (spec
+   section 43's "同じデザイン言語"), only labels/actions differ:
+        FOCUS/EAST SHADOW   ╲          ╱   RELOAD/WEST SHADOW
+                              ╲        ╱
+                             [ SHOT/DASH ]
+                              ╱   |    ╲
+                    WEST DASH  SOUTH*  EAST DASH
+   COMBAT: CENTER=SHOT, up-left=FOCUS, up-right=RELOAD,
+           down-left=WEST DASH, down-center=SOUTH DASH, down-right=EAST DASH.
+   ESCAPE: CENTER=DASH, up-left=EAST SHADOW, up-right=WEST SHADOW,
+           down-left=WEST DASH, down-right=EAST DASH (*no SOUTH slot). */
 .touch-fan-wrap {
   position: absolute;
-  right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 54px);
-  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 54px);
+  right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 118px);
+  bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 118px);
   width: 0;
   height: 0;
 }
@@ -1301,9 +1307,9 @@ html, body {
   position: absolute;
   left: 0;
   bottom: 0;
-  width: 300px;
-  height: 140px;
-  transform: translateX(-50%);
+  width: 240px;
+  height: 240px;
+  transform: translate(-50%, 50%);
   overflow: visible;
   touch-action: none;
 }
@@ -1331,8 +1337,8 @@ html, body {
   position: absolute;
   left: 0;
   bottom: 0;
-  width: 108px;
-  height: 108px;
+  width: 100px;
+  height: 100px;
   transform: translate(-50%, 50%);
   border-radius: 50%;
   background: rgba(255,255,255,0.08);
@@ -1346,18 +1352,18 @@ html, body {
 .touch-fan-center:active { background: rgba(255,255,255,0.3); }
 
 /* Narrow-height landscape (small phones): shrink touch controls a bit —
-   scales the whole fan (SVG + center circle) by the SAME ~0.815 ratio
-   .touch-btn-round used at this breakpoint (88/108), keeping the two
-   proportional to each other; the SVG's own viewBox is untouched (its
-   internal wedge geometry scales automatically with its rendered size). */
+   scales the whole fan (SVG + center circle) by the same proportion, so
+   the two stay sized relative to each other; the SVG's own viewBox is
+   untouched (its internal wedge geometry scales automatically with its
+   rendered size). */
 @media (max-height: 420px) {
   .touch-pad { width: 78px; height: 78px; bottom: max(56px, calc(env(safe-area-inset-bottom) + 56px)); }
   .touch-fan-wrap {
-    right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 44px);
-    bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 44px);
+    right: calc(max(120px, calc(env(safe-area-inset-right) + 120px)) + 92px);
+    bottom: calc(max(70px, calc(env(safe-area-inset-bottom) + 70px)) + 92px);
   }
-  .touch-fan-svg { width: 244px; height: 114px; }
-  .touch-fan-center { width: 88px; height: 88px; font-size: 11px; }
+  .touch-fan-svg { width: 188px; height: 188px; }
+  .touch-fan-center { width: 78px; height: 78px; font-size: 11px; }
 }
 
 /* ESCAPE-EXCLUSIVE GAMEPLAY MODE (state.gameMode === 'escape', toggled onto

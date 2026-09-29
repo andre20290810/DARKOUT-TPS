@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R17';
+const BUILD_VERSION = 'DARKOUT2-R18';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -656,6 +656,18 @@ const ADAM_NORMAL_Z_MIN = 260;
 // of instantly snapping (the old bug: applyForwardDelta()'s per-frame floor
 // used to yank GABRIEL back to 260 the instant 'approach' ended, mid-swing).
 const CLAW_RECOVERY_MS = 900;
+// 18TH ROUND (spec sections 13-17): how long, from the exact instant
+// impact/counterAttack damage lands, ADAM keeps showing its claw/release
+// sprite into the start of 'recovery' (which otherwise switches to set.idle
+// immediately — see e.clawSpriteHoldUntil's own two call sites). Slightly
+// longer than CLAW_SWING_MS(140ms)'s own real impact-pose dwell time, so
+// the damage frame — and several frames after it — comfortably reads as
+// the claw sprite even under a dropped/late frame, without meaningfully
+// extending how long the pose lingers relative to the 900ms recovery tail
+// it's carved out of. GABRIEL is untouched (isGabriel-gated at both call
+// sites) — it already holds its own release sprite through the whole
+// recovery via the separate, pre-existing gabrielRetreatHoldingAttackSprite.
+const ADAM_RECOVERY_CLAW_HOLD_MS = 160;
 // 10TH ROUND (items 19-21): 9TH ROUND's SOUTH WALK LOOP only ever changed
 // which IMAGE was shown during idle — it never touched e.z, so GABRIEL/ADAM
 // spawned (and recovered) already sitting exactly at their own
@@ -1937,7 +1949,14 @@ const droneSquadBarFillEls = [
 // which drone is CURRENTLY the fought one (bar 0 — always state.enemy,
 // whichever generation is active — via an 'active' class) versus still-
 // waiting/already-folded-in background extras (bars 1/2, always 'inactive').
+// 18TH ROUND (spec sections 1-7): real-device report — R16's design kept all
+// 3 rows permanently visible (dimmed, never removed) even after a DRONE
+// died, so the HUD never matched the actual sequential-combat state (e.g.
+// only DRONE #3 left alive, but all 3 bars still shown). Fixed below by
+// driving row COUNT/LABEL dynamically from state.droneWave.extra's own
+// consumed flags, not a fixed 3-row display — see updateHud()'s own block.
 const droneSquadRowEls = document.querySelectorAll('.drone-squad-row');
+const droneSquadNameEls = document.querySelectorAll('.drone-squad-name');
 // PART 29/30 (4th round follow-up): main gameplay BGM — real audio file now
 // provided (assets/audio/after_the_limits.mp3). See tryStartBgm()/
 // togglePauseMenu() for the actual lifecycle.
@@ -5457,7 +5476,14 @@ const focusBtnEl = document.getElementById('touch-focus');
 focusBtnEl.addEventListener('pointerdown', () => { touchFocusHeld = true; });
 focusBtnEl.addEventListener('pointerup', () => { touchFocusHeld = false; });
 focusBtnEl.addEventListener('pointercancel', () => { touchFocusHeld = false; });
-wireButton('touch-jump', () => { if (state.gameMode === 'escape') state.escape.actions.jump = true; });
+// 18TH ROUND (spec section 39): JUMP's touch button is removed from the
+// circular control cluster entirely (never fit the new center+2-up+2-down
+// layout without pushing a WEST/EAST DASH segment out) — the ACTION itself
+// (state.escape.actions.jump) and its existing GAMEPAD trigger (LB+RB, see
+// pollGamepad()) are completely untouched; there is simply no more TOUCH
+// path that sets this flag. No #touch-jump element exists in index.html
+// any more, so wireButton('touch-jump', ...) is deleted rather than left
+// pointing at a missing id.
 
 // 7TH ROUND 4th sub-part (spec sections 20-27): STEALTH/N-DASH/S-STEP/
 // W-DASH/E-DASH/W-DECOY/E-DECOY touch buttons are removed entirely (no
@@ -5496,17 +5522,46 @@ function handleTouchDashPress() {
     else state.actions.eastDash = true;
   }
 }
-// 16TH ROUND (spec sections 13-14, 49): DASH is now a CIRCLE only in
-// ESCAPE (#touch-dash, the fan's center button there); in COMBAT it is one
-// of the 3 wedge segments (#touch-combat-dash — SHOT takes over the center
-// circle instead, per spec section 13). Both elements share this exact
-// same handler (handleTouchDashPress() already branches on
-// state.gameMode internally) — no duplicated dash-routing logic, and only
-// one of the two DOM elements is ever visible at a time (COMBAT/ESCAPE
-// visibility toggle, see style.css's #touch-combat-fan-wrap/.touch-escape-
-// only rules), so there is no risk of a stray double-fire from the other.
+// 16TH ROUND (spec sections 13-14, 49): DASH is a CIRCLE only in ESCAPE
+// (#touch-dash, the fan's center button there); COMBAT has no center DASH
+// at all (SHOT took the center circle, per spec section 13). ESCAPE's
+// center keeps this exact same MOVE-stick-direction-reading handler,
+// unchanged (18TH ROUND spec section 36's own explicit "既存DASH action
+// を維持").
 wireButton('touch-dash', handleTouchDashPress);
-wireButton('touch-combat-dash', handleTouchDashPress);
+// 18TH ROUND (spec sections 27-42): the old single ambiguous
+// #touch-combat-dash wedge (which read the MOVE stick, same as the ESCAPE
+// center above) is replaced by 3 EXPLICIT direction wedges in COMBAT's
+// lower semicircle and 2 in ESCAPE's — each dispatches its OWN fixed
+// direction directly, never touching touchMoveDominantDir()/touchMove at
+// all (spec sections 32/41's own explicit "現在のmovement directionに依存
+// して曖昧なDASHをするのではなく...方向を指定する"). WEST/EAST DASH are
+// shared handlers (mode-branched internally, same pattern
+// handleTouchDashPress() itself already uses) wired to BOTH modes' own
+// wedge — only one of each mode's wedges is ever visible/tappable at a
+// time (same COMBAT/ESCAPE visibility toggle as every other dual-mode
+// element here), so no cross-mode double-fire risk. SOUTH DASH is COMBAT-
+// only (ESCAPE's lower half has no third slot — spec section 38's own
+// explicit "SOUTH DASHは追加しない"). All three reuse the EXACT SAME
+// existing action flags (state.actions.*/state.escape.actions.*) the
+// GAMEPAD directional-dash mapping and the old ambiguous handler already
+// wrote — no new dash distance/i-frame/sprite/timing logic anywhere.
+function handleTouchWestDash() {
+  if (state.gameMode === 'escape') state.escape.actions.westDash = true;
+  else state.actions.westDash = true;
+}
+function handleTouchEastDash() {
+  if (state.gameMode === 'escape') state.escape.actions.eastDash = true;
+  else state.actions.eastDash = true;
+}
+function handleTouchSouthDash() {
+  state.actions.southDash = true;
+}
+wireButton('touch-combat-west-dash', handleTouchWestDash);
+wireButton('touch-combat-south-dash', handleTouchSouthDash);
+wireButton('touch-combat-east-dash', handleTouchEastDash);
+wireButton('touch-escape-west-dash', handleTouchWestDash);
+wireButton('touch-escape-east-dash', handleTouchEastDash);
 // 8TH ROUND (spec sections 2-3): SHADOW is now TWO explicit buttons (WEST
 // SHADOW / EAST SHADOW, index.html) instead of ONE button whose side was
 // inferred from the MOVE stick's current horizontal position — on a real
@@ -7537,8 +7592,54 @@ function showCenterMsg(text, color) {
   centerWarningEl._hideTimer = setTimeout(() => { centerWarningEl.hidden = true; }, 550);
 }
 
+// 18TH ROUND (spec sections 51-57): ROOT CAUSE of "LOCK-ON枠が主人公の足元
+// にある" — this function is the SHARED source every ranged-attack lock-on
+// visual reads (SNIPER's own e.lockX/e.lockY red/yellow box — see
+// renderEnemyTelegraphs() — DRONE's own separate d.lockX/d.lockY sniper
+// lock inside updateDroneWave(), and the DECOY marker via
+// playerOrDecoyMarkerPos() below), for EVERY enemy that uses the shared
+// sniper/missile/barrage 'kind' machinery (DRONE/ROID1/ROID2/ADAM SPHERE —
+// GABRIEL/ADAM's own CLAW melee never drew a marker here at all, see
+// renderEnemyTelegraphs()'s own early-return comment, so there was nothing
+// to fix for those two). The Y coordinate was simply a fixed
+// state.cssH*0.9 constant — clearly meant to approximate "near the
+// player's feet/ground contact," never the visual body CENTER the spec
+// now explicitly wants. Fixed to return the real alpha-measured visual
+// body center instead, branching on gameMode since COMBAT and ESCAPE use
+// completely different player sprite pipelines: COMBAT reuses
+// computePlayerVisualBounds() (already real per-pixel alpha bounds, the
+// SAME data AIM's own body-avoidance visibility check already relies on —
+// spec section 53's own explicit preference for reusing this over a fresh
+// measurement); ESCAPE has no equivalent bounds helper yet, so this
+// derives the same thing from the CURRENT run-frame's own real measured
+// bodyTopFrac/bodyBottomFrac/wheelCenterXFrac (ASSETS_PLAYER_ESCAPE_RUN's
+// own alpha-channel data — see escapeSpriteFrame()) applied to the SAME
+// clamped draw rect renderEscapePlayer() itself uses, so it tracks the
+// live bike frame/depth/DASH-pulse exactly, never a stale approximation.
+// This is a VISUAL-ONLY change — resolveSniperImpact()/
+// resolveDroneWaveSniperImpact()'s own impact-time hit/dodge judgment
+// (and every other damage/frequency/AI decision) reads the player's real
+// position through entirely separate code, untouched here (spec section
+// 55's own explicit "damage/hit判定...を変更しない").
 function playerMarkerPos() {
-  return { x: state.centerX + state.player.strafeOffset, y: state.cssH * 0.9 };
+  if (state.gameMode === 'escape') {
+    const es = state.escape;
+    const frame = ASSETS_PLAYER_ESCAPE_RUN[es.runFrame];
+    const cx = state.centerX + state.player.strafeOffset;
+    let bottomY = state.cssH * 1.02 - (es.depthPos || 0) * ESCAPE_DEPTH_SCREEN_RANGE_PX;
+    if (es.freeJumping) {
+      const jumpT = clamp((performance.now() - es.freeJumpStartedAt) / COLLAPSE_JUMP_MS, 0, 1);
+      bottomY -= Math.sin(jumpT * Math.PI) * COLLAPSE_JUMP_ARC_PX;
+    }
+    const clamped = computeEscapePlayerRectClamped(cx, bottomY, frame, es.depthPos, es.dashScalePulse);
+    const rect = clamped.rect;
+    const visualTop = rect.dy + rect.drawH * frame.bodyTopFrac;
+    const visualBottom = rect.dy + rect.drawH * frame.bodyBottomFrac;
+    const centerXFrac = frame.wheelCenterXFrac != null ? frame.wheelCenterXFrac : 0.5;
+    return { x: rect.dx + rect.drawW * centerXFrac, y: (visualTop + visualBottom) / 2 };
+  }
+  const b = computePlayerVisualBounds();
+  return { x: b.cx, y: (b.top + b.bottom) / 2 };
 }
 
 // 30TH ROUND items 19-22: DECOY — throws a marker DECOY_SCREEN_OFFSET_PX to
@@ -9337,6 +9438,18 @@ function updateEnemyCore(dt, now) {
         e.attackState = 'recovery';
         e.attackUntil = now + CLAW_RECOVERY_MS;
         e.clawApproachStartZ = e.z;
+        // 18TH ROUND (spec sections 13-17): ADAM-only grace window — see
+        // the counterAttack branch's own comment for the full ROOT CAUSE
+        // (this transition itself never showed the wrong sprite in
+        // simulation, since 'impact' already holds CLAW_SWING_MS=140ms of
+        // its own real claw-sprite frames before reaching here — but the
+        // hold is added at this transition too, for structural consistency
+        // with counterAttack's identical shape and as a defensive margin
+        // against any real-device frame-timing edge this simulation didn't
+        // catch). GABRIEL is untouched (isGabriel-gated) — it already keeps
+        // its own release sprite through the whole recovery via
+        // gabrielRetreatHoldingAttackSprite, unaffected by this field.
+        if (e.type !== 'gabriel') e.clawSpriteHoldUntil = now + ADAM_RECOVERY_CLAW_HOLD_MS;
         // NEXT-ROUND PART C (root-cause fix): zeroed fresh for this
         // recovery window — see applyForwardDelta()'s own comment for why
         // this accumulator exists (the fix for "PLAYER SOUTH DASH does
@@ -9460,6 +9573,32 @@ function updateEnemyCore(dt, now) {
         e.attackState = 'recovery'; // reuses the existing recovery->cooldown->idle tail unchanged
         e.attackUntil = now + CLAW_RECOVERY_MS;
         e.clawApproachStartZ = e.z;
+        // 18TH ROUND (spec sections 13-17): ROOT CAUSE of "ダメージ発生frame
+        // で鍵爪spriteになっていない" (real-device: ~75% of hits) — this
+        // branch applies CLAW_DAMAGE and flips attackState straight to
+        // 'recovery' in the SAME synchronous block/frame, with no frames
+        // spent rendering 'counterAttack' itself at the moment damage
+        // lands. ADAM's own 'recovery' pose is set.idle (unlike GABRIEL,
+        // which already holds its release sprite through recovery via
+        // gabrielRetreatHoldingAttackSprite — an ADAM-excluded, intentional
+        // difference from an earlier round) — so the very next render
+        // (same frame, since updateEnemy() runs before renderEnemy() every
+        // frame) showed the idle/approach pose at the exact instant damage
+        // was dealt. Confirmed via a real dt-stepped simulation driving 20
+        // genuine counterAttack cycles through the actual updateEnemy()
+        // code: 20/20 damage events rendered 'adam_idle_south.png', 0/20
+        // showed a claw sprite — a 100% miss on this specific path (the
+        // parallel 20-normal-attack run was 20/20 correct, since normal
+        // 'impact' applies damage BEFORE the state flip and then holds
+        // CLAW_SWING_MS=140ms of real impact-pose frames before ever
+        // reaching recovery). Fix is VISUAL-ONLY: damage timing/amount/hit-
+        // test above are completely untouched — only
+        // computeEnemyDrawRect()'s sprite CHOICE during the opening of
+        // 'recovery' changes, via ADAM_RECOVERY_CLAW_HOLD_MS (see its own
+        // comment on that constant and on the impact->recovery transition
+        // above, which received the identical field for structural
+        // consistency even though it measured 0 failures on its own).
+        e.clawSpriteHoldUntil = now + ADAM_RECOVERY_CLAW_HOLD_MS;
       }
     }
     return;
@@ -9950,8 +10089,19 @@ function computeEnemyDrawRect() {
     // completely untouched — this is a sprite-selection-only change. GABRIEL
     // is unaffected (this whole branch is `!isGabriel`-gated; GABRIEL's own
     // telegraph already always used set.windup directly, never this list).
+    // 18TH ROUND (spec sections 13-17): ADAM-only — the instant impact/
+    // counterAttack damage lands, attackState flips straight to 'recovery'
+    // in the SAME updateEnemy() call, with zero frames spent in a state
+    // whose sprite is the claw art — see e.clawSpriteHoldUntil's own
+    // comment (set at both transition sites) for the full ROOT CAUSE and
+    // the real dt-stepped simulation that found it. Extending inAttackPose
+    // to cover the opening of 'recovery' (only while the hold timer is
+    // still running) keeps the damage frame showing the real claw sprite
+    // without touching CLAW_RECOVERY_MS or any other timing.
+    const adamRecoveryClawHold = e.type !== 'gabriel' && e.attackState === 'recovery' && performance.now() < (e.clawSpriteHoldUntil || 0);
     const inAttackPose = e.attackState === 'impact'
-      || (!isGabriel && e.attackState === 'counterAttack');
+      || (!isGabriel && e.attackState === 'counterAttack')
+      || adamRecoveryClawHold;
     // 9TH ROUND (item 30-31): while NORMAL/STALKING (attackState==='idle'),
     // GABRIEL cycles its own real 3-frame walk loop (see updateEnemy()'s
     // clawWalkFrame advance) instead of a single static idle pose. ADAM has
@@ -10197,7 +10347,26 @@ function computeEnemyDrawRect() {
     // renewed spike back toward the idle sprite's raw close-range size.
     // NORMAL/idle sizing at any distance OTHER than these two close-range
     // windows, and every other ADAM behavior, are completely untouched.
-    if (!isGabriel && e.attackState === 'approach') {
+    // 18TH ROUND (spec sections 9-12): real-device report — a real time-
+    // stepped simulation (driving updateEnemy() through an actual 15s
+    // idle-approach into a full attack cycle, not synthetic fixed-z
+    // snapshots) found 'blink' was ALSO never covered by any clamp, even
+    // though it renders the SAME set.idle sprite 'approach' does. Since
+    // the continuous idle-state stalk-approach (separate from the fast
+    // CLAW_APPROACH_MS lunge) already closes real distance BEFORE blink
+    // ever triggers, blink's own z can already be nearly as close as
+    // approach/telegraph's — measured 335px/85.8% of a 390px viewport at
+    // blink, HIGHER than the clamped approach/telegraph (75%) that
+    // immediately follow it: idle(39.5%) -> blink(85.8%, spike) ->
+    // approach(75%, drops) -> telegraph(75%) -> impact(92%) — exactly the
+    // "a mid-sequence pose reads bigger than what comes right after it"
+    // complaint. Fixed by folding 'blink' into the SAME idle-sprite/0.75
+    // cap 'approach' already uses (not a new clamp family) — re-verified:
+    // idle(39.5%) -> blink(75%, capped, no longer a spike) ->
+    // approach(ramps 56%->75%) -> telegraph(75%) -> impact(92%) ->
+    // recovery(92%->taper) — monotonic except for the brief attack peak
+    // itself, which is intended.
+    if (!isGabriel && (e.attackState === 'approach' || e.attackState === 'blink')) {
       const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
       drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
     } else if (!isGabriel && e.attackState === 'recovery') {
@@ -10248,12 +10417,19 @@ function computeEnemyDrawRect() {
     // the same size, instead of spiking past it). Re-verified after this
     // fix: 32.8% -> ramps up through 43/56% -> plateaus at 62%(cap) through
     // the rest of approach -> 60.1% telegraph -> 72.0% impact — monotonic,
-    // no reversal. 'blink' (still at pre-approach distance, never as close
-    // as zMin) was measured unaffected either way and is deliberately left
-    // out of this list — this only widens the WINDUP cap's scope, not a new
-    // clamp family.
+    // no reversal. 'blink' was assumed unaffected at R17 time (measured
+    // with blink fixed at a far, pre-approach z) — but 18TH ROUND's real
+    // time-stepped simulation (letting the continuous idle-state stalk-
+    // approach run naturally before blink triggers, instead of a synthetic
+    // fixed z) found blink's ACTUAL z at trigger time can already be
+    // nearly as close as approach/telegraph's, producing a small but real
+    // spike (63.0% at blink vs 60.1% clamped approach/telegraph — smaller
+    // than ADAM's equivalent gap, since GABRIEL's escapeRun-frame override
+    // already partially normalizes size, but still a genuine reversal).
+    // Folded 'blink' into the same clamp for consistency and to close this
+    // gap the same way ADAM's own blink fix does.
     if (isGabriel) {
-      if (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'approach') {
+      if (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'approach' || e.attackState === 'blink') {
         const GABRIEL_WINDUP_MAX_DRAWH_FRAC = 0.62;
         drawH = Math.min(drawH, state.cssH * GABRIEL_WINDUP_MAX_DRAWH_FRAC);
       } else if (e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) {
@@ -13716,29 +13892,54 @@ function updateHud() {
   if (state.droneWave.simultaneousMode) {
     enemyHudEl.hidden = true;
     droneSquadHudEl.hidden = false;
+    // 18TH ROUND (spec sections 1-8): ROOT CAUSE of "撃破後もゲージ3本の
+    // こり続ける" — R16 deliberately kept all 3 rows visible forever (just
+    // dimming inactive ones, per THAT round's own "ゲージを完全に消す必要
+    // はない" spec) and never relabeled row 0 past "DRONE 1" even after a
+    // later generation was promoted into it — so the HUD never reflected
+    // how many drones had actually died. Real-device report now explicitly
+    // requires the opposite: a dead drone's gauge must disappear entirely
+    // and the remaining ones must compact upward with correct DRONE 1/2/3
+    // labels. Fixed by driving row COUNT and LABEL from
+    // state.droneWave.extra's own consumed flags (deadCount = how many
+    // past generations have been promoted-out-of, i.e. died) rather than a
+    // fixed 3-row layout: row 0 is always the CURRENTLY fought drone
+    // (state.enemy, whichever generation — number = deadCount+1), each
+    // following row is the next still-waiting extra in order, and any row
+    // beyond the remaining count is hidden (not just dimmed) — so #1's
+    // death removes row 0's old content by overwriting it with #2's real
+    // data/label, and the now-unused LAST row (not a "hole in the middle")
+    // is what actually disappears, giving the exact "compact upward, no
+    // empty slot" behavior the spec describes without needing to reorder
+    // DOM nodes.
+    const extras = state.droneWave.extra;
+    const deadCount = extras.filter((d) => d.consumed).length;
+    const remainingCount = 3 - deadCount;
     const e0 = state.enemy;
     const pct0 = Math.max(0, Math.round((e0.hp / e0.maxHp) * 100));
     droneSquadBarFillEls[0].style.width = pct0 + '%';
-    const extras = state.droneWave.extra;
-    for (let i = 0; i < extras.length && i + 1 < droneSquadBarFillEls.length; i++) {
-      const d = extras[i];
-      const pct = Math.max(0, Math.round((d.hp / d.maxHp) * 100));
-      droneSquadBarFillEls[i + 1].style.width = pct + '%';
-    }
-    // 16TH ROUND (spec sections 10, 47): bar 0 is ALWAYS the drone the
-    // player is currently fighting (whichever generation state.enemy
-    // presently represents — see promoteNextDroneWaveTarget()), so it is
-    // always the highlighted 'active' row; bars 1/2 are always background
-    // (still waiting behind FOG, or already folded into bar 0) and stay
-    // dimmed — never removed, per spec section 10's own explicit "HPゲージ
-    // を完全に消す必要はない".
-    if (droneSquadRowEls.length >= 3) {
+    if (droneSquadNameEls.length >= 1) droneSquadNameEls[0].textContent = 'DRONE ' + (deadCount + 1);
+    if (droneSquadRowEls.length >= 1) {
+      droneSquadRowEls[0].hidden = false;
       droneSquadRowEls[0].classList.add('active');
       droneSquadRowEls[0].classList.remove('inactive');
-      droneSquadRowEls[1].classList.add('inactive');
-      droneSquadRowEls[1].classList.remove('active');
-      droneSquadRowEls[2].classList.add('inactive');
-      droneSquadRowEls[2].classList.remove('active');
+    }
+    // remaining background rows (still-waiting extras, in promotion order,
+    // starting right after the ones already consumed/promoted-out-of).
+    for (let row = 1; row < 3; row++) {
+      if (row >= remainingCount) {
+        if (droneSquadRowEls.length > row) droneSquadRowEls[row].hidden = true;
+        continue;
+      }
+      const d = extras[deadCount + row - 1];
+      const pct = Math.max(0, Math.round((d.hp / d.maxHp) * 100));
+      droneSquadBarFillEls[row].style.width = pct + '%';
+      if (droneSquadNameEls.length > row) droneSquadNameEls[row].textContent = 'DRONE ' + (deadCount + row + 1);
+      if (droneSquadRowEls.length > row) {
+        droneSquadRowEls[row].hidden = false;
+        droneSquadRowEls[row].classList.add('inactive');
+        droneSquadRowEls[row].classList.remove('active');
+      }
     }
   } else {
     enemyHudEl.hidden = false;
@@ -14638,6 +14839,34 @@ function renderDismountTransitionOverlay(now) {
   ctx.restore();
 }
 
+// 18TH ROUND (spec sections 22-24, 67-68): ENDING/RESULT-exclusive sepia
+// overlay — a warm brown tint + a thin dark vignette at the very edges,
+// drawn over the whole canvas (background/debris/player, never the DOM
+// ENDING/RESULT text — see this function's own call site comment for why
+// draw order here doesn't matter for that). Two flat layers, not a
+// gradient across the whole screen, so it never fights the vignette's own
+// edge-darkening: SEPIA_TINT_ALPHA is deliberately light (background and
+// player must both stay clearly recognizable per spec's own "十分認識でき
+// る程度" — this is a mood wash, not a scene-obscuring filter) and
+// SEPIA_VIGNETTE_ALPHA only reaches its full darkness in each corner via a
+// radial falloff, keeping the screen's own center (where the player/RESULT
+// text sit) essentially untouched by the vignette term.
+const SEPIA_TINT_ALPHA = 0.30;
+const SEPIA_VIGNETTE_ALPHA = 0.22;
+function renderEndingSepiaOverlay() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(112,84,48,' + SEPIA_TINT_ALPHA + ')';
+  ctx.fillRect(0, 0, state.cssW, state.cssH);
+  const cx = state.cssW / 2, cy = state.cssH / 2;
+  const outerR = Math.max(state.cssW, state.cssH) * 0.75;
+  const grad = ctx.createRadialGradient(cx, cy, outerR * 0.35, cx, cy, outerR);
+  grad.addColorStop(0, 'rgba(20,14,8,0)');
+  grad.addColorStop(1, 'rgba(20,14,8,' + SEPIA_VIGNETTE_ALPHA + ')');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, state.cssW, state.cssH);
+  ctx.restore();
+}
+
 // ---- ESCAPE_COMPLETE -> ENDING -> RESULT ----
 // 7TH ROUND 4th sub-part (spec sections 7/9/17): the NEW ending trigger —
 // A ROUTE's ADAM or B ROUTE's FINAL GABRIEL falling in COMBAT. Unlike the
@@ -14697,7 +14926,60 @@ function beginEnding(now) {
     const p = endingBgmAudioEl.play();
     if (p && p.catch) p.catch((err) => { if (DEBUG_MODE) r10DebugLog('ENDING BGM PLAY REJECTED: ' + (err && err.name)); });
   }
+  // 18TH ROUND (spec sections 18-26, 64-66): real-device report — ENDING
+  // used to just freeze whatever ESCAPE scene was on screen the instant it
+  // triggered (updateRunFlow() already makes ENDING a render-only phase —
+  // no updateEscapePlayer()/updateEnemy() call runs anymore once here —
+  // see that function's own comment), so the player's last lane/depth/AIM
+  // position and the last-fought enemy's stale sprite all stayed exactly
+  // where they were, reading as "still mid-game" rather than a genuine
+  // post-clear scene. Root cause was simply that nothing ever RESET these
+  // — not a deeper architecture problem. Fixed by snapping to a dedicated
+  // ENDING-only layout the instant ENDING begins: player recentered
+  // (depthPos=0 is the same neutral/default foreground position normal
+  // ESCAPE rests at — not the DASH-pulled south extreme), any leftover
+  // DASH-ghost afterimages cleared so none linger frozen mid-fade, and the
+  // BIKE RUN animation clock reset to frame 0 for a clean start. Enemy
+  // rendering itself is now gated out entirely at each render call site
+  // (see frame()'s own ENDING/RESULT check before renderEnemy()/
+  // renderDroneWave()/renderDroneWaveFog()/renderEnemyTelegraphs()) —
+  // nothing here needs to touch state.enemy itself (no despawn/mutation),
+  // so a real mid-game continue is never at risk of touching this state
+  // (ENDING is a one-way terminal phase per updateEndingPhase()->RESULT).
+  // Continuous RUN animation + world scroll during ENDING are handled by
+  // updateEndingScene() below (called every ENDING frame from
+  // updateEndingPhase()), reusing the EXACT same run-frame cadence and
+  // ESCAPE_AUTO_SCROLL_SPEED-based world-scroll formula normal ESCAPE
+  // already uses — no new animation system invented.
+  state.escape.depthPos = 0;
+  state.player.strafeOffset = 0;
+  state.escape.afterimages = [];
+  state.escape.runFrame = 0;
+  state.escape.runElapsedMs = 0;
+  r.endingSceneLastTickAt = now;
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: ENDING begins');
+}
+// 18TH ROUND: the dedicated ENDING-scene ticker — called every ENDING
+// frame (see updateEndingPhase() below). Deliberately minimal: only what
+// spec sections 18-26 actually ask for (player run-cycle animation +
+// world scroll), nothing route/distance/combat-related. Never calls
+// tickRunDistance()/updateEnemy()/updateBullets(), so EXIT distance, route
+// progression, and enemy state are all completely untouched — this is
+// purely a visual "the world keeps moving" ticker for an already-won run.
+function updateEndingScene(now) {
+  const r = state.run;
+  const last = r.endingSceneLastTickAt || now;
+  let dt = (now - last) / 1000;
+  if (!isFinite(dt) || dt < 0) dt = 0;
+  dt = Math.min(dt, 0.05);
+  r.endingSceneLastTickAt = now;
+  const es = state.escape;
+  es.runElapsedMs += dt * 1000;
+  if (es.runElapsedMs >= ESCAPE_ANIM_FRAME_MS) {
+    es.runElapsedMs -= ESCAPE_ANIM_FRAME_MS;
+    es.runFrame = (es.runFrame + 1) % ASSETS_PLAYER_ESCAPE_RUN.length;
+  }
+  applyForwardDelta(-ESCAPE_AUTO_SCROLL_SPEED * dt);
 }
 function updateEndingPhase(now) {
   // RUN FLOW addendum: the 60s gate is based on the ENDING BGM's OWN real
@@ -14708,7 +14990,15 @@ function updateEndingPhase(now) {
   // see its own PAUSE handling below) or any stall in playback
   // automatically pushes RESULT's appearance back by the same amount,
   // exactly matching "実再生60秒より前にRESULTが出ない".
+  // 18TH ROUND: the pause check now also gates updateEndingScene() (RUN
+  // animation + world scroll) — the ENDING world freezes while PAUSE is
+  // open, same as every other phase, instead of continuing to animate
+  // behind the pause menu. endingSceneLastTickAt is NOT advanced on an
+  // early return here, so the very next unpaused tick computes a fresh,
+  // correctly-small dt from whenever the scene last actually ticked —
+  // never a large frozen-duration jump once resumed.
   if (state.paused) return;
+  updateEndingScene(now);
   const played = endingBgmAudioEl ? endingBgmAudioEl.currentTime : (now - state.run.phaseStartedAt) / 1000;
   if (played < RUN_ENDING_RESULT_GATE_SEC) return;
   state.run.phase = 'RESULT';
@@ -14947,8 +15237,15 @@ function updateRunFlow(now) {
   else if (phase === 'ESCAPE_COMPLETE') updateEscapeCompletePhase(now);
   else if (phase === 'ENDING') updateEndingPhase(now);
   else if (phase === 'GAME_OVER') updateGameOverPhase(now);
-  // 'RESULT': nothing to tick — a static UI layer over the still-rendering
-  // ENDING scene until QUIT/ARTIST PAGE is pressed.
+  // 18TH ROUND: RESULT now also ticks updateEndingScene() (respecting
+  // PAUSE, same as ENDING itself) — spec sections 25/68 explicitly want
+  // the dedicated ENDING world (centered player RUN + scrolling
+  // background) to keep animating underneath the RESULT UI, not freeze
+  // the instant RESULT appears. RESULT itself still has no PHASE-
+  // transition logic of its own to tick (it only ever leaves via QUIT/
+  // ARTIST PAGE, both direct button handlers) — this is purely the same
+  // visual continuity ticker ENDING already runs.
+  else if (phase === 'RESULT' && !state.paused) updateEndingScene(now);
   return true;
 }
 function renderRunFlowOverlay(now) {
@@ -15309,6 +15606,20 @@ function frame(ts) {
   // since the boss-overlap regression is the concrete, reported problem.
   if (state.gameMode !== 'escape') renderBarrels();
   if (state.gameMode === 'escape') {
+    // 18TH ROUND (spec sections 18-19, 26, 66): ENDING/RESULT are a
+    // dedicated post-clear scene — every enemy the run named (DRONE/
+    // ROID1/ROID2/GABRIEL/ADAM/ADAM SPHERE, all funneled through the same
+    // state.enemy + shared render calls below) must never appear on
+    // screen once ENDING begins, not just stop attacking (updateEnemy()
+    // already doesn't run here — see updateRunFlow()'s own comment — but
+    // the STALE sprite from the instant ENDING began was still being
+    // rendered every frame since none of these render calls themselves
+    // checked the phase). Gates the enemy body, its attack telegraphs, and
+    // any in-flight missile/barrage projectile it fired — never the
+    // world/background/debris (not named in this round's spec) or the
+    // player, which still renders normally, just at its new ENDING
+    // position (see beginEnding()'s own comment).
+    const inEndingScene = state.run.phase === 'ENDING' || state.run.phase === 'RESULT';
     // 8TH ROUND (item 14): the enemy is no longer inert here — render it
     // and its attack telegraphs same as COMBAT (item 23: same warning/
     // impact/shockwave quality in both modes). Still no muzzle/tracer/aim
@@ -15325,7 +15636,7 @@ function frame(ts) {
     // draws LAST so it correctly covers the boss — see
     // renderCollapseObstacles()'s own zFilter comment.
     renderCollapseObstacles('behindBoss');
-    renderEnemy(theme);
+    if (!inEndingScene) renderEnemy(theme);
     // METROPOLIS COLLAPSE — left/right-avoid hazards render at the same
     // environmental layer as the enemy (both are real world-Z objects via
     // project()). 26TH ROUND item 1: the old static "rubble pile" (a
@@ -15346,9 +15657,9 @@ function frame(ts) {
     // already flying past) needs to draw OVER the player for that instant,
     // same real depth-compare split renderCollapseObstacles() already uses
     // for boss-vs-debris. See renderMissileProjectiles()'s own comment.
-    renderMissileProjectiles('behindPlayer');
+    if (!inEndingScene) renderMissileProjectiles('behindPlayer');
     renderEscapePlayer();
-    renderMissileProjectiles('frontOfPlayer');
+    if (!inEndingScene) renderMissileProjectiles('frontOfPlayer');
     // 30TH ROUND items 19-22: DECOY marker — no-op unless active.
     renderEscapeDecoy();
     // 9TH ROUND (item 20): ESCAPE MODE has no LIGHT at all — it is a
@@ -15357,7 +15668,15 @@ function frame(ts) {
     // unconditionally in this branch, gated only by theme==='escape', which
     // no longer implies gameMode==='escape' now that STAGE TYPE and GAME
     // MODE are decoupled).
-    renderEnemyTelegraphs(theme);
+    if (!inEndingScene) renderEnemyTelegraphs(theme);
+    // 18TH ROUND (spec sections 22-24, 67-68): ENDING-exclusive sepia
+    // overlay — drawn last within the CANVAS layer, i.e. on top of
+    // background/debris/player, but the canvas itself (#scene-canvas,
+    // z-index 10) sits well BELOW every DOM UI layer (#run-flow-banner
+    // z-index 150, #result-screen z-index 220), so ENDING/RESULT text is
+    // guaranteed to render above this regardless of draw order here — see
+    // renderEndingSepiaOverlay()'s own comment for the exact opacity.
+    if (inEndingScene) renderEndingSepiaOverlay();
   } else {
     // 14TH ROUND (real-device report): root cause of "DRONEが主人公spriteの
     // 上へオーバーレイして見える" — renderDroneWave() (DRONE#2/#3, staged at
