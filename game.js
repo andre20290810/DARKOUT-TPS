@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R21';
+const BUILD_VERSION = 'DARKOUT2-R22';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1058,7 +1058,12 @@ const AIM_PLAYER_MARGIN_PX = 14;
 // slider's old max) — see TOUCH_AIM_SENSITIVITY below, a SEPARATE constant
 // (not reusing this slider) so TOUCH and GAMEPAD can each be tuned
 // independently per spec section 35, rather than sharing one value.
-const AIM_SENSITIVITY_PRESETS = { slow: 0.06, standard: 0.20, fast: 0.60 };
+// 22ND ROUND (real-device report item 9): "COMBATモードのAIMのデフォルト
+// 移動速度を5%高速化...現行値 × 1.05" — applied to the DEFAULT preset only
+// (standard: 0.20 -> 0.21, exactly current x 1.05), leaving the OTHER
+// selectable presets (slow/fast — not "the default") untouched, per the
+// instruction's own explicit "現在値を基準に...新しい感覚値を推測しない".
+const AIM_SENSITIVITY_PRESETS = { slow: 0.06, standard: 0.20 * 1.05, fast: 0.60 };
 const AIM_SENSITIVITY_DEFAULT = AIM_SENSITIVITY_PRESETS.standard;
 let controllerAimSensitivity = AIM_SENSITIVITY_DEFAULT;
 // 15TH ROUND (spec section 35): TOUCH's own independent sensitivity — the
@@ -1082,7 +1087,15 @@ let controllerAimSensitivity = AIM_SENSITIVITY_DEFAULT;
 // input now takes 0.283s/0.683s to reach 20px/50px respectively), giving
 // roughly double the time window for fine positioning at every input level
 // while still able to sweep the full screen in well under 3s when needed.
-const TOUCH_AIM_SENSITIVITY = 0.09;
+// 22ND ROUND (real-device report item 9): "COMBATモードのAIMのデフォルト
+// 移動速度を5%高速化...現行値 × 1.05" — applied here too (0.09 -> 0.0945),
+// since TOUCH is this project's own primary tested input method and
+// "AIMのデフォルト移動速度" names the concept generically, not one specific
+// input scheme; AIM_SENSITIVITY_DEFAULT (GAMEPAD's own default, above) gets
+// the identical x1.05 treatment so both input methods' DEFAULT AIM speed
+// move together, consistent with how every past AIM-tuning round in this
+// file has kept TOUCH/GAMEPAD in parity unless told to diverge.
+const TOUCH_AIM_SENSITIVITY = 0.09 * 1.05;
 
 const FIRE_COOLDOWN_MS = 130;
 // 12TH ROUND (item 9): MAG_SIZE 12->30. RESERVE_MAX scaled by the SAME
@@ -1135,7 +1148,13 @@ const FIRE_HAPTIC_STRONG = 0.15;
 // actual play — options changed to 500/1000/2000/INFINITE (was 100/300/500/
 // INFINITE) and the default raised to 500 accordingly. Same mutable-
 // PLAYER_MAX_HP architecture, no new call sites needed.
-let PLAYER_MAX_HP = 500;
+// 22ND ROUND (real-device report item 10): "主人公のデフォルトLIFE／最大
+// LIFEを300に設定" — this mutable default (see setPlayerLifeMode() below)
+// reverts to the value this SAME PAUSE MENU tier used before the 14TH
+// ROUND changed the option set to 500/1000/2000/INFINITE (that round's own
+// comment records the prior set as "100/300/500/INFINITE") — not a newly
+// invented number, the exact value this project already used here once.
+let PLAYER_MAX_HP = 300;
 // 5TH ROUND PART 12: short damage-blink duration — brief enough not to
 // obscure gameplay, clearly visible as an immediate "you were just hit"
 // cue. Never overlaps the moment damage is possible again: damage is only
@@ -2036,6 +2055,10 @@ const endingSkipBtnEl = document.getElementById('ending-skip-btn'); // 19TH ROUN
 // and #ending-message's own comment in index.html.
 const endingMessageEl = document.getElementById('ending-message');
 const endingMessageLineEls = endingMessageEl ? Array.from(endingMessageEl.querySelectorAll('.ending-line')) : [];
+// 22ND ROUND (real-device report item 2): #pause-btn's own live element,
+// read every ENDING frame in updateEndingMessage() below to position
+// #ending-message directly under it — see that function's own comment.
+const pauseBtnElForEnding = document.getElementById('pause-btn');
 // 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER interactive screen.
 const gameoverScreenEl = document.getElementById('gameover-screen');
 const gameoverContinueCountValueEl = document.getElementById('gameover-continue-count-value');
@@ -3382,6 +3405,25 @@ registerWeakPointFrac(ASSETS.gabriel.release, 0.30, 0.30, 0.07);
 registerWeakPointFrac(ASSETS.gabriel.walk[0], 0.50, 0.155, 0.07);
 registerWeakPointFrac(ASSETS.gabriel.walk[1], 0.50, 0.155, 0.07);
 registerWeakPointFrac(ASSETS.gabriel.walk[2], 0.50, 0.155, 0.07);
+// 22ND ROUND (real-device report item 8): GABRIEL's own escapeRun[] frames
+// (the RUN-cycle art computeEnemyDrawRect() selects for idle/blink/
+// approach/telegraph — i.e. most of GABRIEL's on-screen time in BOTH
+// COMBAT and ESCAPE, see gabrielEscapeRunActive's own comment) had NO
+// registered weak point at all — confirmed by checking every image
+// computeEnemyDrawRect()'s img-selection ternary can produce against this
+// map. Left unregistered, this round's own mask-only-damage fix (see
+// isAimOnEffectiveHit()/updateBullets()'s own comments below) would have
+// made GABRIEL completely UNDAMAGEABLE for that entire stretch — directly
+// contradicting the round's own explicit checklist item "走行・接近...状態
+// でも仮面判定が正常に追従する". xFrac/yFrac are REAL measurements (a
+// dedicated pixel scan of the actual gabriel_escape_run_1/2/3.png files,
+// same "find the brightest saturated red pixel" methodology as the
+// existing registered poses target GABRIEL's glowing red eye/visor center)
+// — not guessed; rFrac reuses the EXACT SAME 0.07 radius every other
+// GABRIEL pose above already uses (no new radius invented).
+registerWeakPointFrac(ASSETS.gabriel.escapeRun[0].img, 0.528, 0.203, 0.07);
+registerWeakPointFrac(ASSETS.gabriel.escapeRun[1].img, 0.620, 0.233, 0.07);
+registerWeakPointFrac(ASSETS.gabriel.escapeRun[2].img, 0.583, 0.194, 0.07);
 registerWeakPointFrac(ASSETS.adam.idle, 0.44, 0.475, 0.03);
 registerWeakPointFrac(ASSETS.adam.windup, 0.475, 0.415, 0.03);
 registerWeakPointFrac(ASSETS.adam.attackVariants[0], 0.665, 0.475, 0.035);
@@ -4435,11 +4477,14 @@ Object.defineProperty(state.player, 'hp', {
   enumerable: true,
   configurable: true,
 });
-// PLAYER LIFE mode itself (500|1000|2000|'infinite') — stored on
+// PLAYER LIFE mode itself (300|1000|2000|'infinite') — stored on
 // state.player alongside every other per-player setting. 14TH ROUND: default
-// raised from 100 to 500 (real-device play report: 100 was too low). See
+// raised from 100 to 500 (real-device play report: 100 was too low). 22ND
+// ROUND (real-device report item 10): default reverted 500->300, matching
+// PLAYER_MAX_HP's own declaration comment (this project's own prior 300
+// value, not a new guess) and the PAUSE MENU's own first tier. See
 // setPlayerLifeMode() below, the sole writer.
-state.player.lifeMode = 500;
+state.player.lifeMode = 300;
 
 // fixed-size particle pool (avoid per-shot allocation churn)
 const PARTICLE_POOL_SIZE = 48;
@@ -5826,21 +5871,26 @@ setTouchControlsVisible(state.touchControlsVisible);
 
 // 13TH ROUND (spec sections 43-48): PLAYER LIFE. 14TH ROUND: options changed
 // to 500/1000/2000/INFINITE (was 100/300/500/INFINITE) — mode is now
-// 500|1000|2000|'infinite'. Applies to COMBAT and ESCAPE alike (spec
-// section 47) since both already read/write the SAME state.player.hp/
-// PLAYER_MAX_HP this reassigns — no per-mode branching needed anywhere
-// else. current/max are set equal to the newly selected value immediately
-// (spec section 45's own worked examples), including when switching INTO
-// or OUT OF INFINITE. INFINITE's own underlying PLAYER_MAX_HP is left at a
-// fixed 500 (an explicit flag — p.infiniteLife — blocks real damage, per
-// spec's own "not a huge HP number" requirement; this number is only ever
-// used for the pre-infiniteLife-check HUD ratio math, never actually
-// depleted).
+// 300|1000|2000|'infinite' (22ND ROUND: the first tier reverted 500->300,
+// see PLAYER_MAX_HP's own declaration comment). Applies to COMBAT and
+// ESCAPE alike (spec section 47) since both already read/write the SAME
+// state.player.hp/PLAYER_MAX_HP this reassigns — no per-mode branching
+// needed anywhere else. current/max are set equal to the newly selected
+// value immediately (spec section 45's own worked examples), including
+// when switching INTO or OUT OF INFINITE. INFINITE's own underlying
+// PLAYER_MAX_HP is left at a fixed value (an explicit flag —
+// p.infiniteLife — blocks real damage, per spec's own "not a huge HP
+// number" requirement; this number is only ever used for the pre-
+// infiniteLife-check HUD ratio math, never actually depleted) — 22ND ROUND:
+// updated 500->300 alongside the default tier above purely so this
+// function no longer has a second, now-stale "500" floating in it; INFINITE
+// mode's actual behavior (unlimited, real damage always blocked) is
+// completely unchanged either way.
 function setPlayerLifeMode(mode) {
   const p = state.player;
   p.lifeMode = mode;
   p.infiniteLife = mode === 'infinite';
-  PLAYER_MAX_HP = mode === 'infinite' ? 500 : mode;
+  PLAYER_MAX_HP = mode === 'infinite' ? 300 : mode;
   p._hp = PLAYER_MAX_HP; // bypasses the infiniteLife-guarded setter directly — this is a mode-change reset, not damage
   if (DEBUG_MODE) r10DebugLog('PLAYER LIFE: mode=' + mode + ' max=' + PLAYER_MAX_HP + ' infinite=' + p.infiniteLife);
 }
@@ -8975,6 +9025,42 @@ function markRunTransition(label, now) {
 function applyManualRunOverride(now) {
   markRunTransition('MANUAL_OVERRIDE:' + state.gameMode, now);
   const r = state.run;
+  // 22ND ROUND (real-device report items 4-5): root cause of "ENDING画面か
+  // らゲーム内の別画面へ戻ったあともENDING曲が停止せず、その後にゲームBGM
+  // が重なって再生される" — the PAUSE MENU's own GAME MODE/ENEMY SELECT
+  // buttons (always live, not DEBUG-gated — see index.html) call this
+  // function to jump straight into COMBAT/ESCAPE, a genuine in-page way to
+  // LEAVE ENDING/RESULT that is completely separate from QUIT's
+  // window.location.reload() (which already correctly kills all audio via
+  // a fresh document — untouched, still correct) or SKIP (which only ever
+  // moves ENDING->RESULT, still "inside" the ended state). Nothing here
+  // previously undid ANY of ENDING's one-shot setup (endingBgmAudioEl kept
+  // playing, body.ending-active — documented elsewhere as "never toggled
+  // back off" — stayed set, hiding the real gameplay HUD/touch-controls
+  // under the new COMBAT/ESCAPE session, and a still-visible #result-screen
+  // could be left overlaying it too), so the very next togglePauseMenu()
+  // RESUME correctly started the NORMAL bgmAudioEl track (state.run.phase
+  // is no longer ENDING/RESULT by then — see that function's own R20 guard)
+  // ON TOP of the still-running endingBgmAudioEl — the reported overlap.
+  // Fixed by fully reversing ENDING's own setup exactly the way it was
+  // applied, reusing the EXACT same calls beginEnding()/showResultScreen()
+  // already use elsewhere (never a new mechanism): pause endingBgmAudioEl
+  // (mirrors its own PAUSE-menu pause() call), clear endingBgmStarted so a
+  // LATER genuine ENDING replay correctly restarts the track from 0 (same
+  // one-shot-guard pattern beginEnding() already relies on), remove
+  // body.ending-active so the real HUD/touch-controls come back, and hide
+  // the ENDING-only SKIP/message UI plus any still-visible RESULT overlay.
+  // No-op (every condition below already false/hidden) on the normal,
+  // by-far-most-common use of this function — switching GAME MODE/ENEMY
+  // mid COMBAT/ESCAPE play, completely unaffected.
+  if (r.phase === 'ENDING' || r.phase === 'RESULT') {
+    if (endingBgmAudioEl && !endingBgmAudioEl.paused) endingBgmAudioEl.pause();
+    r.endingBgmStarted = false;
+    document.body.classList.remove('ending-active');
+    if (endingSkipBtnEl) endingSkipBtnEl.hidden = true;
+    if (endingMessageEl) endingMessageEl.hidden = true;
+    if (resultScreenEl) resultScreenEl.hidden = true;
+  }
   r.manualOverrideActive = true;
   r.isFinalCombat = false;
   r.enemyRevealed = true; // no COMBAT_INTRO empty-stage/reveal beat for a manual jump
@@ -10579,8 +10665,25 @@ function computeEnemyDrawRect() {
     // already partially normalizes size, but still a genuine reversal).
     // Folded 'blink' into the same clamp for consistency and to close this
     // gap the same way ADAM's own blink fix does.
+    // 22ND ROUND (real-device report item 1): root cause of "防御姿勢で接近
+    // するとGABRIELが画面を超えるほど巨大化し、上方向へ移動していく" — this
+    // WINDUP cap's own state list never included 'defense', even though
+    // 'defense' draws the exact same source image (set.windup — see the img-
+    // selection ternary above, `e.attackState === 'telegraph' ||
+    // 'defense' || 'counterApproach' ? set.windup`) and eases e.z down
+    // toward the identical GABRIEL_Z_MIN telegraph/counterApproach/approach
+    // already do. With no cap, drawH grew UNBOUNDED as 'defense' closed
+    // distance; since the south-approach clamp further below only ever pins
+    // drawBottomY (never drawH), an unbounded drawH pushed drawTopY (=
+    // drawBottomY - drawH) far up-screen — reading exactly as "grows huge
+    // AND drifts upward". Fix: 'defense' now shares the SAME already-tuned
+    // GABRIEL_WINDUP_MAX_DRAWH_FRAC (0.62) the other windup-art states use —
+    // not a new/guessed fraction, the existing constant for this exact same
+    // image. ADAM has an equivalent gap in its own 'defense' clamp coverage
+    // (see computeEnemyDrawRect()'s ADAM branches above) but is left
+    // completely untouched — this round's report names GABRIEL only.
     if (isGabriel) {
-      if (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'approach' || e.attackState === 'blink') {
+      if (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'approach' || e.attackState === 'blink' || e.attackState === 'defense') {
         const GABRIEL_WINDUP_MAX_DRAWH_FRAC = 0.62;
         drawH = Math.min(drawH, state.cssH * GABRIEL_WINDUP_MAX_DRAWH_FRAC);
       } else if (e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) {
@@ -11285,13 +11388,26 @@ function updateBullets(now) {
     // enemy type (rect.headX undefined) is completely unaffected — falls
     // through to the exact same generic body-hit damage path as before.
     const isRoidType = e.type === 'roid1' || e.type === 'roid2';
+    // 22ND ROUND (real-device report item 8): hoisted up from further below
+    // (where a second, now-removed `const isClawBoss = ...` used to sit) so
+    // this SAME flag can gate the zero-damage BODY HIT branch immediately
+    // below too — no behavior change to any of its other, unmoved uses
+    // later in this function.
+    const isClawBoss = e.type === 'gabriel' || e.type === 'adam';
     // RUN FLOW round: GABRIEL/ADAM now carry the same measured headX/headY/
     // headR fields roid1/roid2 do (see computeEnemyDrawRect()'s own
     // CLAW_BOSS_WEAKPOINT_FRAC lookup) — widened from isRoidType-only so
-    // headHit correctly detects GABRIEL's HEAD / ADAM's RED EYE too. Unlike
-    // ROID (body hit = 0 damage), a claw-boss body hit still deals normal
-    // damage — only headHit adds the weak-point bonus multiplier below.
-    const hasHeadPoint = (isRoidType || e.type === 'gabriel' || e.type === 'adam') && rect.headX != null;
+    // headHit correctly detects GABRIEL's HEAD / ADAM's RED EYE too.
+    // 22ND ROUND (real-device report item 8): "GABRIEL/ADAMとも、顔につけて
+    // いる仮面を唯一のダメージ有効部位にしてください...仮面以外の場所を撃っ
+    // てもダメージを与えない" — this OVERRIDES the RUN FLOW round comment
+    // directly above (a claw-boss body hit used to still deal normal
+    // damage, headHit only added a bonus multiplier); see the BODY HIT
+    // branch immediately below, now widened to isRoidType||isClawBoss, for
+    // the actual behavior change. headHit itself is still computed exactly
+    // the same way for every type (no change to the real per-frame-measured
+    // circle geometry itself).
+    const hasHeadPoint = (isRoidType || isClawBoss) && rect.headX != null;
     const headDist = hasHeadPoint ? Math.hypot(b.x2 - rect.headX, b.y2 - rect.headY) : Infinity;
     const headHit = hasHeadPoint && headDist <= rect.headR;
     // Playwright-measured live-hit-test verification (this round) caught a
@@ -11306,13 +11422,26 @@ function updateBullets(now) {
     // now its own authoritative hit region, independent of the old body-
     // center circle, so a headshot can never again be gated out by it.
     if (dist <= hitRadius || headHit) {
-      if (isRoidType && !headHit) {
-        // BODY HIT (outside the head weak point): shot resolves visually
-        // but the design intentionally withholds damage — see comment above.
+      // 22ND ROUND (real-device report item 8): widened from isRoidType-only
+      // to (isRoidType || isClawBoss) — a GABRIEL/ADAM body/arm/leg hit
+      // (anywhere outside the real measured mask/eye circle) now resolves
+      // visually (impact spark, never a silent whiff) but deals ZERO
+      // damage, exactly mirroring ROID1/ROID2's own pre-existing "body hit
+      // registers, HEAD required for damage" design — no new mechanism
+      // invented, this is the SAME branch ROID already used, just no
+      // longer excluding claw bosses. hasHeadPoint (just above) already
+      // requires rect.headX != null — every GABRIEL pose now has a
+      // registered weak point (see registerWeakPointFrac()'s own comments,
+      // including this round's newly-added escapeRun[] entries), so this
+      // can never wrongly zero a legitimate hit for want of missing data.
+      if ((isRoidType || isClawBoss) && !headHit) {
+        // BODY HIT (outside the head/mask weak point): shot resolves
+        // visually but the design intentionally withholds damage — see
+        // comment above.
         spawnPlayerImpact(b.x2, b.y2, now);
         if (DEBUG_MODE) {
           r10DebugState.lastHitTestResult = 'BODY HIT dist=' + dist.toFixed(1) + ' headDist=' + headDist.toFixed(1) + '/headR=' + rect.headR.toFixed(1);
-          r10DebugLog('BODY HIT ' + (ENEMY_LABEL[e.type] || e.type) + ' headDist=' + headDist.toFixed(1) + ' (no damage — HEAD required)');
+          r10DebugLog('BODY HIT ' + (ENEMY_LABEL[e.type] || e.type) + ' headDist=' + headDist.toFixed(1) + ' (no damage — HEAD/MASK required)');
         }
         continue;
       }
@@ -11340,7 +11469,9 @@ function updateBullets(now) {
       // window after repeatedly shooting the same spot, see
       // updateGabrielAdamReaim()) are untouched and still block, since the
       // user's spec named DEFENSE specifically, not COUNTER.
-      const isClawBoss = e.type === 'gabriel' || e.type === 'adam';
+      // 22ND ROUND: isClawBoss is now declared earlier (right after
+      // isRoidType, above) so the BODY HIT gate could reuse it too — reused
+      // here as the same variable, not redeclared.
       if (isClawBoss && (e.attackState === 'counterApproach' || e.attackState === 'counterAttack')) {
         // item 25-26: visually distinct 0-damage block — a small blue-white
         // spark burst (reuses the existing 'spark' particle type, just at a
@@ -11386,10 +11517,20 @@ function updateBullets(now) {
         const hpBefore = e.hp;
         // At/inside DAMAGE_FALLOFF_FULL_Z this is exactly BULLET_DAMAGE
         // (distMult=1) — every existing near-range balance is unchanged.
-        // RUN FLOW round: GABRIEL's HEAD / ADAM's RED EYE weak-point bonus —
-        // a body hit on either boss still deals this same normal damage
-        // (isClawBoss never zeroes damage the way isRoidType's own
-        // BODY-HIT-no-damage branch above does), headHit just multiplies it.
+        // RUN FLOW round: GABRIEL's HEAD / ADAM's RED EYE weak-point bonus.
+        // 22ND ROUND (real-device report item 8): the comment this replaces
+        // said a claw-boss BODY hit "still deals normal damage, headHit
+        // just multiplies it" — no longer true, since the widened BODY HIT
+        // gate above (isRoidType||isClawBoss) now `continue`s before ever
+        // reaching this line whenever a claw boss is hit outside its
+        // mask/head circle. The only way isClawBoss code can still reach
+        // here is headHit===true, so this expression's condition is now
+        // always true for a claw boss at this point — left as its own
+        // explicit `headHit` check anyway (not hardcoded to `true`) so the
+        // EXACT SAME 1.30x multiplier value/logic from before this round is
+        // untouched, per the round's own "倍率...を新しく推測して決めない"
+        // instruction — this is a pure dead-path elimination, not a balance
+        // change.
         const weakPointMult = (isClawBoss && headHit) ? GABRIEL_ADAM_WEAKPOINT_DAMAGE_MULT : 1;
         const scaledDamage = Math.round(BULLET_DAMAGE * distMult * weakPointMult);
         e.hp = Math.max(0, e.hp - scaledDamage);
@@ -13808,7 +13949,16 @@ function isWithinEffectiveDamageRange(z) {
 // they can never disagree about where "the hit point" is, per spec.
 function getEffectiveHitPoint(rect) {
   const e = state.enemy;
-  if ((e.type === 'roid1' || e.type === 'roid2') && rect.headX != null) {
+  // 22ND ROUND (real-device report item 8): widened from ROID1/ROID2-only
+  // to also include GABRIEL/ADAM — now that a claw-boss body-center hit
+  // deals ZERO damage (see updateBullets()'s own 22ND ROUND comment),
+  // leaving FOCUS's auto-aim target at rect.cx/cy (the body center, the
+  // fallback below) would have driven LIGHT/AIM onto a spot that could
+  // never register a real hit, silently breaking FOCUS mode against
+  // GABRIEL/ADAM specifically. Every GABRIEL/ADAM pose now has a
+  // registered weak point (see registerWeakPointFrac()'s own comments), so
+  // rect.headX is never unexpectedly null for a genuine render of either.
+  if ((e.type === 'roid1' || e.type === 'roid2' || e.type === 'gabriel' || e.type === 'adam') && rect.headX != null) {
     return { x: rect.headX, y: rect.headY };
   }
   return { x: rect.cx, y: rect.cy };
@@ -13887,9 +14037,23 @@ function isAimOnEffectiveHit() {
   // undefined, so headHit is always false, condition reduces to the
   // original body-only check) are completely unaffected.
   const hasClawBossHeadPoint = (e.type === 'gabriel' || e.type === 'adam') && rect.headX != null;
+  // 22ND ROUND (real-device report item 8): "仮面にAIMが重なった場合のみ
+  // 照準を黄色にする" — this used to fall through to the generic body
+  // circle below whenever headHit was false, so AIM turned YELLOW over
+  // GABRIEL/ADAM's whole body (matching the OLD "body hit deals normal
+  // damage" design updateBullets() itself no longer implements — see that
+  // function's own 22ND ROUND comment). Now returns the headHit result
+  // directly, exactly mirroring ROID1/ROID2's own dedicated branch further
+  // above (`return Math.hypot(...) <= rect.headR;`, no body fallback) —
+  // the same "mask/head is the ONLY effective hit region" pattern, applied
+  // to GABRIEL/ADAM too. Every GABRIEL pose now has a registered weak point
+  // (this round's own registerWeakPointFrac() additions for escapeRun[]),
+  // so hasClawBossHeadPoint is never falsely false for a genuine GABRIEL/
+  // ADAM render — the body-circle line below is reached only by every
+  // OTHER enemy type (DRONE/ADAM SPHERE/etc., rect.headX always null for
+  // them), completely unaffected.
   if (hasClawBossHeadPoint) {
-    const headHit = Math.hypot(aim.x - rect.headX, aim.y - rect.headY) <= rect.headR;
-    if (headHit) return true;
+    return Math.hypot(aim.x - rect.headX, aim.y - rect.headY) <= rect.headR;
   }
   return Math.hypot(aim.x - rect.cx, aim.y - rect.cy) <= enemyHitRadius(rect);
 }
@@ -15048,15 +15212,39 @@ function renderDismountTransitionOverlay(now) {
 // against.
 const SILVER_TINT_ALPHA = 0.26;
 const SILVER_VIGNETTE_ALPHA = 0.22;
-function renderEndingSepiaOverlay() {
+// 22ND ROUND (real-device report item 7): the ENDING overlay used to be a
+// completely static tint/vignette — real-device feedback read this pale
+// (190,198,208) full-screen tint as "a flat white background video" with no
+// life to it, and asked for it to "breathe" — background scenery showing
+// through a little more, then the white/pale tint strengthening again, on
+// a slow, gentle cycle, explicitly NOT a fast flash ("激しい点滅にはしない
+// でください"). No existing slow-ambient-pulse timing constant exists
+// anywhere in this file to reuse (the only precedent, the attack-flash
+// `Math.sin(now / 65)` in renderEnemy(), is a fast ~0.4s warning blink —
+// wrong effect entirely, and explicitly what this round's own wording rules
+// out), so SILVER_BREATHE_PERIOD_MS below is a newly-introduced value for
+// this genuinely new ambient effect; what IS reused, per the round's own
+// "既存実装を基準に" instruction, are the two EXISTING alpha constants
+// above as the breathing cycle's own peak ("白が強くなる") — the trough
+// only ever dims them to SILVER_BREATHE_MIN_FRAC of that same peak, never
+// introducing an unrelated new color/opacity design. A slow sine wave
+// (~9s full cycle) naturally reads as calm/gradual rather than a blink —
+// no discrete on/off states, no linear snap, just a smooth 0..1..0 ramp.
+const SILVER_BREATHE_PERIOD_MS = 9000;
+const SILVER_BREATHE_MIN_FRAC = 0.7;
+function renderEndingSepiaOverlay(now) {
+  const breatheT = (Math.sin((now / SILVER_BREATHE_PERIOD_MS) * Math.PI * 2) + 1) / 2; // 0..1, slow
+  const breatheFrac = SILVER_BREATHE_MIN_FRAC + (1 - SILVER_BREATHE_MIN_FRAC) * breatheT;
+  const tintAlpha = SILVER_TINT_ALPHA * breatheFrac;
+  const vignetteAlpha = SILVER_VIGNETTE_ALPHA * breatheFrac;
   ctx.save();
-  ctx.fillStyle = 'rgba(190,198,208,' + SILVER_TINT_ALPHA + ')';
+  ctx.fillStyle = 'rgba(190,198,208,' + tintAlpha + ')';
   ctx.fillRect(0, 0, state.cssW, state.cssH);
   const cx = state.cssW / 2, cy = state.cssH / 2;
   const outerR = Math.max(state.cssW, state.cssH) * 0.75;
   const grad = ctx.createRadialGradient(cx, cy, outerR * 0.35, cx, cy, outerR);
   grad.addColorStop(0, 'rgba(10,14,20,0)');
-  grad.addColorStop(1, 'rgba(10,14,20,' + SILVER_VIGNETTE_ALPHA + ')');
+  grad.addColorStop(1, 'rgba(10,14,20,' + vignetteAlpha + ')');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, state.cssW, state.cssH);
   ctx.restore();
@@ -15194,6 +15382,22 @@ function beginEnding(now) {
 // "ENDINGメッセージ").
 const ENDING_MESSAGE_LINE_REVEAL_SEC = [4.0, 7.5, 11.0, 15.0];
 function updateEndingMessage(playedSec) {
+  // 22ND ROUND (real-device report item 2): root cause of "ENDINGテキストが
+  // 低すぎて主人公と重なる" — the container used to be bottom-anchored via
+  // pure CSS, landing in the same screen region the running player sprite
+  // renders in. Explicit request was "PAUSEボタンの真下付近", not a new
+  // guessed pixel value — read PAUSE's OWN live rendered position every
+  // frame here (same "measure the real element, don't hardcode" pattern
+  // already used for the GABRIEL/ADAM approach-border's themeLabelEl read)
+  // and place #ending-message just below it, using the EXISTING
+  // ESCAPE_LABEL_CLAMP_MARGIN_PX safety-margin constant for the gap rather
+  // than inventing a new one. Runs every ENDING frame (cheap) so this stays
+  // correct through any mid-ENDING resize/orientation change.
+  if (endingMessageEl && pauseBtnElForEnding) {
+    const pauseBottom = pauseBtnElForEnding.getBoundingClientRect().bottom;
+    endingMessageEl.style.top = (pauseBottom + ESCAPE_LABEL_CLAMP_MARGIN_PX) + 'px';
+    endingMessageEl.style.bottom = 'auto';
+  }
   for (let i = 0; i < endingMessageLineEls.length; i++) {
     const revealAt = ENDING_MESSAGE_LINE_REVEAL_SEC[i];
     if (revealAt === undefined) continue;
@@ -15346,11 +15550,17 @@ function updateResultFocusUI() {
 }
 function activateResultFocusedButton() {
   if (state.resultFocus === 1) {
-    // ARTIST PAGE — no real destination URL was supplied for this round
-    // (matches the existing #controller-store-link precedent, which is
-    // also a placeholder href="#" in index.html); reads the button's own
-    // href rather than a fabricated constant, so filling in a real URL
-    // later is a one-line HTML edit, no JS change needed.
+    // ARTIST PAGE — 22ND ROUND: href is now the real TuneCore URL (see
+    // index.html's own comment on #result-artist-btn). This manual
+    // window.open() path is reached ONLY by the GAMEPAD confirm-button path
+    // below (state.resultFocus's own gamepad branch) — a gamepad press
+    // never real-DOM-focuses the anchor (updateResultFocusUI() only toggles
+    // a CSS class, see its own comment), so there is no native click for
+    // the browser to handle on its own; this is the only way gamepad input
+    // can trigger the navigation. A real mouse/touch click on the anchor
+    // itself does NOT reach this function any more (see that listener's own
+    // comment below) specifically so it never double-opens a second tab on
+    // top of the anchor's own native href/target navigation.
     const href = resultArtistBtnEl.getAttribute('href');
     if (href && href !== '#') window.open(href, '_blank', 'noopener');
   } else {
@@ -15363,7 +15573,18 @@ function activateResultFocusedButton() {
   }
 }
 if (resultQuitBtnEl) resultQuitBtnEl.addEventListener('click', () => { state.resultFocus = 0; activateResultFocusedButton(); });
-if (resultArtistBtnEl) resultArtistBtnEl.addEventListener('click', () => { state.resultFocus = 1; activateResultFocusedButton(); });
+// 22ND ROUND (real-device report item 3): a real mouse/touch click on
+// #result-artist-btn is a genuine anchor click — the browser's own native
+// href/target="_blank" handling already opens the real TuneCore URL
+// correctly (same "let the browser handle a real href" pattern
+// #controller-store-link already uses elsewhere in this file), so this
+// listener ONLY updates the visual focus state now; it deliberately no
+// longer calls activateResultFocusedButton() (which would call
+// window.open() a SECOND time on top of the anchor's own native
+// navigation, opening two tabs for one click). QUIT is unaffected — it is
+// a <button>, not an anchor, so it has no native navigation of its own and
+// still needs activateResultFocusedButton() to actually run its reload().
+if (resultArtistBtnEl) resultArtistBtnEl.addEventListener('click', () => { state.resultFocus = 1; updateResultFocusUI(); });
 
 // ---------------------------------------------------------------------
 // Master dispatcher — mirrors updateClearSequence()'s own role. Returns
@@ -15960,7 +16181,10 @@ function frame(ts) {
     // z-index 150, #result-screen z-index 220), so ENDING/RESULT text is
     // guaranteed to render above this regardless of draw order here — see
     // renderEndingSepiaOverlay()'s own comment for the exact opacity.
-    if (inEndingScene) renderEndingSepiaOverlay();
+    // 22ND ROUND: ts (frame()'s own rAF timestamp, same DOMHighResTimeStamp
+    // basis as performance.now()) drives the overlay's own breathing cycle —
+    // see renderEndingSepiaOverlay()'s own comment.
+    if (inEndingScene) renderEndingSepiaOverlay(ts);
   } else {
     // 14TH ROUND (real-device report): root cause of "DRONEが主人公spriteの
     // 上へオーバーレイして見える" — renderDroneWave() (DRONE#2/#3, staged at

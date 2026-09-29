@@ -440,12 +440,27 @@ html, body {
   text-decoration: none;
 }
 
-#pc-download-row {
-  margin-top: 12px;
+/* 22ND ROUND (real-device report item 11): PC DOWNLOAD relocated from
+   #mode-select-screen to the top-right corner of #loading-screen (the
+   background-loop-video + TAP TO START screen) — same top-right corner
+   treatment #lang-toggle-btn already establishes elsewhere in this file
+   for a persistent secondary control on one of these full-screen overlays
+   (reused directly, not a new pixel value), which also happens to match
+   the general placement ALEXIA's own PC download control uses. z-index 5
+   is enough to sit above #intro-video (z-index 0) but well under
+   #tap-to-start-btn's own stacking needs — the two never overlap on
+   screen (button is centered, this sits in the corner) so exact ordering
+   between them doesn't matter in practice. */
+#pc-download-row-top {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  z-index: 5;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-end;
   gap: 3px;
+  text-align: right;
 }
 #pc-download-link {
   font-size: 11px;
@@ -457,6 +472,7 @@ html, body {
   font-size: 9px;
   letter-spacing: 0.03em;
   color: #6e7d88;
+  max-width: 42vw;
 }
 
 #scene-canvas {
@@ -1101,19 +1117,30 @@ body.ending-active #hud { display: none; }
 #ending-skip-btn[hidden] { display: none; }
 
 /* 21ST ROUND (real-device report item 3): ENDING line-by-line fade-in
-   message — bottom-anchored/centered like #result-thanks' own established
-   pattern, but a separate element (shown only during ENDING, hidden again
+   message — a separate element (shown only during ENDING, hidden again
    the instant RESULT begins — see game.js's beginEnding()/showResultScreen())
    so it can never visually collide with #result-thanks/#result-panel once
    RESULT layers on top. z-index 56 sits just above #ending-skip-btn's own
    55 (never competes with #result-screen's 220 since the two are mutually
    exclusive in time). pointer-events:none — purely ambient text, never an
-   interactive element, so it can never intercept a SKIP tap underneath it
-   even though it visually overlaps that corner on some aspect ratios. */
+   interactive element, so it can never intercept a SKIP tap underneath it.
+   22ND ROUND (real-device report item 2): root cause of "ENDINGテキストが
+   低すぎて主人公と重なる" — the bottom-anchored position above sat right
+   where the running player sprite renders (both are screen-bottom-half
+   content). Moved to a TOP anchor instead, per the round's own explicit
+   "PAUSEボタンの真下付近" — the `top` value below is a static CSS fallback
+   only (matches #pause-btn's own `top: max(8px, env(safe-area-inset-top))`
+   formula plus a nominal button-height allowance); the REAL, authoritative
+   position is set every ENDING frame from game.js's updateEndingMessage()
+   by reading #pause-btn's own live getBoundingClientRect().bottom — so this
+   never drifts out of sync with the PAUSE button's actual rendered size/
+   position on any viewport, and no new gap value was invented (reuses the
+   existing ESCAPE_LABEL_CLAMP_MARGIN_PX safety-margin constant already used
+   elsewhere in this file for "clearance below a fixed UI element"). */
 #ending-message {
   position: absolute;
   left: 50%;
-  bottom: max(54px, calc(env(safe-area-inset-bottom) + 46px));
+  top: calc(max(8px, env(safe-area-inset-top)) + 34px);
   transform: translateX(-50%);
   width: 100%;
   max-width: 640px;

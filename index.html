@@ -161,6 +161,32 @@
       <span id="tap-to-start-main" data-en="TAP TO START" data-ja="タップしてスタート">TAP TO START</span>
       <span id="tap-to-start-sub">画面をタップしてください</span>
     </button>
+    <!-- 22ND ROUND (real-device report item 11): PC DOWNLOAD — moved here
+         (top-right of the FIRST screen — background loop video + TAP TO
+         START, i.e. this #loading-screen) from #mode-select-screen's own
+         #pc-download-row below the CONTROLLER/TOUCH PANEL choice, per
+         explicit request; referenced ALEXIA's own equivalent top-right
+         "DOWNLOAD PC VERSION" placement/positioning for where this class of
+         control belongs, but NOT its dynamic pointer-type-gated visibility
+         or its separate PC-package build system — this project's existing,
+         already-verified approach (a plain link straight to GitHub's own
+         "download repository as ZIP" endpoint for this exact branch, see
+         the 13TH ROUND's own comment, preserved verbatim below with the
+         SAME href/hint text, not a new URL or package) is kept completely
+         unchanged, only relocated. Sits outside #tap-to-start-btn (a
+         separate sibling element, not nested inside it), so tapping this
+         link can never also trigger handleTapToStart()'s own click
+         listener (scoped to that one button only — see its own comment) —
+         no stopPropagation() needed, unlike ALEXIA's version which nests
+         its button inside a whole-overlay tap-to-unlock listener. Always
+         visible (same as before this round), not gated by device/pointer
+         type, since the ORIGINAL #pc-download-row was never gated either —
+         relocating is not licence to add new conditional-visibility logic
+         nobody asked for. -->
+    <div id="pc-download-row-top">
+      <a id="pc-download-link" href="https://github.com/andre20290810/DARKOUT-TPS/archive/refs/heads/main.zip" data-en="DOWNLOAD FOR PC (ZIP)" data-ja="PC版をダウンロード（ZIP）">DOWNLOAD FOR PC (ZIP)</a>
+      <div id="pc-download-hint" data-en="Unzip, then open index.html in your browser." data-ja="解凍後、index.htmlをブラウザで開いてください">Unzip, then open index.html in your browser.</div>
+    </div>
   </div>
 
   <!-- 6TH ROUND PART 7/8/9/10/11/12: replaces the old "TAP TO START"
@@ -180,22 +206,11 @@
       <div id="controller-store-question" data-en="DON'T HAVE A WIRELESS CONTROLLER?" data-ja="ワイヤレスコントローラーをお持ちでないですか?">DON'T HAVE A WIRELESS CONTROLLER?</div>
       <a id="controller-store-link" href="#" target="_blank" rel="noopener" data-en="GET A WIRELESS CONTROLLER" data-ja="ワイヤレスコントローラーを購入する">GET A WIRELESS CONTROLLER</a>
     </div>
-    <!-- 13TH ROUND (spec sections 29-35): PC DOWNLOAD. This static site's own
-         files (index.html/game.js/style.css/assets/) are ALREADY a
-         self-contained, relative-path-only HTML5 package (verified: no
-         fetch()/XHR/localStorage/getImageData/absolute-URL dependency
-         anywhere in game.js, and a direct file:// launch loads with zero
-         console errors and zero failed asset requests). Rather than build
-         and commit a second, duplicate multi-hundred-MB binary package into
-         this repo, the DOWNLOAD button links to GitHub's own built-in
-         "download repository as ZIP" archive endpoint for this exact
-         branch — extracting it and opening index.html directly (double-
-         click, no server, no installer) reproduces the verified file://
-         launch. -->
-    <div id="pc-download-row">
-      <a id="pc-download-link" href="https://github.com/andre20290810/DARKOUT-TPS/archive/refs/heads/main.zip" data-en="DOWNLOAD FOR PC (ZIP)" data-ja="PC版をダウンロード（ZIP）">DOWNLOAD FOR PC (ZIP)</a>
-      <div id="pc-download-hint" data-en="Unzip, then open index.html in your browser." data-ja="解凍後、index.htmlをブラウザで開いてください">Unzip, then open index.html in your browser.</div>
-    </div>
+    <!-- 22ND ROUND (real-device report item 11): PC DOWNLOAD moved OUT of
+         this screen entirely — see #pc-download-row-top's own comment in
+         #loading-screen above (the new location, top-right of the very
+         first TAP TO START screen) for the full rationale. This screen
+         (TOUCH PANEL / CONTROLLER selection) no longer hosts it. -->
   </div>
 
   <!-- Main gameplay BGM ("AFTER THE LIMITS"). loop: this is a continuous
@@ -417,14 +432,31 @@
            above, untouched). Sizing/restyling itself lives in style.css,
            scoped to these two IDs specifically — see that comment for why
            .result-btn/#gameover-continue-btn/#gameover-quit-btn are
-           unaffected. ARTIST PAGE keeps the SAME href="#" placeholder (no
-           real destination URL supplied) and QUIT keeps its own existing
-           click handler (game.js) — only appearance changed, not behavior/
-           gamepad-focus wiring (.result-btn.gamepad-focused still applies
-           to both, since the class itself is untouched). -->
+           unaffected. QUIT keeps its own existing click handler (game.js) —
+           only appearance changed there, not behavior/gamepad-focus wiring
+           (.result-btn.gamepad-focused still applies to both, since the
+           class itself is untouched).
+           22ND ROUND (real-device report item 3): ARTIST PAGE's href is now
+           the real, explicitly-supplied TuneCore artist URL (no longer the
+           href="#" placeholder) — root cause of "QUITと同じ挙動になる" was
+           that a real <a target="_blank" href="#"> with no e.preventDefault()
+           anywhere still runs the BROWSER's own native anchor navigation
+           (to "#", in a new tab per target="_blank") alongside game.js's own
+           click handler, which itself was a no-op against the placeholder
+           (see activateResultFocusedButton()'s own `href !== '#'` guard) —
+           on a real device that native navigation opened what looked like a
+           fresh copy of the game (TAP TO START again), reading exactly like
+           QUIT even though no QUIT/reload code ever ran. Fixed at both ends:
+           this real href lets the anchor's OWN native click/target=_blank
+           behavior do the actual navigation correctly (same "set a real
+           href, let the browser handle it" pattern this file's own
+           #controller-store-link already establishes for CONTROLLER_STORE_
+           URL — see its comment), and game.js's click listener no longer
+           also calls activateResultFocusedButton() (which would otherwise
+           open a SECOND redundant tab) — see that listener's own comment. -->
       <div id="result-nav-row">
         <button type="button" tabindex="-1" id="result-quit-btn" class="result-btn result-nav-btn">QUIT</button>
-        <a id="result-artist-btn" class="result-btn result-nav-btn result-nav-btn--link" href="#" target="_blank" rel="noopener">ARTIST PAGE</a>
+        <a id="result-artist-btn" class="result-btn result-nav-btn result-nav-btn--link" href="https://www.tunecore.co.jp/artists?id=1140292" target="_blank" rel="noopener">ARTIST PAGE</a>
       </div>
     </div>
     <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
@@ -471,12 +503,15 @@
       <div id="pause-title">PAUSE</div>
       <!-- 13TH ROUND (spec sections 43-48): PLAYER LIFE — placed above TOUCH
            CONTROLS per explicit spec ("TOUCH CONTROL ON/OFFより上へ配置").
-           100 is the default/standard value (spec section 44); INFINITE
-           blocks normal-damage HP loss via state.player.infiniteLife (see
-           setPlayerLifeMode() in game.js) rather than a huge HP number. -->
+           INFINITE blocks normal-damage HP loss via state.player.infiniteLife
+           (see setPlayerLifeMode() in game.js) rather than a huge HP number.
+           22ND ROUND (real-device report item 10): "デフォルトLIFEを300に"
+           — this first tier's value/label reverted 500->300 (see game.js's
+           PLAYER_MAX_HP declaration comment for why 300, not a new guess);
+           still the default/active tier, still first in the row. -->
       <div class="pause-menu-label">PLAYER LIFE</div>
       <div id="player-life-row">
-        <button type="button" tabindex="-1" data-life="500" class="pause-menu-btn player-life-btn active">500</button>
+        <button type="button" tabindex="-1" data-life="300" class="pause-menu-btn player-life-btn active">300</button>
         <button type="button" tabindex="-1" data-life="1000" class="pause-menu-btn player-life-btn">1000</button>
         <button type="button" tabindex="-1" data-life="2000" class="pause-menu-btn player-life-btn">2000</button>
         <button type="button" tabindex="-1" data-life="infinite" class="pause-menu-btn player-life-btn">INFINITE</button>
