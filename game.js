@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R20';
+const BUILD_VERSION = 'DARKOUT2-R21';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1714,13 +1714,20 @@ const GABRIEL_ESCAPE_ATTACK_HOLD_MS = 420;
 // 'impact' hold — real-device report: CLAW_SWING_MS=140ms alone (the value
 // COMBAT GABRIEL used before this round) was too brief to register the claw
 // sprite. Explicit requirement was "旧値+300ms", not a fresh guess: this is
-// literally CLAW_SWING_MS(140) + 300. A dedicated GABRIEL+COMBAT-only
-// constant (not a reuse of GABRIEL_ESCAPE_ATTACK_HOLD_MS, which has its own
-// separately-tuned 420ms value from the 12TH ROUND and must stay untouched
-// per spec section 24's explicit "ESCAPE MODEでは...維持する") — see its one
-// use site (the 'telegraph'->'impact' transition in updateEnemy()) for why
-// ADAM never reads this at all, in either mode.
-const GABRIEL_COMBAT_ATTACK_HOLD_MS = CLAW_SWING_MS + 300;
+// literally CLAW_SWING_MS(140) + 300. A dedicated COMBAT-only constant (not
+// a reuse of GABRIEL_ESCAPE_ATTACK_HOLD_MS, which has its own separately-
+// tuned 420ms value from the 12TH ROUND and must stay untouched per that
+// round's spec section 24 "ESCAPE MODEでは...維持する").
+// 21ST ROUND (real-device follow-up): "ADAMだけ攻撃画像の表示時間が短く感じ
+// る" — explicit instruction was to read GABRIEL's OWN COMBAT hold value and
+// apply the SAME value to ADAM, not invent a separate number. Renamed from
+// GABRIEL_COMBAT_ATTACK_HOLD_MS to this shared name since both characters'
+// COMBAT 'impact' hold now reads it identically (see its one use site, the
+// 'telegraph'->'impact' transition in updateEnemy()) — ESCAPE keeps each
+// character's own separately-tuned value (GABRIEL_ESCAPE_ATTACK_HOLD_MS/
+// CLAW_SWING_MS), completely untouched, since this round's report is
+// COMBAT-only ("COMBAT MODEでADAMが攻撃した際").
+const CLAW_COMBAT_ATTACK_HOLD_MS = CLAW_SWING_MS + 300;
 const CLAW_COOLDOWN_MS = 1200;  // unchanged from the old cooldown duration
 const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
 // Real lateral reach at the swing instant — a bit under STRAFE_DASH_DISTANCE_PX
@@ -2024,6 +2031,11 @@ const resultContinueValueEl = document.getElementById('result-continue-value');
 const resultQuitBtnEl = document.getElementById('result-quit-btn');
 const resultArtistBtnEl = document.getElementById('result-artist-btn');
 const endingSkipBtnEl = document.getElementById('ending-skip-btn'); // 19TH ROUND: see beginEnding()/showResultScreen()/its own click handler below
+// 21ST ROUND (real-device report item 3): ENDING line-by-line fade-in
+// message — see updateEndingMessage()/beginEnding()/showResultScreen() below
+// and #ending-message's own comment in index.html.
+const endingMessageEl = document.getElementById('ending-message');
+const endingMessageLineEls = endingMessageEl ? Array.from(endingMessageEl.querySelectorAll('.ending-line')) : [];
 // 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER interactive screen.
 const gameoverScreenEl = document.getElementById('gameover-screen');
 const gameoverContinueCountValueEl = document.getElementById('gameover-continue-count-value');
@@ -5484,6 +5496,23 @@ function pollGamepad(now) {
 // TOUCH / VIRTUAL STICK INPUT (fallback for testing without a pad)
 // ---------------------------------------------------------------------
 
+// 21ST ROUND (real-device report): long-pressing an operation button
+// (SHOT above all, held down continuously to keep firing) could trigger
+// the OS/browser's own text-selection/copy/paste callout menu, badly
+// disrupting play. style.css's universal `*` rule (user-select:none,
+// -webkit-touch-callout:none) and wireButton()/makeVirtualStick()'s own
+// preventDefault() on pointerdown are the primary fix; this is the last
+// backstop layer, suppressing the 'contextmenu' event itself (which is
+// how some desktop/hybrid browsers surface a long-press/right-click
+// menu that the touch-callout property alone does not cover) everywhere
+// EXCEPT the ?debug=1 DEBUG panel's own copyable text fields, which
+// intentionally keep normal text-selection/context-menu behavior (see
+// style.css's matching #r10-dbg-* exception on the same rule).
+window.addEventListener('contextmenu', (e) => {
+  if (e.target && typeof e.target.closest === 'function' && e.target.closest('#r10-debug-panel')) return;
+  e.preventDefault();
+});
+
 function makeVirtualStick(padEl, stickEl) {
   const st = { x: 0, y: 0, active: false, pointerId: null };
   function update(clientX, clientY) {
@@ -5499,6 +5528,15 @@ function makeVirtualStick(padEl, stickEl) {
     stickEl.style.transform = `translate(${dx * radius * 0.55}px, ${dy * radius * 0.55}px)`;
   }
   padEl.addEventListener('pointerdown', (e) => {
+    // 21ST ROUND: same long-press-triggers-OS-text-selection/callout report
+    // that motivated wireButton()'s own preventDefault() (see its comment) —
+    // this stick is the other touch surface a player holds down for an
+    // extended time (steering while moving/aiming), so it needs the same
+    // guard; the CSS-level user-select:none/-webkit-touch-callout:none fix
+    // (style.css's universal `*` rule) already covers this element too, but
+    // this is a belt-and-suspenders JS-level backstop for OS/browser
+    // combinations where CSS alone proves insufficient.
+    e.preventDefault();
     st.active = true; st.pointerId = e.pointerId;
     padEl.setPointerCapture(e.pointerId);
     update(e.clientX, e.clientY);
@@ -9499,22 +9537,30 @@ function updateEnemyCore(dt, now) {
         e.attackState = 'impact'; // reuses the existing release/swing-art render state
         // 12TH ROUND PART B (spec section 4): ESCAPE GABRIEL holds this
         // 'impact' pose longer (GABRIEL_ESCAPE_ATTACK_HOLD_MS) — see that
-        // constant's own comment. ADAM in either mode keeps the original
-        // CLAW_SWING_MS unchanged (never named in this round's report).
+        // constant's own comment.
         // 20TH ROUND (spec sections 21-25, 51-53): real-device report — the
         // COMBAT GABRIEL claw-release sprite (CLAW_SWING_MS=140ms) was too
-        // brief to register. Explicit requirement: extend how long the
-        // sprite STAYS on screen, never touch WHEN damage lands (the
-        // hit-test just below this block still fires at the exact same
-        // instant 'impact' begins, completely untouched) or GABRIEL's own
-        // ESCAPE timing (GABRIEL_ESCAPE_ATTACK_HOLD_MS, its own separate
-        // branch, also untouched). A NEW COMBAT-only constant is used rather
-        // than editing CLAW_SWING_MS itself, since that constant is shared
-        // with ADAM in both modes — widening it would have silently added
-        // +300ms to ADAM too, which this round never asked for.
-        const swingMs = e.type === 'gabriel'
-          ? (state.gameMode === 'escape' ? GABRIEL_ESCAPE_ATTACK_HOLD_MS : GABRIEL_COMBAT_ATTACK_HOLD_MS)
-          : CLAW_SWING_MS;
+        // brief to register. Extended how long the sprite STAYS on screen
+        // only, never touching WHEN damage lands (the hit-test just below
+        // this block still fires at the exact same instant 'impact' begins)
+        // or GABRIEL's own ESCAPE timing (GABRIEL_ESCAPE_ATTACK_HOLD_MS, its
+        // own separate branch, untouched).
+        // 21ST ROUND (real-device follow-up): "GABRIELと比較するとADAMだけ
+        // 攻撃画像の表示時間が短く感じる" — explicit instruction: read
+        // GABRIEL's own COMBAT hold value and apply the SAME value to ADAM,
+        // not a fresh guess. ADAM's COMBAT 'impact' hold now reads the SAME
+        // CLAW_COMBAT_ATTACK_HOLD_MS constant GABRIEL's COMBAT branch already
+        // used (renamed from GABRIEL_COMBAT_ATTACK_HOLD_MS to reflect this —
+        // see its own comment). ESCAPE is untouched for both characters
+        // (this round's own report is COMBAT-only, matching the pattern the
+        // 20TH ROUND already established for GABRIEL) — ADAM's ESCAPE
+        // 'impact' hold still reads the original CLAW_SWING_MS, and the
+        // separate ADAM-only clawSpriteHoldUntil grace window (the R18
+        // damage/sprite-sync fix, a different mechanism from this hold
+        // duration) is completely untouched in both modes.
+        const swingMs = state.gameMode === 'escape'
+          ? (e.type === 'gabriel' ? GABRIEL_ESCAPE_ATTACK_HOLD_MS : CLAW_SWING_MS)
+          : CLAW_COMBAT_ATTACK_HOLD_MS;
         e.attackUntil = now + swingMs;
         // The actual hit-test — fires exactly once, at the instant the
         // swing begins, against the player's ACTUAL current position.
@@ -15119,7 +15165,40 @@ function beginEnding(now) {
   // here at all (see #ending-skip-btn's own comment in index.html).
   document.body.classList.add('ending-active');
   if (endingSkipBtnEl) endingSkipBtnEl.hidden = false;
+  // 21ST ROUND: reset the ENDING message to its pre-reveal state and show
+  // its container — necessary because ENDING is reachable more than once
+  // per page load in DEBUG (debugJumpToResult() etc.), so a stale
+  // "all lines already visible" state from a previous ENDING must not
+  // carry over into a fresh one. updateEndingMessage() (called every ENDING
+  // frame from updateEndingPhase()) re-reveals each line at its own timed
+  // threshold from here.
+  if (endingMessageEl) {
+    endingMessageEl.hidden = false;
+    endingMessageLineEls.forEach((el) => el.classList.remove('ending-line-visible'));
+  }
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: ENDING begins');
+}
+// 21ST ROUND (real-device report item 3): seconds of REAL ending-BGM
+// playback (the SAME endingBgmAudioEl.currentTime-derived `played` value
+// updateEndingPhase() already computes for its own 60s RESULT gate below —
+// not a separate elapsed-real-time clock, per the round's explicit
+// "ENDING曲が流れている時間そのものを演出時間として活用してください") at
+// which each ending-message line begins its fade-in. All four thresholds
+// sit comfortably inside RUN_ENDING_RESULT_GATE_SEC (60s) so the full
+// sequence — including the final "Thank you for playing" line — has always
+// finished and settled well before RESULT can appear, matching the round's
+// own stated visual order (ENDING message -> Thank you for playing ->
+// RESULT). The first threshold is deliberately non-zero so the ENDING
+// scene's own visual/music has a quiet moment to establish itself first
+// (the round's own priority order also lists "ENDING映像・音楽" before
+// "ENDINGメッセージ").
+const ENDING_MESSAGE_LINE_REVEAL_SEC = [4.0, 7.5, 11.0, 15.0];
+function updateEndingMessage(playedSec) {
+  for (let i = 0; i < endingMessageLineEls.length; i++) {
+    const revealAt = ENDING_MESSAGE_LINE_REVEAL_SEC[i];
+    if (revealAt === undefined) continue;
+    if (playedSec >= revealAt) endingMessageLineEls[i].classList.add('ending-line-visible');
+  }
 }
 // 19TH ROUND: SKIP — fires the EXACT SAME RESULT-entry transition
 // updateEndingPhase()'s own 60s gate calls below (state.run.phase='RESULT',
@@ -15190,6 +15269,12 @@ function updateEndingPhase(now) {
   if (state.paused) return;
   updateEndingScene(now);
   const played = endingBgmAudioEl ? endingBgmAudioEl.currentTime : (now - state.run.phaseStartedAt) / 1000;
+  // 21ST ROUND: driven by the SAME `played` value the 60s gate below uses,
+  // so PAUSE (this whole function already returns early above, per its own
+  // existing 18TH ROUND comment) freezes line reveals exactly like it
+  // freezes everything else ENDING-related — no separate timer to keep in
+  // sync.
+  updateEndingMessage(played);
   if (played < RUN_ENDING_RESULT_GATE_SEC) return;
   state.run.phase = 'RESULT';
   state.run.phaseStartedAt = now;
@@ -15248,6 +15333,12 @@ function showResultScreen() {
   // 19TH ROUND: nothing left to skip once RESULT (with its own QUIT/ARTIST
   // PAGE) is already showing — see #ending-skip-btn's own comment.
   if (endingSkipBtnEl) endingSkipBtnEl.hidden = true;
+  // 21ST ROUND: hide the ENDING line-by-line message the instant RESULT
+  // begins (both the natural 60s-gate path and the SKIP-button path call
+  // this same function) — see #ending-message's own comment in index.html
+  // for why this prevents any visual overlap with #result-thanks/
+  // #result-panel once RESULT layers on top of the still-playing scene.
+  if (endingMessageEl) endingMessageEl.hidden = true;
 }
 function updateResultFocusUI() {
   if (resultQuitBtnEl) resultQuitBtnEl.classList.toggle('gamepad-focused', state.resultFocus === 0);
@@ -16242,6 +16333,9 @@ window.__darkoutTps = {
   debugJumpToCombat, debugJumpToEscape, debugJumpToLastStretch, debugJumpToResult,
   RUN_DISTANCE_TOTAL_M, RUN_LAST_STRETCH_M, COMBAT_TIME_LIMIT_SEC,
   RUN_ENDING_RESULT_GATE_SEC, SCORE_PER_DEFEAT,
+  // 21ST ROUND: ENDING line-by-line fade-in message — exposed for automated
+  // testing only.
+  ENDING_MESSAGE_LINE_REVEAL_SEC, updateEndingMessage,
   escapePlayerBaseScaleFromDepth, ESCAPE_PLAYER_BASE_SCALE,
   gabrielAdamApproachSpeed, GABRIEL_ADAM_WEAKPOINT_DAMAGE_MULT,
   GABRIEL_ADAM_COUNTER_RANGE_TOLERANCE, clawBossWeakPointFor,

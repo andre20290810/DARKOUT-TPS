@@ -2,7 +2,30 @@
   color-scheme: dark;
 }
 
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* 21ST ROUND (real-device report): long-pressing a touch button (SHOT most
+   of all, since holding it down is the normal way to keep firing) triggered
+   the OS/browser's own text-selection — highlight, "Copy"/"Paste" callout,
+   drag-to-select — because nothing anywhere in this file suppressed
+   user-select/touch-callout; only touch-action (a separate property that
+   blocks scroll/zoom gestures, not text-selection at all) was applied in a
+   few places. Applied globally (every element, not just #touch-controls'
+   own buttons) since this is a full-screen game with no text content that
+   should ever be selectable during play — the ONE deliberate exception
+   (the ?debug=1 DEBUG panel's own log/field text, meant to be copyable) is
+   a real class/id selector (see #r10-dbg-game/#r10-dbg-log etc. below,
+   already existing) which naturally wins over this universal `*` rule
+   under normal CSS specificity (any class/id beats a bare `*`), so that
+   panel's own copy-to-clipboard behavior is completely unaffected.
+   -webkit-touch-callout:none additionally suppresses iOS Safari's own
+   long-press image/link callout menu, which user-select alone does not
+   cover. */
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 
 /* 12TH ROUND (items 46-49): root-caused the "white door frame" reported
    during DASH — no such effect exists anywhere in game.js's Canvas
@@ -779,6 +802,60 @@ body.ending-active #hud { display: none; }
   box-shadow: 0 0 0 2px rgba(127,255,212,0.4), 0 0 14px rgba(127,255,212,0.35);
 }
 
+/* 21ST ROUND (real-device report item 4): "QUIT/ARTIST PAGE read as
+   generic full-width UI buttons, too prominent for a closing screen".
+   #result-nav-row lays the two out side by side with their OWN tight gap
+   (independent of #result-panel's own gap, which still spaces the stat
+   rows above at its original value — untouched). The size/style overrides
+   below are a NEW .result-nav-btn class added ALONGSIDE .result-btn (never
+   replacing it) specifically so GAME OVER's own
+   #gameover-continue-btn/#gameover-quit-btn — a different screen/decision,
+   never named in this round's report, and which only ever carries plain
+   .result-btn — keep their original appearance exactly as before, and so
+   .result-btn.gamepad-focused's existing background/border-color/box-shadow
+   (specificity 0-2-0, higher than this single-class .result-nav-btn/
+   .result-nav-btn--link's own 0-1-0) still wins whenever RESULT's own
+   gamepad focus lands on either button — gamepad navigation/focus-ring
+   behavior is completely unchanged, only the RESTING appearance and size
+   are. min-height:34px matches this file's own existing "smallest
+   acceptable touch target" precedent (#r10-dbg-copy-btn, above) rather than
+   an invented number, satisfying "スマートフォンでも押せる最低限のタップ
+   領域は維持" without guessing a value. */
+#result-nav-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 2px;
+}
+.result-nav-btn {
+  width: auto;
+  min-width: 92px;
+  min-height: 34px;
+  padding: 7px 16px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* ARTIST PAGE reads as a real in-world link rather than an ad-banner CTA —
+   no button chrome (border/background dropped) at rest, an underline in
+   its place so it still visually signals "this is clickable" per usual
+   link conventions, matching the round's own explicit "リンクとして自然に
+   見える...広告バナー的な訴求にしない". Only applies at rest — see the
+   comment above for why .gamepad-focused's own teal border/background/glow
+   still wins over this when RESULT's gamepad navigation focuses it. */
+.result-nav-btn--link {
+  background: transparent;
+  border-color: transparent;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  color: #b9d4e8;
+}
+
 /* 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER screen — same
    layout rules as #result-screen/#result-overlay-dim/#result-panel/
    #result-title (deliberately duplicated under new ids rather than reused,
@@ -1022,6 +1099,65 @@ body.ending-active #hud { display: none; }
   border-radius: 4px;
 }
 #ending-skip-btn[hidden] { display: none; }
+
+/* 21ST ROUND (real-device report item 3): ENDING line-by-line fade-in
+   message — bottom-anchored/centered like #result-thanks' own established
+   pattern, but a separate element (shown only during ENDING, hidden again
+   the instant RESULT begins — see game.js's beginEnding()/showResultScreen())
+   so it can never visually collide with #result-thanks/#result-panel once
+   RESULT layers on top. z-index 56 sits just above #ending-skip-btn's own
+   55 (never competes with #result-screen's 220 since the two are mutually
+   exclusive in time). pointer-events:none — purely ambient text, never an
+   interactive element, so it can never intercept a SKIP tap underneath it
+   even though it visually overlaps that corner on some aspect ratios. */
+#ending-message {
+  position: absolute;
+  left: 50%;
+  bottom: max(54px, calc(env(safe-area-inset-bottom) + 46px));
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 640px;
+  padding: 0 20px;
+  z-index: 56;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  pointer-events: none;
+  text-align: center;
+}
+#ending-message[hidden] { display: none; }
+/* Each line: opacity 0->1 + a slight upward drift + ease, per the round's
+   own explicit "opacity 0→1、わずかに下から上へ移動、イージング" request —
+   toggled by adding/removing .ending-line-visible from game.js's
+   updateEndingMessage(), timed off the ENDING BGM's real playback position
+   (see index.html's own comment on #ending-message for why). font-style:
+   italic on a serif face gives the "少しイタリック／斜体を感じる書体" the
+   round asked for without resorting to a decorative script font that would
+   hurt readability ("可読性を損なうほど装飾的にはしない"). */
+.ending-line {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 1.1s ease-out, transform 1.1s ease-out;
+  font-family: Georgia, "Times New Roman", serif;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  font-size: clamp(13px, 3.6vw, 17px);
+  color: #dfe6ea;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.8);
+}
+.ending-line.ending-line-visible { opacity: 1; transform: translateY(0); }
+/* Final "Thank you for playing" line — slightly larger/warmer than the
+   lines above it (still clearly secondary to #result-thanks/RESULT itself,
+   which only appears later, per the round's own visual-priority order). */
+.ending-line--thanks {
+  margin-top: 3px;
+  font-size: clamp(15px, 4.2vw, 20px);
+  font-weight: 700;
+  color: #ffd60a;
+  text-shadow: 0 0 10px rgba(255,214,10,0.4), 0 2px 4px rgba(0,0,0,0.9);
+}
 
 /* 19TH ROUND (spec sections 1-3): ENDING/RESULT hide gameplay TOUCH
    CONTROLS entirely — MOVE stick, AIM stick, both circular clusters, and

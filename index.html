@@ -350,6 +350,31 @@
        (top-right) — see style.css's own comment for the exact offsets. -->
   <button type="button" tabindex="-1" id="ending-skip-btn" hidden>SKIP</button>
 
+  <!-- 21ST ROUND (real-device report item 3): the ENDING scene (before
+       RESULT appears) had no text at all — real-device feedback called this
+       stretch "演出面で少し寂しい". Added a bottom-anchored, sequential
+       line-by-line fade-in message, timed against the ENDING BGM's OWN real
+       playback progress (endingBgmAudioEl.currentTime, read via
+       updateEndingPhase()'s existing `played` variable — the SAME value
+       already driving the 60s RESULT gate, not a separate real-time clock),
+       per the round's own explicit "ENDING曲が流れている時間そのものを演出
+       時間として活用してください". The last line is EXACTLY "Thank you for
+       playing" (never "Thank you for your playing" — explicit round
+       instruction) — a deliberately separate element from the PRE-EXISTING
+       #result-thanks "THANK YOU FOR PLAYING!!" banner below, which lives on
+       the RESULT screen (a later, distinct beat per the round's own stated
+       priority order ENDING映像・音楽→ENDINGメッセージ→Thank you for
+       playing→RESULT→QUIT/ARTIST PAGE) and is completely untouched this
+       round. Hidden again the instant RESULT begins (see showResultScreen()
+       in game.js) so it never visually overlaps #result-thanks/#result-
+       panel once RESULT layers on top of the still-playing ENDING scene. -->
+  <div id="ending-message" hidden aria-hidden="true">
+    <div class="ending-line">You made it out alive.</div>
+    <div class="ending-line">The engine goes quiet.</div>
+    <div class="ending-line">Until next time.</div>
+    <div class="ending-line ending-line--thanks">Thank you for playing</div>
+  </div>
+
   <!-- RUN FLOW SYSTEM: RESULT screen — shown as a UI layer on top of the
        still-rendering/still-playing ENDING scene (canvas + ending BGM both
        keep going underneath, per spec addendum section 5). Gamepad-
@@ -382,8 +407,25 @@
       <div class="result-stat-row">CONTINUE <span id="result-continue-value">0</span></div>
       <div class="result-stat-row">SCORE <span id="result-score-value">0</span></div>
       <div class="result-stat-row">RANK <span id="result-rank-value">D</span></div>
-      <button type="button" tabindex="-1" id="result-quit-btn" class="result-btn">QUIT</button>
-      <a id="result-artist-btn" class="result-btn" href="#" target="_blank" rel="noopener">ARTIST PAGE</a>
+      <!-- 21ST ROUND (real-device report item 4): QUIT/ARTIST PAGE were
+           reading as generic full-width "UI buttons", too prominent for a
+           closing screen — real-device feedback specifically named these
+           two (not GAME OVER's own CONTINUE/QUIT, a different screen that
+           still uses .result-btn unmodified below). Wrapped in their own
+           row (#result-nav-row) so ITS OWN gap can be tightened without
+           touching #result-panel's gap (which also spaces the stat rows
+           above, untouched). Sizing/restyling itself lives in style.css,
+           scoped to these two IDs specifically — see that comment for why
+           .result-btn/#gameover-continue-btn/#gameover-quit-btn are
+           unaffected. ARTIST PAGE keeps the SAME href="#" placeholder (no
+           real destination URL supplied) and QUIT keeps its own existing
+           click handler (game.js) — only appearance changed, not behavior/
+           gamepad-focus wiring (.result-btn.gamepad-focused still applies
+           to both, since the class itself is untouched). -->
+      <div id="result-nav-row">
+        <button type="button" tabindex="-1" id="result-quit-btn" class="result-btn result-nav-btn">QUIT</button>
+        <a id="result-artist-btn" class="result-btn result-nav-btn result-nav-btn--link" href="#" target="_blank" rel="noopener">ARTIST PAGE</a>
+      </div>
     </div>
     <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
   </div>
