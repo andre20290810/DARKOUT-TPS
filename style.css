@@ -451,6 +451,25 @@ html, body {
   pointer-events: none;
   z-index: 10;
 }
+/* 20TH ROUND (spec sections 2-5, 40-41): ENDING/RESULT hide the ENTIRE
+   gameplay HUD wrapper — real-device report found EXIT distance/LIFE gauge/
+   SURVIVE countdown still on screen through ENDING, and a broader audit
+   (spec section 5) found this SAME #hud div is also the single parent of
+   every other gameplay-only readout (STEALTH/ENEMY HP/DRONE SQUAD/FOCUS/
+   AMMO/WARNING) plus the ambient stage-name label (#theme-label) — none of
+   which belong on a dedicated "run is over" screen either, per spec's own
+   "通常ゲーム画面にフィルターを被せただけ...ではなく" goal. Reuses the SAME
+   body.ending-active class + specificity pattern R19's own
+   `body.ending-active #touch-controls` rule already established (one class,
+   set once in beginEnding(), never toggled back off since ENDING is a
+   one-way terminal phase) — no new JS state needed. Underlying values
+   (state.player.hp, state.escape.timeLeftSec, etc.) are never touched here,
+   purely a display:none on the DOM presentation layer, so nothing else
+   that reads those values downstream is affected. ENDING's own dedicated
+   UI (#ending-skip-btn, #result-screen and everything inside it) lives
+   OUTSIDE #hud, so this rule cannot ever hide SKIP/RESULT/THANK YOU FOR
+   PLAYING/QUIT/ARTIST PAGE. */
+body.ending-active #hud { display: none; }
 
 #hud-top-left {
   position: absolute;

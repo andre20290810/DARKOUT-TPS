@@ -289,7 +289,6 @@
       <div id="ammo-hud-reloading" hidden>RELOADING...</div>
     </div>
     <div id="hud-center-warning" hidden></div>
-    <div id="theme-label" class="hud-bottom-center">LAB / EXPERIMENT AREA</div>
     <!-- RUN FLOW SYSTEM: persistent "distance to the exit" readout (spec
          section 12) — shown from game start through ESCAPE_COMPLETE,
          updated by updateHud() in game.js. Deliberately NOT a "STAGE 1/5"
@@ -305,6 +304,24 @@
          many debris pieces are active simultaneously. -->
     <div id="exit-warning-readout" hidden>WARNING</div>
   </div>
+  <!-- 20TH ROUND: #theme-label moved OUT of #hud (was a child) so R20's
+       `body.ending-active #hud { display:none; }` rule (see style.css)
+       cannot ever collapse it. ROOT CAUSE this fixed: renderEscapePlayer()'s
+       label-overlap clamp (computeEscapePlayerRectClamped(), see game.js)
+       and R19's own GABRIEL/ADAM COMBAT approach-border clamp both read
+       themeLabelEl.getBoundingClientRect().top LIVE every frame — a
+       display:none ancestor collapses that rect to all-zeros, which pushed
+       the ESCAPE player's clamped Y far off-screen (measured dy=-183px on a
+       390px-tall viewport) the instant #hud (and therefore #theme-label
+       inside it) went display:none for ENDING. Moving it to a sibling
+       position, still directly after #hud in the DOM (same visual spot:
+       #hud itself uses inset:0, so a position:absolute descendant of it and
+       an identically-positioned sibling render identically — verified via
+       screenshot), fixes this without touching either clamp function, and
+       incidentally also means the stage-name label stays visible through
+       ENDING (harmless ambient text, not named in this round's hide list —
+       see this round's report for the visual read). -->
+  <div id="theme-label" class="hud-bottom-center">LAB / EXPERIMENT AREA</div>
 
   <!-- RUN FLOW SYSTEM: shared short banner reused across every transition
        phase (COMBAT_INTRO's enemy-name/BATTLE, EVACUATION_WARNING's

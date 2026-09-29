@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R19';
+const BUILD_VERSION = 'DARKOUT2-R20';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1157,7 +1157,39 @@ const PLAYER_SCALE_BOOST = 1.45; // was 1.18 (2nd round)
 // large. Applied ONLY to that one pose's own target height; every other
 // pose (SOUTH WALK, NORTH/EAST/WEST, FIRE, COVER, ESCAPE) still targets the
 // unmultiplied standing height and is unaffected.
-const SOUTH_DASH_SCALE_MULT = 0.90;
+// 20TH ROUND (spec sections 16-20, 23, 49-50): real-device re-report — SOUTH
+// DASH still reads oversized relative to the rest of COMBAT. ROOT CAUSE: the
+// 14TH ROUND (see the generic-pose branch's own comment, computeEnemyDrawRect
+// -adjacent renderPlayer() below) introduced SOUTH_WALK_COMBAT_SCALE (0.80)
+// as the new common "true standing-equivalent" target for EVERY direction —
+// NORTH/EAST/WEST's default pose AND their own DASH poses all route through
+// that one generic branch and so automatically picked up 0.80 (WEST/EAST
+// DASH further layers its own intentional dashSideScale=0.90 on top, landing
+// at 0.72 — a separate, deliberate 24TH ROUND reduction, untouched here).
+// SOUTH DASH alone has its OWN dedicated branch (never touches the generic
+// one) and was never revisited when 0.80 became the real baseline — it kept
+// this constant's ORIGINAL, now-stale 0.90 value, which was tuned back when
+// standing height itself (not 0.80x of it) was still the baseline everyone
+// else used too. Real Playwright measurement (844x390, temporary debug rect
+// capture in renderPlayer(), removed before commit) confirmed the gap
+// directly: NORMAL COMBAT standing visualBodyH=170.91px, SOUTH DASH with the
+// OLD 0.90 mult computed to 210.53px — a real, measurable 23.2% oversize
+// versus the player's own normal COMBAT body height, matching the
+// real-device "SOUTH DASHだけ巨大化する" report closely. Fixed by changing
+// this constant's VALUE to match SOUTH_WALK_COMBAT_SCALE (0.80) — not by
+// removing/replacing the constant itself, so this pose's own dedicated
+// branch, comment history, and single call site all stay intact —
+// re-measured after the fix: SOUTH DASH visualBodyH=187.14px, only 9.5%
+// over the 170.91px baseline (down from 23.2%) — the small residual gap is
+// computeBodyVisualScale()'s own per-photo real-alpha normalization
+// difference between the dedicated dash-south source photo and the generic
+// branch's own image, the same class of minor cross-photo variance the
+// codebase already accepts for SOUTH WALK's own 3-photo cycle, not a code
+// defect to chase to 0.0%. WEST/EAST DASH's own separately-tuned 0.72x
+// effective target measured unchanged and identical to each other
+// (153.82px both, via the real westDash/eastDash action flags) — neither
+// this constant nor SOUTH_WALK_COMBAT_SCALE's own value changed for them.
+const SOUTH_DASH_SCALE_MULT = 0.80;
 // 7TH ROUND PART 14/15/16: FIRE no longer swaps to the separate
 // player_north_fire.png art (which has its own baked-in flash drawn at a
 // DIFFERENT screen position than the procedural muzzle particle, and read
@@ -1678,6 +1710,17 @@ const CLAW_SWING_MS = 140;      // unchanged from the old single impact duration
 // "claw connected", short enough not to noticeably slow the overall attack
 // per spec's explicit "極端に遅くするのではない".
 const GABRIEL_ESCAPE_ATTACK_HOLD_MS = 420;
+// 20TH ROUND (spec sections 21-25, 51-53): COMBAT GABRIEL's own claw-release
+// 'impact' hold — real-device report: CLAW_SWING_MS=140ms alone (the value
+// COMBAT GABRIEL used before this round) was too brief to register the claw
+// sprite. Explicit requirement was "旧値+300ms", not a fresh guess: this is
+// literally CLAW_SWING_MS(140) + 300. A dedicated GABRIEL+COMBAT-only
+// constant (not a reuse of GABRIEL_ESCAPE_ATTACK_HOLD_MS, which has its own
+// separately-tuned 420ms value from the 12TH ROUND and must stay untouched
+// per spec section 24's explicit "ESCAPE MODEでは...維持する") — see its one
+// use site (the 'telegraph'->'impact' transition in updateEnemy()) for why
+// ADAM never reads this at all, in either mode.
+const GABRIEL_COMBAT_ATTACK_HOLD_MS = CLAW_SWING_MS + 300;
 const CLAW_COOLDOWN_MS = 1200;  // unchanged from the old cooldown duration
 const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
 // Real lateral reach at the swing instant — a bit under STRAFE_DASH_DISTANCE_PX
@@ -5536,46 +5579,46 @@ function touchMoveDominantDir(deadzone) {
   if (Math.abs(y) >= Math.abs(x)) return y < 0 ? 'north' : 'south';
   return x < 0 ? 'west' : 'east';
 }
-const TOUCH_DASH_DEADZONE = 0.35;
-function handleTouchDashPress() {
-  const dir = touchMoveDominantDir(TOUCH_DASH_DEADZONE);
-  if (!dir) return; // neutral MOVE stick — no-op, see this block's own comment
-  if (state.gameMode === 'escape') {
-    if (dir === 'north') state.escape.actions.northBackstep = true;
-    else if (dir === 'south') state.escape.actions.southDash = true;
-    else if (dir === 'west') state.escape.actions.westDash = true;
-    else state.escape.actions.eastDash = true;
-  } else {
-    if (dir === 'north') state.actions.northDash = true;
-    else if (dir === 'south') state.actions.southDash = true;
-    else if (dir === 'west') state.actions.westDash = true;
-    else state.actions.eastDash = true;
-  }
+// 20TH ROUND (spec sections 26-30, 54-58): real-device ask — ESCAPE's
+// center DASH button no longer reads the MOVE stick's current direction at
+// all (that old touchMoveDominantDir()-based handler, formerly
+// handleTouchDashPress(), is removed entirely — its old neutral-stick
+// no-op/north-backstep/west/east branches are gone, not just unreachable).
+// The button now always dispatches SOUTH DASH, unconditionally, regardless
+// of MOVE stick state (neutral/left/right/up/down/diagonal all produce the
+// identical action — verified via QA sweep). Spec section 27's own explicit
+// "表記はDASHのまま" — only the DOM id (#touch-dash) and its visible "DASH"
+// label are both intentionally UNCHANGED; only the internal action this one
+// button dispatches changes. Reuses the exact same
+// state.escape.actions.southDash flag the old handler's own 'south' branch
+// and GAMEPAD's south-dash mapping already write to — no new dash distance/
+// i-frame/sprite/timing logic, purely an input-routing change. COMBAT has
+// no center DASH at all (SHOT took the center circle, per the 16TH ROUND),
+// so this is ESCAPE-only by construction (the button itself only exists in
+// ESCAPE's own fan-wrap).
+function handleTouchEscapeCenterDash() {
+  state.escape.actions.southDash = true;
 }
-// 16TH ROUND (spec sections 13-14, 49): DASH is a CIRCLE only in ESCAPE
-// (#touch-dash, the fan's center button there); COMBAT has no center DASH
-// at all (SHOT took the center circle, per spec section 13). ESCAPE's
-// center keeps this exact same MOVE-stick-direction-reading handler,
-// unchanged (18TH ROUND spec section 36's own explicit "既存DASH action
-// を維持").
-wireButton('touch-dash', handleTouchDashPress);
+wireButton('touch-dash', handleTouchEscapeCenterDash);
 // 18TH ROUND (spec sections 27-42): the old single ambiguous
 // #touch-combat-dash wedge (which read the MOVE stick, same as the ESCAPE
-// center above) is replaced by 3 EXPLICIT direction wedges in COMBAT's
+// center used to) is replaced by 3 EXPLICIT direction wedges in COMBAT's
 // lower semicircle and 2 in ESCAPE's — each dispatches its OWN fixed
 // direction directly, never touching touchMoveDominantDir()/touchMove at
 // all (spec sections 32/41's own explicit "現在のmovement directionに依存
 // して曖昧なDASHをするのではなく...方向を指定する"). WEST/EAST DASH are
 // shared handlers (mode-branched internally, same pattern
-// handleTouchDashPress() itself already uses) wired to BOTH modes' own
-// wedge — only one of each mode's wedges is ever visible/tappable at a
-// time (same COMBAT/ESCAPE visibility toggle as every other dual-mode
-// element here), so no cross-mode double-fire risk. SOUTH DASH is COMBAT-
-// only (ESCAPE's lower half has no third slot — spec section 38's own
-// explicit "SOUTH DASHは追加しない"). All three reuse the EXACT SAME
-// existing action flags (state.actions.*/state.escape.actions.*) the
-// GAMEPAD directional-dash mapping and the old ambiguous handler already
-// wrote — no new dash distance/i-frame/sprite/timing logic anywhere.
+// handleTouchEscapeCenterDash() above and every other fixed-direction
+// handler here uses) wired to BOTH modes' own wedge — only one of each
+// mode's wedges is ever visible/tappable at a time (same COMBAT/ESCAPE
+// visibility toggle as every other dual-mode element here), so no
+// cross-mode double-fire risk. SOUTH DASH is COMBAT-only (ESCAPE's lower
+// half has no third slot — spec section 38's own explicit "SOUTH DASHは追加
+// しない"; ESCAPE's own SOUTH DASH now lives at the center button instead,
+// per this round). All three reuse the EXACT SAME existing action flags
+// (state.actions.*/state.escape.actions.*) the GAMEPAD directional-dash
+// mapping already writes — no new dash distance/i-frame/sprite/timing logic
+// anywhere.
 function handleTouchWestDash() {
   if (state.gameMode === 'escape') state.escape.actions.westDash = true;
   else state.actions.westDash = true;
@@ -6117,7 +6160,26 @@ function togglePauseMenu() {
         } catch (err) { /* diagnostic-only, never let logging itself break resume */ }
       }
     }
-    if (bgmStarted) {
+    // 20TH ROUND (spec sections 6-11, 42-46): ROOT CAUSE of "ENDING中に
+    // PAUSE→RESUMEすると通常gameplay BGMも重なって再生される" — this call was
+    // gated ONLY on `bgmStarted` (a flag set once, near game start, by
+    // tryStartBgm(), and NEVER reset afterward — see that function's own
+    // comment), with no phase check at all, unlike the ENDING BGM resume
+    // block directly below it (which already correctly required
+    // `state.run.phase === 'ENDING' || 'RESULT'` — see its own 17TH ROUND
+    // "defense-in-depth" comment). So RESUME during ENDING/RESULT always
+    // re-triggered the NORMAL track too, on top of the (correctly, already-
+    // paused-at-ENDING-entry — see beginEnding()'s own
+    // `bgmAudioEl.pause()` call) ENDING track that was also resuming right
+    // below — two tracks briefly overlapping. Fixed with the same phase-
+    // based routing concept spec section 42 asks for: gameplay BGM is only
+    // ever `allowed` while the run is actually in a gameplay phase (i.e.
+    // NOT ENDING/RESULT), mirroring the ENDING branch's own guard exactly.
+    // Normal COMBAT/ESCAPE PAUSE→RESUME is completely unaffected (phase is
+    // never ENDING/RESULT there, so this condition is unconditionally true
+    // exactly as before).
+    const inEndingOrResult = state.run.phase === 'ENDING' || state.run.phase === 'RESULT';
+    if (bgmStarted && !inEndingOrResult) {
       const p = bgmAudioEl.play();
       if (p && p.catch) {
         p.catch((err) => {
@@ -9437,9 +9499,22 @@ function updateEnemyCore(dt, now) {
         e.attackState = 'impact'; // reuses the existing release/swing-art render state
         // 12TH ROUND PART B (spec section 4): ESCAPE GABRIEL holds this
         // 'impact' pose longer (GABRIEL_ESCAPE_ATTACK_HOLD_MS) — see that
-        // constant's own comment. COMBAT GABRIEL and ADAM in either mode
-        // keep the original CLAW_SWING_MS unchanged.
-        const swingMs = (e.type === 'gabriel' && state.gameMode === 'escape') ? GABRIEL_ESCAPE_ATTACK_HOLD_MS : CLAW_SWING_MS;
+        // constant's own comment. ADAM in either mode keeps the original
+        // CLAW_SWING_MS unchanged (never named in this round's report).
+        // 20TH ROUND (spec sections 21-25, 51-53): real-device report — the
+        // COMBAT GABRIEL claw-release sprite (CLAW_SWING_MS=140ms) was too
+        // brief to register. Explicit requirement: extend how long the
+        // sprite STAYS on screen, never touch WHEN damage lands (the
+        // hit-test just below this block still fires at the exact same
+        // instant 'impact' begins, completely untouched) or GABRIEL's own
+        // ESCAPE timing (GABRIEL_ESCAPE_ATTACK_HOLD_MS, its own separate
+        // branch, also untouched). A NEW COMBAT-only constant is used rather
+        // than editing CLAW_SWING_MS itself, since that constant is shared
+        // with ADAM in both modes — widening it would have silently added
+        // +300ms to ADAM too, which this round never asked for.
+        const swingMs = e.type === 'gabriel'
+          ? (state.gameMode === 'escape' ? GABRIEL_ESCAPE_ATTACK_HOLD_MS : GABRIEL_COMBAT_ATTACK_HOLD_MS)
+          : CLAW_SWING_MS;
         e.attackUntil = now + swingMs;
         // The actual hit-test — fires exactly once, at the instant the
         // swing begins, against the player's ACTUAL current position.
@@ -15068,6 +15143,19 @@ if (endingSkipBtnEl) endingSkipBtnEl.addEventListener('click', () => skipEndingT
 // tickRunDistance()/updateEnemy()/updateBullets(), so EXIT distance, route
 // progression, and enemy state are all completely untouched — this is
 // purely a visual "the world keeps moving" ticker for an already-won run.
+// 20TH ROUND (spec sections 12-15, 19, 47-48): ENDING-exclusive background
+// scroll multiplier — real-device request is specifically "ベルトコンベア式
+// に流れているステージ背景のスクロール速度" (the background scroll only),
+// so this multiplies ONLY the applyForwardDelta() call below, never
+// ESCAPE_AUTO_SCROLL_SPEED itself (that constant is shared with normal
+// ESCAPE's own tickRunDistance()-driven scroll, see its own call site — left
+// completely untouched, confirmed via regression QA that normal ESCAPE's
+// per-second background delta is unchanged). RESULT reuses this SAME
+// updateEndingScene() call (see updateRunFlow()'s own RESULT branch), so the
+// 2x rate carries through the ENDING->RESULT transition with no drop back to
+// 1x, per spec section 15/48's explicit "背景速度が突然半分へ戻るという不自
+// 然な変化を避ける".
+const ENDING_SCROLL_SPEED_MULT = 2.0;
 function updateEndingScene(now) {
   const r = state.run;
   const last = r.endingSceneLastTickAt || now;
@@ -15081,7 +15169,7 @@ function updateEndingScene(now) {
     es.runElapsedMs -= ESCAPE_ANIM_FRAME_MS;
     es.runFrame = (es.runFrame + 1) % ASSETS_PLAYER_ESCAPE_RUN.length;
   }
-  applyForwardDelta(-ESCAPE_AUTO_SCROLL_SPEED * dt);
+  applyForwardDelta(-ESCAPE_AUTO_SCROLL_SPEED * ENDING_SCROLL_SPEED_MULT * dt);
 }
 function updateEndingPhase(now) {
   // RUN FLOW addendum: the 60s gate is based on the ENDING BGM's OWN real
