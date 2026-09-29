@@ -316,6 +316,23 @@
     <div id="run-flow-banner-sub"></div>
   </div>
 
+  <!-- 19TH ROUND (spec sections 10-13, 37): SKIP button — investigation
+       found NO pre-existing SKIP feature anywhere in the codebase (no DOM
+       element, no game.js logic, no unlock-timer distinct from the 60s
+       RESULT gate below). Per the round's own explicit instruction not to
+       invent a new arbitrary seconds-based unlock value
+       ("今回は新しい秒数指定ではない"), this new button is available
+       immediately once ENDING begins (no added delay) and simply fires the
+       SAME transition-to-RESULT code the 60s gate itself calls (see
+       updateEndingPhase()'s own code and this button's click handler in
+       game.js) — it does not change the 60s gate's own timing/logic at all,
+       it only lets the player reach that exact same RESULT state sooner by
+       explicit choice. Hidden again the instant RESULT begins (nothing left
+       to skip once RESULT/QUIT/ARTIST PAGE are already showing). Positioned
+       bottom-right, clear of PAUSE (top-center) and the gameplay HUD
+       (top-right) — see style.css's own comment for the exact offsets. -->
+  <button type="button" tabindex="-1" id="ending-skip-btn" hidden>SKIP</button>
+
   <!-- RUN FLOW SYSTEM: RESULT screen — shown as a UI layer on top of the
        still-rendering/still-playing ENDING scene (canvas + ending BGM both
        keep going underneath, per spec addendum section 5). Gamepad-
@@ -324,7 +341,16 @@
        updateResultFocusUI()/pollGamepad()'s own RESULT branch in game.js)
        — no second parallel input scheme invented. ARTIST PAGE is a real
        <a> (href="#" placeholder, matching #controller-store-link's own
-       existing precedent) rather than a fabricated URL. -->
+       existing precedent) rather than a fabricated URL.
+       19TH ROUND (spec sections 8-9, 36): #result-thanks (THANK YOU FOR
+       PLAYING) moved OUT of the centered #result-panel flex column into its
+       own sibling element, absolutely positioned at the BOTTOM of
+       #result-screen with a safe margin above the true screen edge (see
+       style.css) — previously it sat inline between RANK and QUIT/ARTIST
+       PAGE, i.e. vertically centered with the rest of the panel, not "画面
+       下部" as spec asks. Kept as a sibling (not nested inside
+       #result-panel) specifically so its position is independent of however
+       tall the stat-row list above happens to be. -->
   <div id="result-screen" hidden>
     <div id="result-overlay-dim"></div>
     <div id="result-panel">
@@ -339,10 +365,10 @@
       <div class="result-stat-row">CONTINUE <span id="result-continue-value">0</span></div>
       <div class="result-stat-row">SCORE <span id="result-score-value">0</span></div>
       <div class="result-stat-row">RANK <span id="result-rank-value">D</span></div>
-      <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
       <button type="button" tabindex="-1" id="result-quit-btn" class="result-btn">QUIT</button>
       <a id="result-artist-btn" class="result-btn" href="#" target="_blank" rel="noopener">ARTIST PAGE</a>
     </div>
+    <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
   </div>
 
   <!-- 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER screen — a

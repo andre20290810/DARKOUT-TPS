@@ -666,6 +666,14 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 19TH ROUND: reserves room for the now-bottom-anchored #result-thanks
+     (see its own comment) by shrinking the flex-centered area the panel
+     centers within, instead of letting the panel's own vertical center sit
+     at true screen-center and risk its bottom edge reaching into the
+     thanks text on a short viewport. Value matches #result-thanks' own
+     approximate rendered height (~20-26px text) + its own bottom offset, so
+     the two never compete for the same space regardless of stat-row count. */
+  padding-bottom: max(58px, calc(env(safe-area-inset-bottom) + 52px));
 }
 #result-screen[hidden] { display: none; }
 #result-overlay-dim {
@@ -680,6 +688,15 @@ html, body {
   align-items: center;
   gap: 10px;
   padding: 24px 20px;
+}
+/* 19TH ROUND: tightens the panel's own vertical rhythm on a short
+   mobile-landscape viewport (same max-height:420px breakpoint the touch
+   circular clusters already use elsewhere in this file) so it comfortably
+   fits above the padding-bottom reserved for #result-thanks on
+   #result-screen, verified via 844x390 screenshot QA. */
+@media (max-height: 420px) {
+  #result-panel { gap: 6px; padding: 14px 20px; }
+  #result-title { margin-bottom: 0; }
 }
 #result-title {
   font-family: "Arial Narrow", "Helvetica Neue Condensed", Impact, Haettenschweiler, sans-serif;
@@ -697,14 +714,30 @@ html, body {
   letter-spacing: 0.1em;
   color: #cfe8ff;
 }
+/* 19TH ROUND (spec sections 8-9, 36): moved out of the centered
+   #result-panel flex column (see index.html's own comment) to a sibling,
+   absolutely positioned at the bottom of #result-screen with a safe margin
+   off the true bottom edge — "画面最下端ではなく、画面下部の余白を取った
+   位置" per spec. bottom offset matches the existing env(safe-area-inset-
+   bottom) pattern used throughout this file (e.g. .touch-pad/#pause-btn)
+   plus extra clearance so it never crowds a phone's home-indicator area.
+   Confirmed via screenshot QA (844x390 mobile-landscape + 1280x720 PC) to
+   sit clear of both #result-panel's own QUIT/ARTIST PAGE buttons above it
+   and the true screen edge below it. */
 #result-thanks {
-  margin: 10px 0 6px;
+  position: absolute;
+  left: 50%;
+  bottom: max(28px, calc(env(safe-area-inset-bottom) + 22px));
+  transform: translateX(-50%);
+  width: 100%;
+  padding: 0 16px;
   font-size: clamp(14px, 4vw, 20px);
   font-weight: 900;
   letter-spacing: 0.04em;
   color: #ffd60a;
   text-shadow: 0 0 10px rgba(255,214,10,0.5), 0 2px 4px rgba(0,0,0,0.9);
   text-align: center;
+  box-sizing: border-box;
 }
 .result-btn {
   width: min(280px, 78vw);
@@ -947,6 +980,50 @@ html, body {
   color: #e0e6ea;
   border-radius: 3px;
 }
+
+/* 19TH ROUND (spec sections 1-3, 10-13, 33-37): ENDING-only SKIP button —
+   bottom-right, clear of #pause-btn (top-center) and the gameplay HUD
+   (top-right). z-index 55 matches #pause-btn (both are simple always-
+   clickable overlay buttons, no stacking conflict since neither ever
+   coexists with PAUSE MENU/result-screen at a higher z-index). [hidden]
+   handles both "not yet ENDING" and "RESULT already showing" — see
+   game.js's own show/hide calls in beginEnding()/showResultScreen(). */
+#ending-skip-btn {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 55;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 8px 18px;
+  background: rgba(20,24,28,0.7);
+  border: 1px solid rgba(255,255,255,0.35);
+  color: #e6ecf0;
+  border-radius: 4px;
+}
+#ending-skip-btn[hidden] { display: none; }
+
+/* 19TH ROUND (spec sections 1-3): ENDING/RESULT hide gameplay TOUCH
+   CONTROLS entirely — MOVE stick, AIM stick, both circular clusters, and
+   any other gameplay touch button, all of which live inside the single
+   #touch-controls wrapper (see index.html). This rule's specificity
+   (1 id + 1 class + 1 type = same tier as #touch-controls.touch-controls-
+   visible's own 1 id + 1 class, but with the extra `body` type selector it
+   wins regardless of source order) overrides the player's own TOUCH
+   CONTROLS : ON/OFF preference unconditionally once ENDING begins — real-
+   device report said the panel stayed on screen through ENDING/RESULT with
+   its ON/OFF preference from mid-game. display:none (not opacity/
+   visibility) means the browser never dispatches a pointer event to any
+   child button at all once this class is set, so no separate pointer-
+   events/action-state gating is needed on top of it — see
+   body.ending-active's own set site (beginEnding()) in game.js for why one
+   class, set once, is enough (ENDING/RESULT is a one-way terminal phase,
+   never re-entered into gameplay). PAUSE (#pause-btn, outside #touch-
+   controls) is deliberately left untouched — it is not a gameplay action
+   and causes no misfire, consistent with earlier rounds' own "necessary
+   minimum UI" precedent. */
+body.ending-active #touch-controls { display: none; }
 
 /* 4th round PART 6/7: PAUSE menu overlay. */
 #pause-menu {

@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R18';
+const BUILD_VERSION = 'DARKOUT2-R19';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1980,6 +1980,7 @@ const resultTimeValueEl = document.getElementById('result-time-value');
 const resultContinueValueEl = document.getElementById('result-continue-value');
 const resultQuitBtnEl = document.getElementById('result-quit-btn');
 const resultArtistBtnEl = document.getElementById('result-artist-btn');
+const endingSkipBtnEl = document.getElementById('ending-skip-btn'); // 19TH ROUND: see beginEnding()/showResultScreen()/its own click handler below
 // 7TH ROUND 4th sub-part (spec sections 13-15): GAME OVER interactive screen.
 const gameoverScreenEl = document.getElementById('gameover-screen');
 const gameoverContinueCountValueEl = document.getElementById('gameover-continue-count-value');
@@ -2858,8 +2859,25 @@ function roidSpriteFrame(src, bodyTopFrac, bodyBottomFrac, headCenterXFrac, head
 // renderEscapePlayer() pins this exact point to a fixed screen position on
 // every frame, which is what keeps the bike from bouncing/drifting/
 // rescaling when the sprite switches (spec: 3).
-function escapeSpriteFrame(src, bodyTopFrac, bodyBottomFrac, wheelBottomFrac, wheelCenterXFrac) {
-  return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac), { wheelBottomFrac, wheelCenterXFrac });
+// 19TH ROUND (spec sections 16-18, 40-42): shoeSoleFrac — the rider's real
+// BOOT SOLE row, alpha-channel-measured (Python/Pillow) per frame from the
+// SAME 5 real escape_bike_run_01..05.png files, same coverage-threshold
+// method as bodyTopFrac/bodyBottomFrac/wheelCenterXFrac above (never
+// guessed/centered). Measured by isolating the outer ~22% column band on
+// each side (the boot occupies the image's own left/right extremities at
+// this pose, well clear of the centered front tire) below the image's own
+// vertical midpoint, then taking the lowest row with alpha>128 in each band
+// — confirmed by visual crop inspection that this lands on the boot's own
+// two-tone sole/tread edge, not a soft drop-shadow tail (both bands stayed
+// within ~1-3px whether the threshold was 20 or 220, i.e. a real hard edge,
+// not a fading gradient). Reported per-frame value is the average of the
+// left/right boot's own row (a few px apart from natural pose asymmetry).
+// This is intentionally the REAL per-frame value for ESCAPE itself (see
+// getApproachBorderY()'s ESCAPE branch) — ESCAPE_FOOT_OFFSET_RATIO below is
+// only the derived, portable version reused for COMBAT (spec section 21's
+// own "実ピクセル固定にしない...比率化する").
+function escapeSpriteFrame(src, bodyTopFrac, bodyBottomFrac, wheelBottomFrac, wheelCenterXFrac, shoeSoleFrac) {
+  return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac), { wheelBottomFrac, wheelCenterXFrac, shoeSoleFrac });
 }
 
 // COVER ACTION (drum-can hiding pose): extends spriteFrame() with the
@@ -2912,12 +2930,24 @@ const ASSETS_PLAYER_ESCAPE = {
 // completely untouched/still loaded (item 28: no asset deletion required),
 // simply no longer referenced by renderEscapePlayer() (item 2).
 const ASSETS_PLAYER_ESCAPE_RUN = [
-  escapeSpriteFrame('assets/player_escape/escape_bike_run_01.png', 0.0089, 0.9975, 0.9975, 0.4825),
-  escapeSpriteFrame('assets/player_escape/escape_bike_run_02.png', 0.0077, 0.9968, 0.9968, 0.5086),
-  escapeSpriteFrame('assets/player_escape/escape_bike_run_03.png', 0.0077, 0.9968, 0.9968, 0.5127),
-  escapeSpriteFrame('assets/player_escape/escape_bike_run_04.png', 0.0076, 0.9968, 0.9968, 0.5130),
-  escapeSpriteFrame('assets/player_escape/escape_bike_run_05.png', 0.0089, 0.9962, 0.9962, 0.4932),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_01.png', 0.0089, 0.9975, 0.9975, 0.4825, 0.7785),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_02.png', 0.0077, 0.9968, 0.9968, 0.5086, 0.7757),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_03.png', 0.0077, 0.9968, 0.9968, 0.5127, 0.7769),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_04.png', 0.0076, 0.9968, 0.9968, 0.5130, 0.7777),
+  escapeSpriteFrame('assets/player_escape/escape_bike_run_05.png', 0.0089, 0.9962, 0.9962, 0.4932, 0.7732),
 ];
+// 19TH ROUND (spec sections 21, 42, 44, 69): the portable ratio version of
+// the above real per-frame shoeSoleFrac measurements — mean of
+// (visualBottomFrac - shoeSoleFrac)/(visualBottomFrac - visualTopFrac)
+// across all 5 real frames: 0.2204, 0.2230, 0.2218, 0.2210, 0.2252 (spread
+// <0.005, i.e. stable across the whole run-cycle, not just one pose) —
+// mean 0.2223, rounded here. COMBAT has no equivalent real "shoe" pixel
+// data of its own (the player.aim sprite is a different asset/pose
+// entirely, not a comparable photo), so per spec section 21's own explicit
+// "実ピクセル固定にしない...比率化する", COMBAT's approach border applies
+// this SAME ratio to ITS OWN current playerVisualHeight instead of reusing
+// ESCAPE's raw pixel offset — see getApproachBorderY() below.
+const ESCAPE_FOOT_OFFSET_RATIO = 0.222;
 
 const ROID1_SPRITES = {
   search: [
@@ -10508,19 +10538,50 @@ function computeEnemyDrawRect() {
       }
       const playerCx = state.centerX + state.player.strafeOffset;
       const playerClamped = computeEscapePlayerRectClamped(playerCx, playerRawBottomY, playerFrame, state.escape.depthPos, state.escape.dashScalePulse);
-      const footY = playerClamped.rect.dy + playerClamped.rect.drawH;
+      // 19TH ROUND (spec sections 14-18, 40-43, 69-71): root cause of
+      // "接近しすぎる" — this clamp used to cap against
+      // `rect.dy + rect.drawH` (bodyBottomFrac≈0.997, i.e. essentially the
+      // raw image's own bottom edge — the FRONT TIRE, per the real alpha
+      // measurement in ASSETS_PLAYER_ESCAPE_RUN's own comment), a line
+      // roughly 22% of the player's own visual body height BELOW their
+      // actual shoe sole (see ESCAPE_FOOT_OFFSET_RATIO's own comment for the
+      // exact 5-frame measurement). A REAL time-stepped trace (driving
+      // updateEnemy() through a full blink->approach->telegraph->impact
+      // cycle, logging the pre-clamp raw drawBottomY every frame) confirmed
+      // telegraph/impact were BOTH already being pulled down to that same
+      // tire-line ceiling (391.5px/426.6px raw vs 365px clamped, at
+      // 844x390) — i.e. GABRIEL/ADAM's melee pose was already visually
+      // reaching the tire, well past the rider's own legs/feet, exactly
+      // matching the real-device "接近しすぎる" report. Using the frame's
+      // own real shoeSoleFrac here instead moves this SAME existing clamp's
+      // target line up to the rider's actual shoe sole — a pure Y-POSITION
+      // change (this clamp only ever adjusted drawBottomY, never drawH — see
+      // `const drawTopY = drawBottomY - drawH;` right below both branches),
+      // so the already-tuned ATTACK POSE SIZE (the 0.62/0.72/0.75/0.92
+      // WINDUP/ATTACK_MAX_DRAWH_FRAC clamps above, all untouched) is
+      // completely unaffected — only where that same size gets anchored
+      // vertically changes, per spec section 24's own "ATTACK位置を大幅に
+      // 動かすのではなく...APPROACH側を整合させる" priority.
+      const footY = playerClamped.rect.dy + playerClamped.rect.drawH * playerFrame.shoeSoleFrac;
       if (drawBottomY > footY) drawBottomY = footY;
     } else if (state.gameMode === 'combat') {
-      // FOLLOWUP HOTFIX: the player's own bottomY (state.cssH*1.02) can sit
-      // BELOW the live stage-name label position on some screen sizes —
-      // exactly why renderPlayer() itself clamps against the label's real
-      // getBoundingClientRect(), not just this fixed constant (see its own
-      // EMERGENCY HOTFIX comment). Reusing that same live measurement +
-      // margin here so GABRIEL/ADAM's own south edge honors both bounds at
-      // once ("PLAYERの許容最前面ラインを越えない" AND "stage labelへ重なら
-      // ない" are the same underlying player-standing-line constraint).
+      // 19TH ROUND (spec sections 19-21, 44-45, 69-71): COMBAT has no real
+      // "shoe" alpha data of its own (ASSETS.player.aim is a different
+      // asset/pose entirely, not a comparable photo) — per spec section 21's
+      // own explicit "実ピクセル固定にしない...比率化する", this reuses
+      // ESCAPE_FOOT_OFFSET_RATIO (the portable version of the SAME real
+      // measurement above) applied to the player's own CURRENT real visual
+      // bounds (computePlayerVisualBounds() — the same real alpha-measured
+      // source already reused for R18's LOCK-ON fix and the pre-existing AIM
+      // occlusion check, not a fabricated new one). The old label-overlap
+      // safety (avoid GABRIEL/ADAM's melee pose covering the stage-name
+      // text) is kept as an ADDITIONAL, independent bound via Math.min —
+      // both constraints are real UI concerns, neither replaces the other.
       const labelTopY = themeLabelEl.getBoundingClientRect().top;
-      const footY = Math.min(state.cssH * 1.02, labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX);
+      const labelSafeY = labelTopY - ESCAPE_LABEL_CLAMP_MARGIN_PX;
+      const pb = computePlayerVisualBounds();
+      const shoeBorderY = pb.bottom - (pb.bottom - pb.top) * ESCAPE_FOOT_OFFSET_RATIO;
+      const footY = Math.min(labelSafeY, shoeBorderY);
       if (drawBottomY > footY) drawBottomY = footY;
     }
     const drawTopY = drawBottomY - drawH;
@@ -14839,29 +14900,42 @@ function renderDismountTransitionOverlay(now) {
   ctx.restore();
 }
 
-// 18TH ROUND (spec sections 22-24, 67-68): ENDING/RESULT-exclusive sepia
-// overlay — a warm brown tint + a thin dark vignette at the very edges,
-// drawn over the whole canvas (background/debris/player, never the DOM
-// ENDING/RESULT text — see this function's own call site comment for why
-// draw order here doesn't matter for that). Two flat layers, not a
-// gradient across the whole screen, so it never fights the vignette's own
-// edge-darkening: SEPIA_TINT_ALPHA is deliberately light (background and
-// player must both stay clearly recognizable per spec's own "十分認識でき
-// る程度" — this is a mood wash, not a scene-obscuring filter) and
-// SEPIA_VIGNETTE_ALPHA only reaches its full darkness in each corner via a
-// radial falloff, keeping the screen's own center (where the player/RESULT
-// text sit) essentially untouched by the vignette term.
-const SEPIA_TINT_ALPHA = 0.30;
-const SEPIA_VIGNETTE_ALPHA = 0.22;
+// 19TH ROUND (spec sections 4-7, 34-35, 73): the 18TH ROUND's warm brown
+// SEPIA overlay (rgba(112,84,48,...) tint + rgba(20,14,8,...) vignette) is
+// removed entirely per real-device feedback that it read as "濁って見え、
+// やや汚い印象" — replaced with a cool SILVER/pale-metallic overlay using
+// the SAME two-layer structure (flat tint + radial-falloff vignette so the
+// vignette never fights a full-screen gradient, same reasoning as before)
+// only recolored, since that structure itself was never the problem.
+// Compared 3 real candidates via screenshot (see r19_silver_compare.js in
+// the round's own scratch QA, not committed):
+//   A. NEUTRAL_SILVER: rgba(210,214,220,0.22) tint / rgba(15,17,20,0.20) vig
+//   B. COOL_GRAY:       rgba(190,198,208,0.26) tint / rgba(10,14,20,0.22) vig
+//   C. SILVER_BLUE:     rgba(195,205,225,0.24) tint / rgba(8,12,22,0.20) vig
+// B (COOL_GRAY) was selected: A read as too washed-out/pale to clearly
+// register as a deliberate "ENDING filter" against the corridor's own already
+// cool-toned background; C's blue mix started to compete with the existing
+// blue-tinted RESULT text glow (#result-title/#result-rank-value's own
+// text-shadow) at the same time — B gave the clearest "distinct, cool,
+// stylish, not muddy" read while keeping background/player fully
+// recognizable, per the round's own comparison criteria. No canvas
+// saturation/contrast filter was layered on top — the tint alone already
+// reads as clearly desaturated/cool against the corridor's warm practical
+// lighting, and adding a ctx.filter pass would mean re-drawing (or
+// wrapping) the world/player draw calls themselves for no visible gain,
+// which the round's own "処理負荷を不必要に増やさない" instruction argues
+// against.
+const SILVER_TINT_ALPHA = 0.26;
+const SILVER_VIGNETTE_ALPHA = 0.22;
 function renderEndingSepiaOverlay() {
   ctx.save();
-  ctx.fillStyle = 'rgba(112,84,48,' + SEPIA_TINT_ALPHA + ')';
+  ctx.fillStyle = 'rgba(190,198,208,' + SILVER_TINT_ALPHA + ')';
   ctx.fillRect(0, 0, state.cssW, state.cssH);
   const cx = state.cssW / 2, cy = state.cssH / 2;
   const outerR = Math.max(state.cssW, state.cssH) * 0.75;
   const grad = ctx.createRadialGradient(cx, cy, outerR * 0.35, cx, cy, outerR);
-  grad.addColorStop(0, 'rgba(20,14,8,0)');
-  grad.addColorStop(1, 'rgba(20,14,8,' + SEPIA_VIGNETTE_ALPHA + ')');
+  grad.addColorStop(0, 'rgba(10,14,20,0)');
+  grad.addColorStop(1, 'rgba(10,14,20,' + SILVER_VIGNETTE_ALPHA + ')');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, state.cssW, state.cssH);
   ctx.restore();
@@ -14957,8 +15031,36 @@ function beginEnding(now) {
   state.escape.runFrame = 0;
   state.escape.runElapsedMs = 0;
   r.endingSceneLastTickAt = now;
+  // 19TH ROUND (spec sections 1-3, 10-13): ENDING/RESULT is gameplay-input-
+  // free from here on — see body.ending-active's own CSS rule (style.css)
+  // for why setting this ONE class, ONCE, is sufficient to both hide every
+  // gameplay touch control AND make it impossible for any of them to
+  // receive a pointer event again (display:none, not opacity) — ENDING is a
+  // one-way terminal phase (see updateRunFlow()'s own comment), so this is
+  // never toggled back off. SKIP becomes available the instant ENDING
+  // begins — investigation found no pre-existing SKIP unlock-delay anywhere
+  // in the codebase to reuse, and the round's own instruction explicitly
+  // forbids inventing a new arbitrary seconds value, so no delay is added
+  // here at all (see #ending-skip-btn's own comment in index.html).
+  document.body.classList.add('ending-active');
+  if (endingSkipBtnEl) endingSkipBtnEl.hidden = false;
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: ENDING begins');
 }
+// 19TH ROUND: SKIP — fires the EXACT SAME RESULT-entry transition
+// updateEndingPhase()'s own 60s gate calls below (state.run.phase='RESULT',
+// phaseStartedAt reset, showResultScreen()) — the 60s gate's own timing/
+// logic is completely untouched; this only lets the player reach that same
+// state sooner by explicit action. Guarded so a stray extra click (or a
+// gamepad edge landing on this button) after RESULT has already begun can
+// never re-run showResultScreen() a second time.
+function skipEndingToResult(now) {
+  if (state.run.phase !== 'ENDING') return;
+  state.run.phase = 'RESULT';
+  state.run.phaseStartedAt = now;
+  showResultScreen();
+  if (DEBUG_MODE) r10DebugLog('RUN FLOW: ENDING skipped to RESULT by user');
+}
+if (endingSkipBtnEl) endingSkipBtnEl.addEventListener('click', () => skipEndingToResult(performance.now()));
 // 18TH ROUND: the dedicated ENDING-scene ticker — called every ENDING
 // frame (see updateEndingPhase() below). Deliberately minimal: only what
 // spec sections 18-26 actually ask for (player run-cycle animation +
@@ -15055,6 +15157,9 @@ function showResultScreen() {
   state.resultFocus = 0;
   updateResultFocusUI();
   resultScreenEl.hidden = false;
+  // 19TH ROUND: nothing left to skip once RESULT (with its own QUIT/ARTIST
+  // PAGE) is already showing — see #ending-skip-btn's own comment.
+  if (endingSkipBtnEl) endingSkipBtnEl.hidden = true;
 }
 function updateResultFocusUI() {
   if (resultQuitBtnEl) resultQuitBtnEl.classList.toggle('gamepad-focused', state.resultFocus === 0);
