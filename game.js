@@ -10557,7 +10557,32 @@ function computeEnemyDrawRect() {
     // smooth escalation instead of a spike then a plateau. Idle/normal
     // sizing and the impact/counterAttack multiplier chain above are
     // completely untouched.
-    if (!isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach')) {
+    // 23RD ROUND (real-device follow-up to R22 item 1's GABRIEL fix — same
+    // report identified the equivalent ADAM gap): root cause of "ADAMも
+    // defense姿勢で接近すると異常に大きくなる" — 'defense' shares the exact
+    // SAME source image as telegraph/counterApproach here (set.windup — see
+    // the img-selection ternary above: `'telegraph' || 'defense' ||
+    // 'counterApproach' ? set.windup`), but 'defense' was never in this
+    // WINDUP-specific cap's own state list. It was NOT literally uncapped —
+    // ADAM_ATTACK_POSE_SIZE_MULT['defense']=1.10 already satisfies the
+    // broader `adamMeleeSizeBoost > 1` gate above, so it already fell
+    // through to the 0.92 ATTACK cap — but that is the WRONG cap for this
+    // image family: measured at ADAM_Z_MIN, 'defense' rendered at 92% of a
+    // 390px mobile viewport (draw top clipped 43px off-screen) while its
+    // OWN sibling states showing the IDENTICAL windup art sat correctly at
+    // 75%, a real, measurable oversizing/inconsistency, not a difference in
+    // intended design. Fixed by adding 'defense' to this SAME state list so
+    // it gets the tighter, already-established 0.75 WINDUP cap on top of
+    // (Math.min only ever shrinks further) the existing 0.92 cap it already
+    // had — no new fraction invented, reusing the exact constant this
+    // block already defines for its two sibling states. 'idle'/'cooldown'
+    // (both measured at 106.3%, a separate, PRE-EXISTING gap unrelated to
+    // 'defense' — see the 17TH/18TH ROUND comments below for exactly which
+    // states those rounds already covered) are deliberately left untouched,
+    // per this round's own explicit "ADAM defense時のoversize防止だけに限
+    // 定" scope. Every other ADAM state/behavior, and GABRIEL entirely, are
+    // completely unaffected by this one-line change.
+    if (!isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'defense')) {
       const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
       drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
     }
