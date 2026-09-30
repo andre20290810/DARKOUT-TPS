@@ -118,6 +118,25 @@
       <source src="assets/video/loading_intro.mp4?v=2" type="video/mp4">
       <source src="assets/video/loading_intro.webm?v=2" type="video/webm">
     </video>
+    <!-- 第12次調整: LOADING-only video, reintroducing the two-video LOADING/
+         OPENING split the BOOT FLOW ROUND (historical)/13TH ROUND had
+         previously consolidated into one — see game.js's showTapToStart
+         Prompt()/initLoadingVideo() for exactly how the two hand off. Sits
+         ON TOP of #intro-video (later in DOM, same full-bleed positioning —
+         see style.css) so it's the ONLY one visible during LOADING; both
+         videos autoplay+loop from boot in parallel (never a src-swap), so
+         the switch to #intro-video at 100% is a plain visibility toggle
+         with no black-frame/stutter (the exact regression the 13TH ROUND's
+         own investigation found with a two-video design that DIDN'T do
+         this — see that round's own comment history). loading progression
+         itself is entirely independent of this video's own duration/loop
+         count (see checkAssetsReady() — video readiness is never part of
+         REQUIRED_IMAGES). #intro-video itself (the OPENING video, above) is
+         completely unmodified by this change. -->
+    <video id="loading-video" muted playsinline autoplay loop preload="auto" poster="assets/video/loading_only_poster.jpg">
+      <source src="assets/video/loading_only.mp4" type="video/mp4">
+      <source src="assets/video/loading_only.webm" type="video/webm">
+    </video>
     <!-- UI POLISH ROUND: the "DARK OUT 2" brand title is deliberately no
          longer shown on the LOADING gauge itself — the real intro video
          already carries the title/atmosphere, and a second, separate text

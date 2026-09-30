@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R22';
+const BUILD_VERSION = 'DARKOUT2-R23';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1838,6 +1838,20 @@ const ENEMY_LANE_TRACK_MULT = {
 const GABRIEL_ZIGZAG_AMPLITUDE_PX = 100;
 const GABRIEL_ZIGZAG_HALF_PERIOD_MS = 850;
 const GABRIEL_ZIGZAG_TRACK_MULT = 2.6;
+// (zig-zag side-switch blink, VISUAL ONLY, real-device report): a brief brightness flash at
+// the exact moment the zigzag flips LEFT/RIGHT — see updateEnemyFacing()'s
+// own zigzag block, which stamps e.zigzagFlashUntil at that instant, and
+// renderEnemy()'s inZigzagFlash branch, which reuses the EXACT SAME
+// existing flash filter (ctx.filter='brightness(2.2)', the identical value
+// the real hit-flash already uses two lines above it — never a new visual
+// system) for this window. A single timestamp field, no new state machine:
+// never writes e.attackState/e.z/e.laneTarget, so YELLOW/FOCUS/SHOT HIT/
+// damage are completely unaffected (confirmed via regression — see this
+// round's completion report). Duration chosen short enough to read as a
+// discrete "blink" rather than a sustained pulse (attackFlashStates' own
+// sine-driven pulse further down has a ~408ms period, too slow to read as
+// one clean blink at this length).
+const GABRIEL_ZIGZAG_FLASH_MS = 150;
 
 // BUGFIX ROUND (spec section 2): DRONE was reading as a stationary/
 // near-stationary "turret" on real device. Root cause: DRONE's e.laneTarget
@@ -3486,6 +3500,9 @@ const modeSelectScreenEl = document.getElementById('mode-select-screen');
 // own comments, and showTapToStartPrompt()/handleTapToStart() below for
 // the behavior.
 const introVideoEl = document.getElementById('intro-video');
+// 第12次調整: the LOADING-only video sitting on top of introVideoEl until
+// LOADING reaches 100% — see index.html's own comment on #loading-video.
+const loadingVideoEl = document.getElementById('loading-video');
 const loadingGaugeWrapEl = document.getElementById('loading-gauge-wrap');
 const loadingErrorBoxEl = document.getElementById('loading-error-box');
 const loadingReloadBtnEl = document.getElementById('loading-reload-btn');
@@ -3745,22 +3762,22 @@ if (loadingReloadBtnEl) {
 // (never showing the video's own title-card reveal, which only appears
 // around the 7s mark of the 8s clip), released into a full native loop
 // only once LOADING reached 100%.
-// 13TH ROUND (spec section 1-2): real-device report — the LOADING-phase
-// clip read as "the replacement video isn't showing", even though the
-// correct file was genuinely loaded — root cause was exactly this 1.5s
-// clamp: LOADING only ever showed the first 1.5s of specified video
-// (a plain walk-in-corridor shot, no title card), so it didn't visually
-// read as "the specified video" the way the full clip (used after 100%)
-// does. Fix: play the SAME full video on a native loop from the very
-// first frame — LOADING (0-100%) and TAP TO START now show the identical,
-// complete, already-specified intro clip; no second/different video
-// asset was found in the repo for a LOADING-only role (see this round's
-// own completion report for the asset investigation), so per this
-// round's explicit "don't substitute a different asset on your own
-// guess" instruction, no new video file was introduced — only the
-// playback-window restriction was removed. This also naturally satisfies
-// "no new black-frame/stutter at the 100% transition": there is no
-// longer any transition to make (both phases already play identically).
+// 13TH ROUND (spec section 1-2, HISTORICAL): real-device report — the
+// LOADING-phase clip read as "the replacement video isn't showing", even
+// though the correct file was genuinely loaded — root cause was exactly
+// the 1.5s clamp above. No second/different video asset existed in the
+// repo for a LOADING-only role at that time, so the two-phase design was
+// consolidated into ONE video played identically through both phases.
+// 第12次調整: a genuine LOADING-only video asset has now been provided,
+// so the two-video design is reintroduced — deliberately as TWO SEPARATE
+// elements (#loading-video on top, #intro-video underneath), both
+// autoplay+loop from boot in parallel, switched via a plain opacity fade
+// (never a src-swap on a single element), so the 100% transition never
+// hits the exact "black-frame/stutter" failure mode the 13TH ROUND's own
+// investigation found with a naive two-phase single-element design. This
+// is why #intro-video (the OPENING video, unlimited/unclamped loop from
+// its own first frame) is otherwise completely untouched below —
+// initIntroVideo() itself has not changed at all.
 let introVideoFullLoopActive = true;
 // Called once at boot (see the bottom of this file). play() before any
 // user gesture only succeeds because the element is muted+playsinline
@@ -3777,12 +3794,53 @@ function initIntroVideo() {
     });
   }
 }
-// 13TH ROUND: kept as a harmless no-op (still called from the LOADING
-// 100% transition site) — introVideoEl already plays the full native
-// loop from initIntroVideo() above, so there is nothing left to switch.
+// 第12次調整: LOADING-only video — mirrors initIntroVideo() exactly (same
+// muted+playsinline autoplay pattern), the only difference being which
+// element it targets. `loop` is already set as an HTML attribute (see
+// index.html), so real LOADING progress (checkAssetsReady(), entirely
+// image-based — see REQUIRED_IMAGES) staying independent of this video's
+// own ~2.9s duration is automatic: the video keeps looping on its own
+// native timer for however long LOADING actually takes, with zero
+// coupling to the progress percentage.
+function initLoadingVideo() {
+  if (!loadingVideoEl) return;
+  const p = loadingVideoEl.play();
+  if (p && p.catch) {
+    p.catch((err) => {
+      if (DEBUG_MODE) r10DebugLog('LOADING VIDEO PLAY REJECTED: ' + (err && err.name ? err.name : String(err)));
+    });
+  }
+}
+// 13TH ROUND (HISTORICAL): was a no-op here (single-video design, nothing
+// left to switch). 第12次調整: real behavior restored — fades out
+// #loading-video (CSS opacity transition, same .fade-out pattern
+// #loading-gauge-wrap already uses immediately below), permanently
+// revealing #intro-video underneath, which has been playing its own full
+// native loop the whole time (initIntroVideo(), untouched). This is the
+// ONLY call site that ever touches #loading-video's visibility — once
+// faded, nothing in this file ever shows it again, satisfying "never
+// return to the LOADING video afterward".
 function switchIntroVideoToFullLoop() {
   if (!introVideoEl) return;
   introVideoFullLoopActive = true;
+  if (loadingVideoEl) {
+    loadingVideoEl.classList.add('fade-out');
+    // 第12次調整 (real-device follow-up): once fully invisible, #loading-
+    // video has no further reason to keep decoding/playing — real-device
+    // audit found it otherwise plays on forever, a pure CPU/GPU/battery
+    // waste. Paused only once the CSS opacity transition genuinely
+    // finishes (transitionend, not a guessed setTimeout), i.e. strictly
+    // AFTER the fade is visually complete — never mid-fade, so the last
+    // visible frame never gets cut short. `once: true` since this element
+    // only ever fades out a single time (spawnEnemy()-style "never resets"
+    // — there is no code path that removes the .fade-out class again).
+    // src/load() are untouched — this is a pure playback pause, not a
+    // media reset, so nothing about #intro-video's own already-independent
+    // start is delayed or affected.
+    loadingVideoEl.addEventListener('transitionend', () => {
+      loadingVideoEl.pause();
+    }, { once: true });
+  }
 }
 
 // BOOT FLOW ROUND: LOADING-100% transition — releases the video's 0-1.5s
@@ -7936,6 +7994,12 @@ function updateEnemyFacing(dt, now) {
     if (!e.zigzagNextFlipAt || now >= e.zigzagNextFlipAt) {
       e.zigzagDirSign = -(e.zigzagDirSign || 1);
       e.zigzagNextFlipAt = now + GABRIEL_ZIGZAG_HALF_PERIOD_MS;
+      // (side-switch blink, VISUAL ONLY): stamped at the exact same
+      // instant the direction flips — see GABRIEL_ZIGZAG_FLASH_MS's own
+      // comment and renderEnemy()'s inZigzagFlash. Never touches
+      // e.attackState/e.z/e.laneTarget — the left/right switch itself is
+      // driven entirely by e.zigzagDirSign/e.laneTarget below, unchanged.
+      e.zigzagFlashUntil = now + GABRIEL_ZIGZAG_FLASH_MS;
     }
     gabrielZigzagOffset = e.zigzagDirSign * GABRIEL_ZIGZAG_AMPLITUDE_PX;
   }
@@ -8952,6 +9016,7 @@ function spawnEnemy(type) {
   // previous encounter. See updateEnemyFacing()'s own comment.
   e.zigzagDirSign = 1;
   e.zigzagNextFlipAt = 0;
+  e.zigzagFlashUntil = 0; // side-switch blink timestamp, same reset rule as its sibling fields above
   e.deathState = 'alive';
   e.deathStartedAt = 0;
   e.deathUntil = 0;
@@ -9713,6 +9778,24 @@ function updateEnemyCore(dt, now) {
       const tNorm = clamp(1 - (e.attackUntil - now) / CLAW_RECOVERY_MS, 0, 1);
       const eased = 1 - Math.pow(1 - tNorm, 2);
       e.z = e.clawApproachStartZ + (targetZ - e.clawApproachStartZ) * eased;
+      // (GABRIEL retreat RUN): 'recovery' is the genuinely-moving retreat window (e.z
+      // tweens every frame above) — GABRIEL now shows the RUN cycle here
+      // (see computeEnemyDrawRect()'s gabrielEscapeRunActive), so its frame
+      // index must keep advancing through this state too, or it would sit
+      // frozen on whatever frame 'idle' last left it on (the frame-advance
+      // block elsewhere only runs during 'idle'). Reuses the EXACT SAME
+      // cadence constant idle's own advance uses (GABRIEL_ESCAPE_RUN_FRAME_
+      // MS) — never a new timer — and the same increment-then-wrap pattern,
+      // so playback is identical whether the cycle started in idle or is
+      // continuing through recovery. GABRIEL-only ('cooldown', ADAM's own
+      // recovery, are unaffected — neither reads e.clawWalkFrame for RUN).
+      if (e.type === 'gabriel') {
+        e.clawWalkElapsedMs += dt * 1000;
+        if (e.clawWalkElapsedMs > GABRIEL_ESCAPE_RUN_FRAME_MS) {
+          e.clawWalkElapsedMs = 0;
+          e.clawWalkFrame = (e.clawWalkFrame + 1) % 3;
+        }
+      }
       if (now >= e.attackUntil) {
         e.z = targetZ;
         e.attackState = 'cooldown';
@@ -10397,33 +10480,48 @@ function computeEnemyDrawRect() {
     // COMBAT GABRIEL too (see updateEnemy()'s clawWalkFrameMs) — this
     // render-side selection logic itself needs no change for that, since it
     // only ever reads the already-advanced e.clawWalkFrame index.
+    // (GABRIEL retreat RUN, real-device report): after
+    // 'impact', the claw AI's own existing tail (impact -> recovery ->
+    // cooldown -> idle, see updateEnemy()'s e.kind==='claw' block) eases
+    // e.z back out to the STALK distance during 'recovery' — confirmed via
+    // direct code trace (applyForwardDelta()'s own isClawIdleLike comment:
+    // "'recovery' DOES actively tween e.z every frame in updateEnemy()")
+    // this IS the genuinely-moving retreat window, 900ms — while 'cooldown'
+    // has NO z-tween of its own (a pure timer, confirmed stationary) before
+    // returning to 'idle'. 'recovery' now joins the RUN-cycle group below
+    // (same escapeRun art, same e.clawWalkFrame index) instead of holding
+    // the static attack/release sprite, so the retreat visibly RUNs while
+    // GABRIEL is actually moving; 'cooldown' (genuinely stopped) keeps the
+    // CURRENT held pose — see gabrielRetreatHoldingAttackSprite below,
+    // narrowed to 'cooldown' only. The frame INDEX itself needs to keep
+    // advancing through 'recovery' too (idle's own advance block would
+    // otherwise leave it frozen) — see updateEnemy()'s 'recovery' branch,
+    // which now reuses this SAME GABRIEL_ESCAPE_RUN_FRAME_MS cadence, never
+    // a new timer. COMBAT/ESCAPE both run this identical shared code path
+    // (no gameMode branch here), so both modes get the same behavior.
     const gabrielEscapeRunActive = isGabriel
-      && (e.attackState === 'idle' || e.attackState === 'blink' || e.attackState === 'approach' || e.attackState === 'telegraph');
+      && (e.attackState === 'idle' || e.attackState === 'blink' || e.attackState === 'approach' || e.attackState === 'telegraph' || e.attackState === 'recovery');
     const gabrielEscapeRunFrame = gabrielEscapeRunActive
       ? ASSETS.gabriel.escapeRun[e.clawWalkFrame] : null;
-    // 12TH ROUND PART B (spec sections 2-3, 12): real-device report — after
-    // 'impact' (the claw-release swing), the claw AI's own existing tail
-    // (impact -> recovery -> cooldown -> idle, see updateEnemy()'s e.kind===
-    // 'claw' block) already eases e.z back out to the STALK distance during
-    // 'recovery' (this IS the "RETREAT" beat) and then just waits out
-    // CLAW_COOLDOWN_MS in 'cooldown' before returning to 'idle' — but neither
-    // 'recovery' nor 'cooldown' was in gabrielEscapeRunActive's list above
-    // (correctly — RUN shouldn't play while still retreating) NOR in the
-    // attack-pose checks below, so both fell through to the final `set.idle`
-    // — a real standing/idle sprite shown for the entire retreat, exactly
-    // matching the reported "攻撃画像→立ち尽くしている静止画像→後退→RUN".
-    // Fix: GABRIEL keeps showing the SAME attack/claw-release sprite
-    // (set.release — the exact image 'impact' already uses, never a new
-    // asset) through 'recovery' AND 'cooldown', so no standing/idle sprite
-    // is ever inserted between the attack and the next RUN resumption. Size
-    // shrinks naturally as e.z eases back out during 'recovery', via the
-    // EXISTING distance/scale computation below (unchanged) — no new scale
-    // logic needed. Once 'cooldown' expires, attackState returns to 'idle'
-    // and gabrielEscapeRunActive above takes back over, resuming RUN.
-    // ADAM-only (isGabriel===false) is deliberately excluded — Part B is
-    // GABRIEL-only, so ADAM's own recovery/cooldown visual (already
-    // `set.idle` today) is left completely unchanged.
-    const gabrielRetreatHoldingAttackSprite = isGabriel
+    // 12TH ROUND PART B (HISTORICAL): originally covered 'recovery' AND
+    // 'cooldown' both holding the static attack/release sprite (closing the
+    // "idle pose inserted mid-retreat" bug of that round). This round
+    // narrows this to 'cooldown' ONLY for IMAGE selection — 'recovery' now
+    // takes the RUN-cycle path above instead. ADAM-only exclusion (isGabriel
+    // ===false) is unchanged — ADAM's own recovery/cooldown visual (set.idle)
+    // is untouched by this round.
+    const gabrielRetreatHoldingAttackSprite = isGabriel && e.attackState === 'cooldown';
+    // (GABRIEL retreat RUN): the SIZE-continuity clamp further below (impact/
+    // counterAttack's 0.72 GABRIEL_ATTACK_MAX_DRAWH_FRAC cap) must still
+    // cover 'recovery' even though its IMAGE changed to the RUN sprite —
+    // 'recovery' starts at the exact z 'impact' just ended at, so keeping
+    // it under the SAME cap preserves the existing "never pops back up in
+    // size the instant retreat begins" property (R16), independent of which
+    // sprite is drawn. Kept as its own flag (recovery+cooldown, matching
+    // the ORIGINAL, unnarrowed gabrielRetreatHoldingAttackSprite coverage)
+    // so narrowing that flag to image-selection-only never silently drops
+    // 'recovery' from this size cap too.
+    const gabrielRetreatSizeContinuity = isGabriel
       && (e.attackState === 'recovery' || e.attackState === 'cooldown');
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
@@ -10711,10 +10809,43 @@ function computeEnemyDrawRect() {
       if (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'approach' || e.attackState === 'blink' || e.attackState === 'defense') {
         const GABRIEL_WINDUP_MAX_DRAWH_FRAC = 0.62;
         drawH = Math.min(drawH, state.cssH * GABRIEL_WINDUP_MAX_DRAWH_FRAC);
-      } else if (e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) {
+      } else if (e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatSizeContinuity) {
+        // (GABRIEL retreat RUN): reuses gabrielRetreatSizeContinuity (recovery+
+        // cooldown) rather than the now-narrowed gabrielRetreatHoldingAttack
+        // Sprite (cooldown-only, image-selection only) — see that flag's own
+        // comment for why 'recovery' must stay under this cap regardless of
+        // which sprite it now draws.
         const GABRIEL_ATTACK_MAX_DRAWH_FRAC = 0.72;
         drawH = Math.min(drawH, state.cssH * GABRIEL_ATTACK_MAX_DRAWH_FRAC);
       }
+    }
+    // (ADAM ATTACK visual size, real-device report): the true ATTACK pose (impact/counterAttack,
+    // and the brief post-hit recovery hold sharing the same sprite — see
+    // adamRecoveryClawHold's own comment) still read too large even at the
+    // existing 0.92 clamp above. Root-cause check (measured every ADAM
+    // attackState via computeEnemyDrawRect() before touching anything): this
+    // is NOT a double-scale bug — every ADAM size clamp above (the 0.92
+    // impact/counterAttack cap, the 0.75 windup cap, the separate 0.92
+    // approach/blink/recovery cap a little above) is a single, deliberate,
+    // already-tuned ceiling; WINDUP/NORMAL/DEFENSE never reach the intended
+    // scope of this change (see the condition below). Placed HERE —
+    // deliberately AFTER every existing ADAM clamp above, not interleaved
+    // between them — so it always operates on the FULLY-RESOLVED drawH
+    // regardless of which earlier clamp produced it (recovery's own hold
+    // window used a DIFFERENT earlier clamp than impact/counterAttack — an
+    // interleaved placement was tried first and measured to give recovery a
+    // different final ratio than impact; moving it here fixed that). Holds
+    // a consistent ~50% ratio of the CURRENT on-screen ATTACK size at every
+    // distance. Measured BEFORE (844x390, ADAM_Z_MIN): impact/counterAttack/
+    // recovery-hold all = 201.83x358.80px (92.0% of viewport, matching
+    // R16's own measurement). AFTER this 0.50 multiplier: all three =
+    // ~100.9x179.4px (~46.0% of viewport) — confirmed via re-measurement,
+    // see this round's completion report. worldZ/attack distance/attack
+    // timing/damage/WINDUP/NORMAL/DEFENSE sizing are all untouched — this
+    // is the ATTACK pose's own final visual clamp only.
+    if (!isGabriel && (e.attackState === 'impact' || e.attackState === 'counterAttack' || adamRecoveryClawHold)) {
+      const ADAM_ATTACK_FINAL_VISUAL_MULT = 0.50;
+      drawH *= ADAM_ATTACK_FINAL_VISUAL_MULT;
     }
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
@@ -12718,7 +12849,22 @@ function renderPlayer(theme) {
     // from computeBodyVisualScale()'s real per-frame measurement, so the
     // 3 south-walk photos stay mutually consistent with each other; only
     // the overall target size is now 80% of what it was.
-    const bodyScale = computeBodyVisualScale(southWalkFrame, standingBodyHeightPx) * SOUTH_WALK_COMBAT_SCALE;
+    // (real-device report): CURRENT SOUTH WALK visual size (already
+    // SOUTH_WALK_COMBAT_SCALE=0.80 of standing, shared with SOUTH DASH and
+    // the generic NORTH/EAST/WEST branch — see those branches' own
+    // comments) still reads too large; reduce the FINAL on-screen size to
+    // ~60% of ITS CURRENT rendered size. A new, minimal, SOUTH-WALK-ONLY
+    // multiplier — deliberately NOT folded into SOUTH_WALK_COMBAT_SCALE
+    // itself, which SOUTH DASH/NORTH/EAST/WEST also read, so none of those
+    // are affected — applied only to this branch's own local bodyScale.
+    // Verified at a FIXED frame index (isolating the multiplier from the 3
+    // south-walk photos' own small pre-existing per-frame calibration
+    // variance in computeBodyVisualScale()): drawH ratio = exactly 0.6000
+    // for all 3 frames (e.g. frame0 181.60px -> 108.96px). Movement speed/
+    // distance, animation cadence (SOUTH_WALK_FRAME_SEC, untouched), world
+    // position, and SOUTH DASH/NORTH/EAST/WEST sizing are all untouched.
+    const SOUTH_WALK_FINAL_VISUAL_MULT = 0.60;
+    const bodyScale = computeBodyVisualScale(southWalkFrame, standingBodyHeightPx) * SOUTH_WALK_COMBAT_SCALE * SOUTH_WALK_FINAL_VISUAL_MULT;
     drawW = southWalkFrame.img.naturalWidth * bodyScale;
     drawH = southWalkFrame.img.naturalHeight * bodyScale;
     dx = cx - southWalkFrame.bodyCenterXFrac * drawW;
@@ -13178,6 +13324,12 @@ function renderEnemy(theme) {
   // reading the HP bar. Deliberately its own branch, never sharing the
   // brightness-pulse attackFlashStates treatment above.
   const inDefense = e.deathState === 'alive' && e.attackState === 'defense';
+  // (zig-zag side-switch blink, VISUAL ONLY): see GABRIEL_ZIGZAG_FLASH_MS's
+  // own comment. Reuses the exact same flat brightness filter `flashing`
+  // above already uses — no new visual system. Skipped whenever a real
+  // hit-flash is active, same mutual-exclusion rule inAttackFlashWindow
+  // already follows (`flashing` is checked first in the chain below).
+  const inZigzagFlash = e.type === 'gabriel' && e.deathState === 'alive' && now < (e.zigzagFlashUntil || 0);
   if (flashing) {
     // 15TH ROUND (items 11-13): real damage now blinks the ENEMY sprite
     // itself red (see the matching source-atop fill drawn right after the
@@ -13206,6 +13358,12 @@ function renderEnemy(theme) {
     const lit = Math.sin(now / 65) > 0;
     ctx.globalAlpha = lit ? 1 : 0.3;
     ctx.filter = lit ? 'brightness(2.0)' : 'brightness(0.75)';
+  } else if (inZigzagFlash) {
+    // reuses the exact same flat filter `flashing` uses above — a
+    // single brief brightness spike, not the sustained sine-pulse
+    // inAttackFlashWindow uses (that pulse's ~408ms period is too slow to
+    // read as one clean blink at GABRIEL_ZIGZAG_FLASH_MS=150ms).
+    ctx.filter = 'brightness(2.2)';
   }
 
   if (e.deathState === 'exploding') {
@@ -16402,6 +16560,7 @@ spawnEnemy(AUTO_SEQUENCE[0]);
 // startLoadingWalkAnimation()'s own comment). initIntroVideo() below is
 // this round's equivalent boot-time kickoff.
 initIntroVideo();
+initLoadingVideo();
 
 // 12TH ROUND (items 6-9): panel visibility is now set once, earlier, by
 // setDebugPanelVisible(state.debugPanelVisible) right after it's defined
@@ -16438,7 +16597,7 @@ window.__darkoutTps = {
   checkAssetsReady, REQUIRED_IMAGES, handleModeSelect,
   // BOOT FLOW ROUND: exposed for automated testing only.
   handleTapToStart, showTapToStartPrompt, showLoadError, initIntroVideo,
-  switchIntroVideoToFullLoop,
+  switchIntroVideoToFullLoop, initLoadingVideo,
   get introVideoFullLoopActive() { return introVideoFullLoopActive; },
   get tapToStartConsumed() { return tapToStartConsumed; },
   get uiLang() { return uiLang; }, applyUiLang,
@@ -16535,6 +16694,7 @@ window.__darkoutTps = {
   // extension, and zigzag) — never read by any gameplay code itself.
   GABRIEL_ESCAPE_RUN_FRAME_MS, GABRIEL_ESCAPE_ATTACK_HOLD_MS, CLAW_SWING_MS,
   GABRIEL_ZIGZAG_AMPLITUDE_PX, GABRIEL_ZIGZAG_HALF_PERIOD_MS, GABRIEL_ZIGZAG_TRACK_MULT,
+  GABRIEL_ZIGZAG_FLASH_MS,
   // NEXT ROUND: muzzle/direction fix, SNIPER dodge-window fix, COMBAT
   // quake+debris atmosphere, ESCAPE south-dash pulse, GABRIEL close-attack
   // size, CLEAR-sequence frame removal — exposed for automated testing only.
