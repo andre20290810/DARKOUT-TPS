@@ -12849,22 +12849,24 @@ function renderPlayer(theme) {
     // from computeBodyVisualScale()'s real per-frame measurement, so the
     // 3 south-walk photos stay mutually consistent with each other; only
     // the overall target size is now 80% of what it was.
-    // (real-device report): CURRENT SOUTH WALK visual size (already
-    // SOUTH_WALK_COMBAT_SCALE=0.80 of standing, shared with SOUTH DASH and
-    // the generic NORTH/EAST/WEST branch — see those branches' own
-    // comments) still reads too large; reduce the FINAL on-screen size to
-    // ~60% of ITS CURRENT rendered size. A new, minimal, SOUTH-WALK-ONLY
-    // multiplier — deliberately NOT folded into SOUTH_WALK_COMBAT_SCALE
-    // itself, which SOUTH DASH/NORTH/EAST/WEST also read, so none of those
-    // are affected — applied only to this branch's own local bodyScale.
-    // Verified at a FIXED frame index (isolating the multiplier from the 3
-    // south-walk photos' own small pre-existing per-frame calibration
-    // variance in computeBodyVisualScale()): drawH ratio = exactly 0.6000
-    // for all 3 frames (e.g. frame0 181.60px -> 108.96px). Movement speed/
-    // distance, animation cadence (SOUTH_WALK_FRAME_SEC, untouched), world
-    // position, and SOUTH DASH/NORTH/EAST/WEST sizing are all untouched.
-    const SOUTH_WALK_FINAL_VISUAL_MULT = 0.60;
-    const bodyScale = computeBodyVisualScale(southWalkFrame, standingBodyHeightPx) * SOUTH_WALK_COMBAT_SCALE * SOUTH_WALK_FINAL_VISUAL_MULT;
+    // R23 FOLLOWUP (real-device emergency report): R23 briefly added a
+    // second SOUTH-WALK-only multiplier (SOUTH_WALK_FINAL_VISUAL_MULT=0.60)
+    // on top of THIS SAME SOUTH_WALK_COMBAT_SCALE=0.80 — stacking to an
+    // effective 0.48 of standing height. On real device this read as the
+    // PLAYER shrinking to roughly half size the instant SOUTH WALK began, a
+    // severe, clearly-broken regression, not the intended "cap the SOUTH
+    // maximum size" effect. Root-caused by direct comparison: standing pose
+    // (generic branch, also SOUTH_WALK_COMBAT_SCALE=0.80 since R14) and
+    // R22's own SOUTH WALK (0.80 alone, no second multiplier) already
+    // render at closely-matched heights (~180px vs ~180px at 844x390) — R22
+    // already had the natural NORTH/SOUTH visual continuity this round's
+    // original spec asked for; the extra 0.60 was reapplying a correction
+    // to an already-corrected value. Reverted: the second multiplier is
+    // removed entirely, restoring the exact R22 formula (bodyScale =
+    // computeBodyVisualScale(...) * SOUTH_WALK_COMBAT_SCALE, nothing more).
+    // SOUTH DASH/NORTH/EAST/WEST were never touched by the multiplier this
+    // reverts and remain exactly as they were.
+    const bodyScale = computeBodyVisualScale(southWalkFrame, standingBodyHeightPx) * SOUTH_WALK_COMBAT_SCALE;
     drawW = southWalkFrame.img.naturalWidth * bodyScale;
     drawH = southWalkFrame.img.naturalHeight * bodyScale;
     dx = cx - southWalkFrame.bodyCenterXFrac * drawW;
