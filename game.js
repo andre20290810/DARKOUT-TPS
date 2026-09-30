@@ -3375,7 +3375,9 @@ const ASSETS = {
   adam: {
     idle: loadImg('assets/adam/adam_idle_south.png'),
     windup: loadImg('assets/adam/adam_attack_south.png'),
-    release: loadImg('assets/adam/adam_straight_claw.png'),
+    // adam_straight_claw.png (`release`) removed per explicit instruction —
+    // was never actually drawn anyway, since inAttackPose below always
+    // routes impact/counterAttack/recovery-hold to attackVariants first.
     // 7TH ROUND PART 21: the two user-supplied attack images, copied
     // read-only into assets/adam/ (adam_attack_variant1/2.png). Used ONLY
     // during ADAM's own telegraph/impact attack frames (see
@@ -10863,7 +10865,10 @@ function computeEnemyDrawRect() {
     // approach(ramps 56%->75%) -> telegraph(75%) -> impact(92%) ->
     // recovery(92%->taper) — monotonic except for the brief attack peak
     // itself, which is intended.
-    if (!isGabriel && (e.attackState === 'approach' || e.attackState === 'blink')) {
+    // 'idle'/'cooldown' also draw set.idle (adam_idle_south.png) but were
+    // missing from this cap — unclamped they hit 106.3%, bigger than the
+    // attack itself. Folded into the same cap for the same reason as 'blink'.
+    if (!isGabriel && (e.attackState === 'approach' || e.attackState === 'blink' || e.attackState === 'idle' || e.attackState === 'cooldown')) {
       const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
       drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
     } else if (!isGabriel && e.attackState === 'recovery') {
@@ -15517,6 +15522,12 @@ function updateDismountTransitionPhase(now) {
   const elapsed = now - state.run.phaseStartedAt;
   if (elapsed < RUN_DISMOUNT_FADE_MS) return;
   setGameMode('combat'); // also toggles body.escape-mode CSS off
+  // state.escape.decoy was reset on ESCAPE entry (beginEscapeStretch()) but
+  // never on exit — a decoy still active when ESCAPE ends stayed active
+  // forever, since updateEscapeDecoy() (the only place that clears it) is
+  // ESCAPE-only. playerOrDecoyMarkerPos() (shared by every SNIPER lock_red
+  // site) then kept targeting its stale ESCAPE-space x/y in COMBAT.
+  state.escape.decoy = { active: false, side: 0, x: 0, y: 0, until: 0, visualUntil: 0 };
   advanceRouteStep(now);
 }
 function renderDismountTransitionOverlay(now) {
@@ -15683,6 +15694,12 @@ function beginEnding(now) {
   state.escape.afterimages = [];
   state.escape.runFrame = 0;
   state.escape.runElapsedMs = 0;
+  // leanAngle/dashScalePulse only ever ease back to neutral inside
+  // updateEscapePlayer(), which never runs again once ENDING begins (see
+  // this function's own render-only-phase comment) — reset both here too,
+  // or a steer/DASH still in progress at EXIT freezes into ENDING.
+  state.escape.leanAngle = 0;
+  state.escape.dashScalePulse = 1; // same neutral value beginEscapeStretch() itself resets this field to
   r.endingSceneLastTickAt = now;
   // 19TH ROUND (spec sections 1-3, 10-13): ENDING/RESULT is gameplay-input-
   // free from here on — see body.ending-active's own CSS rule (style.css)
