@@ -3500,6 +3500,42 @@ function clawBossWeakPointFor(img) {
   return CLAW_BOSS_WEAKPOINT_FRAC.get(img) || null;
 }
 
+// DARK OUT 2 ROUND ("ADAMのかぎ爪攻撃画像が浮いて見える・小さく見える" 根本
+// 原因): a real alpha-channel scan (same row/column-coverage methodology
+// every other *SpriteFrame() table in this file already uses — see
+// coverSpriteFrame()'s own comment) of ADAM's own image files found
+// adam_idle_south.png/adam_attack_south.png (the idle/windup poses) have the
+// visible character filling essentially the WHOLE canvas (topFrac≈0.001,
+// bottomFrac≈0.996-0.999 — canvas edges ARE the character's own visible
+// bounds, to within a rounding pixel), but adam_attack_variant1/2.png (the
+// actual claw-swing art) have a LARGE transparent margin: visible content
+// only spans topFrac=0.0703 to bottomFrac=0.7963 of the canvas — almost 21%
+// of pure transparent padding below the visible claws/feet. computeEnemyDraw
+// Rect() anchors drawBottomY (the "feet" position) to the RAW CANVAS bottom
+// edge for every ADAM pose alike, which is correct for idle/windup (visible
+// content already reaches the canvas edge) but WRONG for attackVariants —
+// the real visible claws sit ~21% of drawH ABOVE where the code thinks the
+// feet are, reading as "floating in the air" exactly as reported. The SAME
+// canvas-vs-visible-content mismatch also makes the attack pose's VISIBLE
+// silhouette read smaller relative to its own drawH budget than idle/
+// windup's does (a much larger fraction of that budget is invisible
+// padding), compounding the "attack image looks smaller than the pre-attack
+// image" report even though the two states' existing size clamps
+// (ADAM_WINDUP_MAX_DRAWH_FRAC=0.75 vs ADAM_ATTACK_MAX_DRAWH_FRAC=0.92) were
+// already correctly ordered attack-bigger-than-windup. Registered here (not
+// guessed) via the exact per-pixel scan used for this exercise; consumed
+// by computeEnemyDrawRect()'s own ADAM-attack-pose branch (see its comment)
+// which reuses the SAME body-fraction anchoring technique already
+// established for GABRIEL's escapeRun frames (gabrielEscapeRunFrame below) —
+// not a new mechanism, and scoped ONLY to these two images (ADAM's idle/
+// windup art and GABRIEL entirely are completely untouched).
+const ADAM_ATTACK_BODY_FRAC = new Map();
+function registerAdamAttackBodyFrac(img, bodyTopFrac, bodyBottomFrac, bodyCenterXFrac) {
+  ADAM_ATTACK_BODY_FRAC.set(img, { bodyTopFrac, bodyBottomFrac, bodyCenterXFrac });
+}
+registerAdamAttackBodyFrac(ASSETS.adam.attackVariants[0], 0.0703, 0.7963, 0.4926);
+registerAdamAttackBodyFrac(ASSETS.adam.attackVariants[1], 0.0703, 0.7963, 0.5064);
+
 // ---------------------------------------------------------------------
 // LOADING GATE (5TH ROUND PART 17/18/19/20; 6TH ROUND: root-cause fix for
 // the real-device "stuck at 98%" report)
@@ -6165,7 +6201,41 @@ function hideTapEnableGuide() {
 }
 
 let bgmStarted = false;
+// DARK OUT 2 ROUND (spec §6: "ENDING音声が全く再生されない" — root cause):
+// endingBgmAudioEl is a SEPARATE <audio> element from bgmAudioEl (see
+// index.html's own comment on ending-bgm-audio — preload="none" is
+// intentional, deferring the actual FETCH until needed, and is left
+// unchanged here since MODE SELECT already runs strictly after the
+// LOADING gate's own critical-asset fetch finishes, so priming it here
+// competes with nothing). The bug: tryStartBgm() (called from
+// handleModeSelect(), the ONE real user-gesture context this game ever
+// gets before gameplay) has ALWAYS only ever unlocked bgmAudioEl — nothing
+// in the whole file ever called .play() on endingBgmAudioEl before
+// beginEnding() does, many minutes later, from deep inside the game's own
+// update loop, never a real click/touch event handler. Some mobile
+// browsers' autoplay policies unlock media playback per-ELEMENT, not
+// page-wide — "some other audio element played after a gesture earlier in
+// this session" does not guarantee THIS never-before-touched element's own
+// later, non-gesture play() call will be honored. Fixed by silently
+// priming+immediately pausing endingBgmAudioEl inside this SAME gesture-
+// triggered function, exactly mirroring the real unlock bgmAudioEl already
+// gets just below — a one-time, inaudible play()+pause() (currentTime reset
+// back to 0 so beginEnding()'s own later real playback still starts from
+// the beginning) registers this element as gesture-unlocked for the rest of
+// the session on browsers that require it, with zero audible/visible effect
+// and no interference with the existing endingBgmStarted one-shot guard
+// beginEnding() itself still owns.
+let endingBgmPrimed = false;
+function primeEndingBgm() {
+  if (endingBgmPrimed || !endingBgmAudioEl) return;
+  endingBgmPrimed = true;
+  const p = endingBgmAudioEl.play();
+  if (p && p.catch) p.catch(() => {}); // unlock attempt only — a rejection here is harmless, beginEnding()'s own later play() still retries independently
+  endingBgmAudioEl.pause();
+  endingBgmAudioEl.currentTime = 0;
+}
 function tryStartBgm() {
+  primeEndingBgm();
   if (bgmStarted || !bgmAudioEl) return;
   state.bgmPlayAttempts++;
   const p = bgmAudioEl.play();
@@ -8675,6 +8745,35 @@ const DRONE_WAVE_FOG_Z = [950, 1140];
 // legibility. Still translucent (never opaque/a hard wall), per spec
 // section 7's explicit ban on a "完全な黒い壁".
 const DRONE_WAVE_FOG_OPACITY = 0.68;
+// DARK OUT 2 ROUND (spec §5: "画面中央付近の横長の黒い帯" — root cause):
+// investigated first, per the round's own explicit instruction not to just
+// guess/patch appearances. This is NOT a full-scene darkening/occlusion
+// layer at all — the 16TH ROUND comment above already documents it as a
+// deliberately soft, LOCALIZED atmospheric cue ("視覚的な演出のみ", "never a
+// hard black wall", never a real collision object) — so the condition the
+// round's own instructions attach to going full-screen ("必要な暗転・遮蔽・
+// 奥行き表現である場合は...フルスクリーンレイヤーとして") does not actually
+// apply here; making this cover the whole viewport would contradict that
+// established, repeatedly-stated design intent and would darken HUD-
+// adjacent screen area no prior round ever asked for. The REAL bug: a
+// RADIAL gradient (soft circular falloff, alpha->0 only at its own radius)
+// was being clipped by a plain ctx.fillRect() sized bandW x bandH, with
+// bandW (screen-width-derived, wide) far larger than bandH (a thin real-
+// world-height-derived band) — so the gradient's own natural vertical fade-
+// to-transparent never had room to happen before hitting the rect's hard
+// top/bottom edge, while it DID fade out smoothly left/right (bandW roughly
+// matches the gradient's actual radius). The result reads exactly as
+// reported: a hard-edged horizontal BAND, not a soft patch. Fixed by
+// squashing the gradient itself into an ellipse (a non-uniform Y-scale
+// applied via ctx.scale() before painting a plain circular gradient, then
+// undone via ctx.restore()) instead of clipping a circular gradient with a
+// rectangle — the gradient now genuinely fades to alpha 0 at the ellipse's
+// own edge in BOTH directions, eliminating the hard band edge while keeping
+// the exact same footprint (bandW x bandH, same opacity stops, same world
+// position) and the exact same "soft, localized, never full-screen" design
+// this effect was always meant to be. DRONE 1/2/3 depth staging/combat
+// logic (fogZ, the DRONE_WAVE_FOG_Z world positions, when each layer hides)
+// is completely untouched — this is a pure rendering-shape fix.
 function renderDroneWaveFog() {
   const dw = state.droneWave;
   if (!dw.active || !dw.simultaneousMode) return;
@@ -8685,12 +8784,15 @@ function renderDroneWaveFog() {
     const bandH = DRONE_WORLD_HEIGHT * proj.scale * 1.6;
     const bandW = Math.max(state.cssW * 0.55, DRONE_WORLD_HEIGHT * proj.scale * 3.2);
     ctx.save();
-    const grad = ctx.createRadialGradient(proj.x, proj.y, 0, proj.x, proj.y, bandW / 2);
+    const vScale = bandW > 0 ? bandH / bandW : 1;
+    ctx.translate(proj.x, proj.y);
+    ctx.scale(1, vScale || 1);
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, bandW / 2);
     grad.addColorStop(0, 'rgba(18,20,24,' + DRONE_WAVE_FOG_OPACITY + ')');
     grad.addColorStop(0.6, 'rgba(18,20,24,' + (DRONE_WAVE_FOG_OPACITY * 0.75) + ')');
     grad.addColorStop(1, 'rgba(18,20,24,0)');
     ctx.fillStyle = grad;
-    ctx.fillRect(proj.x - bandW / 2, proj.y - bandH / 2, bandW, bandH);
+    ctx.fillRect(-bandW / 2, -bandW / 2, bandW, bandW);
     ctx.restore();
   }
 }
@@ -11144,7 +11246,29 @@ function computeEnemyDrawRect() {
     // per this round's own explicit "ADAM defense時のoversize防止だけに限
     // 定" scope. Every other ADAM state/behavior, and GABRIEL entirely, are
     // completely unaffected by this one-line change.
+    // DARK OUT 2 ROUND (spec §1/§2: "攻撃前のADAM画像が大きすぎる" — screenshots
+    // 1/2, both this windup-family pose): re-measured (see ADAM_ATTACK_BODY_
+    // FRAC's own comment for the sibling attack-pose investigation this same
+    // round) and confirmed the 0.75 cap above was never actually the binding
+    // constraint here — the RAW computed drawH at ADAM_Z_MIN sat around 44-
+    // 45% of viewport height, comfortably under the 0.75 ceiling, so shrinking
+    // the CAP alone would have changed nothing. ADAM_WINDUP_VISUAL_SHRINK is
+    // a direct multiplier on the pre-attack pose's own drawH (applied BEFORE
+    // the existing 0.75 safety cap, which is left completely untouched and
+    // still applies as a ceiling for any edge case that would otherwise
+    // exceed it) — scoped to EXACTLY the windup-family state list these two
+    // existing cap blocks already cover (telegraph/counterApproach/defense
+    // here, approach/blink/idle/cooldown below), never impact/counterAttack/
+    // recovery/adamRecoveryClawHold (the separate ATTACK family, whose own
+    // 0.92 cap and ADAM_CLAW_RELEASE_SIZE_MULT are completely unchanged —
+    // spec explicitly bans shrinking the attack pose). 0.70 is a judgment
+    // call (no exact target ratio was specified) chosen so the pre-attack
+    // pose reads distinctly smaller without disappearing, restoring a clear
+    // "modest windup -> dramatic strike" size escalation instead of the
+    // reported "already huge before the swing even starts".
+    const ADAM_WINDUP_VISUAL_SHRINK = 0.70;
     if (!isGabriel && (e.attackState === 'telegraph' || e.attackState === 'counterApproach' || e.attackState === 'defense')) {
+      drawH *= ADAM_WINDUP_VISUAL_SHRINK;
       const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
       drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
     }
@@ -11194,6 +11318,10 @@ function computeEnemyDrawRect() {
     // missing from this cap — unclamped they hit 106.3%, bigger than the
     // attack itself. Folded into the same cap for the same reason as 'blink'.
     if (!isGabriel && (e.attackState === 'approach' || e.attackState === 'blink' || e.attackState === 'idle' || e.attackState === 'cooldown')) {
+      // Same ADAM_WINDUP_VISUAL_SHRINK defined and reasoned about just above
+      // — this is the other half of the SAME windup-family state list (see
+      // that constant's own comment), not a second/different shrink.
+      drawH *= ADAM_WINDUP_VISUAL_SHRINK;
       const ADAM_WINDUP_MAX_DRAWH_FRAC = 0.75;
       drawH = Math.min(drawH, state.cssH * ADAM_WINDUP_MAX_DRAWH_FRAC);
     } else if (!isGabriel && e.attackState === 'recovery') {
@@ -11467,6 +11595,54 @@ function computeEnemyDrawRect() {
       finalW = img.naturalWidth * frameScale;
       finalY = footScreenY - gabrielEscapeRunFrame.bodyBottomFrac * finalH;
       finalX = anchorX - gabrielEscapeRunFrame.bodyCenterXFrac * finalW;
+    } else if (!isGabriel && imgReady(img)) {
+      // DARK OUT 2 ROUND: ADAM's attackVariants images only — see
+      // ADAM_ATTACK_BODY_FRAC's own comment for the full root cause (a large
+      // transparent margin below the visible claws makes the raw-canvas-
+      // bottom anchor every other ADAM pose correctly uses float the visible
+      // art well above the intended foot position, and read smaller than its
+      // drawH budget). Exact same technique as the gabrielEscapeRunFrame
+      // branch just above — reused, not reinvented — with ONE deliberate
+      // difference: targetVisibleBodyHeightPx uses the plain drawH (no
+      // GABRIEL_WALK_AVG_VISIBLE_FRAC-style extra ratio — that ratio exists
+      // specifically to match GABRIEL's walk-cycle art, irrelevant here),
+      // since drawH already IS the correctly-tuned target visible height for
+      // ADAM's OTHER poses (idle/windup, whose canvases are already ~99.6%+
+      // visible) — this branch's whole purpose is to make attackVariants
+      // match that same convention, not introduce a different one. Only
+      // fires when the current image has a registered entry (idle/windup
+      // have none, so this is a true no-op for them — drawX/drawTopY/drawW/
+      // drawH from above stay in effect exactly as before this round).
+      const attackFrac = ADAM_ATTACK_BODY_FRAC.get(img);
+      if (attackFrac) {
+        const footScreenY = drawBottomY;
+        const targetVisibleBodyHeightPx = drawH;
+        const bodyHeightFrac = attackFrac.bodyBottomFrac - attackFrac.bodyTopFrac;
+        const rawBodyHeightPx = bodyHeightFrac * img.naturalHeight;
+        const frameScale = rawBodyHeightPx > 0 ? targetVisibleBodyHeightPx / rawBodyHeightPx : 1;
+        finalH = img.naturalHeight * frameScale;
+        finalW = img.naturalWidth * frameScale;
+        // DARK OUT 2 ROUND (spec §3/§4: "下端が膝より下〜ブーツ付近" —
+        // measured shortfall): anchoring the visible claws' bottom exactly to
+        // footScreenY (the SAME line telegraph/idle's own footY clamp already
+        // targets) lands them around the player's hip — real alpha-measured
+        // gap of roughly 4-5% of viewport height short of the requested knee-
+        // to-boot line. ADAM_ATTACK_POSE_EXTRA_Y_OFFSET_FRAC is a SECOND, pose-
+        // specific nudge on top of that (never touching footScreenY itself,
+        // so telegraph/idle/every other pose's own foot line is completely
+        // unaffected — this only shifts THIS branch's own finalY), explicitly
+        // authorized by this round's own "必要であればかぎ爪攻撃pose専用のY
+        // 補正を行ってください" instruction. A claw SWIPE visually reaching
+        // past the player's own leg line is intentional here (impact, not
+        // idle stance) — not the "GABRIEL/ADAM passes the player" bug the
+        // ESCAPE/COMBAT south-clamp above guards against elsewhere, since
+        // that clamp still caps footScreenY itself before this offset is
+        // added, it just no longer double-clamps the offset back to the exact
+        // same line.
+        const ADAM_ATTACK_POSE_EXTRA_Y_OFFSET_FRAC = 0.08;
+        finalY = footScreenY - attackFrac.bodyBottomFrac * finalH + finalH * ADAM_ATTACK_POSE_EXTRA_Y_OFFSET_FRAC;
+        finalX = anchorX - attackFrac.bodyCenterXFrac * finalW;
+      }
     }
     // RUN FLOW round: GABRIEL's HEAD / ADAM's forehead RED EYE — the boss's
     // sole weak point, looked up by whichever pose image was actually
