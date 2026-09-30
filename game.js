@@ -1634,7 +1634,12 @@ const MISSILE_DAMAGE = 24;
 // impact points sweeping across that locked position in WORLD SPACE
 // (never re-tracking the player mid-burst — item 127/135), rendered via
 // project() through the same perspective pipeline as everything else.
-const SWEEP_TELEGRAPH_MS = 260; // brief charge (FIRE-pose swap only, no LOCK ON UI — item 137/138)
+// DARK OUT 2 ROUND ("水平連続射撃の予兆が不十分" fix): was 260ms with no LOCK
+// ON UI at all (see item 137/138's own design decision, superseded here per
+// explicit instruction) — reused verbatim as SNIPER_LOCK_YELLOW_MS (the
+// SAME already-existing "yellow lock, real perceivable blink" duration
+// SNIPER's own lock_yellow phase uses), rather than inventing a new number.
+const SWEEP_TELEGRAPH_MS = SNIPER_LOCK_YELLOW_MS; // 500ms — see startSweepAttack()/renderEnemyTelegraphs() for the new yellow lock-on this now drives
 const SWEEP_BULLET_COUNT_MIN = 7;
 const SWEEP_BULLET_COUNT_MAX = 10; // item 132: "PLAYERが横方向へ掃射されていると認識できる弾数"
 const SWEEP_BULLET_COUNT_ENHANCED_BONUS = 3; // 40%-threshold counter gets a longer, wider burst (item 156 "SWEEP FIRE強化")
@@ -5119,6 +5124,49 @@ function pollGamepad(now) {
           return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
         }
       }
+      // DARK OUT 2 ROUND ("Gamepadでの選択決定ができない" fix): same class of
+      // swallowed-press bug as the TAP TO START carve-out just above, one
+      // screen later. tapToStartBtnEl's own on-screen sub-text tells the
+      // player to touch the screen ("画面をタップしてください"), so a
+      // WIRELESS CONTROLLER player routinely touches THAT screen and only
+      // presses their gamepad for the very first time on MODE SELECT —
+      // reproducing the exact same adoption-race the block above already
+      // solves, just ungated here. D-PAD/stick NAVIGATION below happens to
+      // survive it (state.modeSelectPrevStickY is never written while
+      // settling, so it keeps whatever value it had before this settle
+      // window started, which still yields a genuine edge the instant
+      // settling ends) — only the BUTTON-based CONFIRM loop does not, since
+      // its own comparison baseline (prevButtons) IS force-resynced to the
+      // still-held button every settling frame below. Reproduced exactly
+      // with a mock gamepad (held button, adopted mid-press, never
+      // registers without a full release+re-press) before this fix.
+      // IMPORTANT — requires !state.prevButtons[i] (a real edge), not just
+      // "currently held": TAP TO START's own carve-out above already
+      // re-baselines prevButtons to the held button's true state right
+      // before this block runs on the frame that same physical press
+      // carries over onto this now-visible MODE SELECT screen. Without the
+      // edge check, that SAME still-held press (which only just started the
+      // game) would immediately auto-confirm mode-select too. A genuinely
+      // fresh pad adoption (the actual bug this block fixes) always resets
+      // prevButtons to [] first, so an already-held button still reads as
+      // an edge there — this check tells the two cases apart correctly.
+      if (!state.gameStarted && state.assetsReady && state.tapToStartDone) {
+        let anyConfirmPressed = false;
+        for (let i = 0; i < b.length; i++) {
+          if (i === 12 || i === 13) continue; // nav-only, never a confirm — same exclusion as the normal-path loop below
+          if (b[i] && b[i].pressed && !state.prevButtons[i]) { anyConfirmPressed = true; break; }
+        }
+        if (anyConfirmPressed) {
+          const triggerSnapshot = new Array(b.length);
+          for (let i = 0; i < b.length; i++) triggerSnapshot[i] = !!(b[i] && b[i].pressed);
+          state.prevButtons = triggerSnapshot;
+          const chosenMode = state.modeSelectFocus === 1 ? 'touch' : 'controller';
+          if (DEBUG_MODE) r10DebugLog('GAMEPAD UI INPUT (during settle) -> CONTROL MODE SELECTED (' + chosenMode + ')');
+          handleModeSelect(chosenMode);
+          state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
+          return { move: gpMove, light: gpLight, aim: gpAim, aimAdjust: gpAimAdjust, fire: gpFire, focusHeld: gpFocusHeld };
+        }
+      }
       // 5TH ROUND: settle window — keep re-syncing prevButtons to the
       // CURRENT raw state every frame (so whatever the pad happens to be
       // doing while it calibrates never becomes a false rising edge once
@@ -8026,7 +8074,27 @@ function updateEnemyFacing(dt, now) {
       e.facing = desired;
       e.lastTurnAt = now;
     }
-  } else if ((e.kind === 'sweep' && e.attackState === 'sweepFiring') || (e.kind === 'barrage' && e.attackState === 'barrageFalling')) {
+  } else if ((e.kind === 'sweep' && e.attackState === 'sweepFiring')
+    || (e.kind === 'barrage' && e.attackState === 'barrageFalling')
+    // DARK OUT 2 ROUND ("LLOYD facing WESTなのにSOUTHへ発射される" fix):
+    // SNIPER never got the same protection SWEEP/BARRAGE already have (see
+    // this block's own comment above) — e.lockX/e.lockY (the actual shot
+    // target getRoidMuzzlePoint()'s caller aims at) freezes the instant
+    // lock_yellow begins, but e.zone (which picks the body pose AND, via
+    // getRoidMuzzlePoint(), the muzzle point the bolt visually leaves from)
+    // kept live-tracking the player through lock_yellow AND fire. If the
+    // player kept moving during that ~630ms frozen-aim window, the body
+    // could flip to a new zone/pose while the bolt still traveled to the
+    // OLD frozen point — exactly "向きと発射方向が一致しない" (a LEFT-facing
+    // muzzle visually firing toward what is now a RIGHT-side target). Once
+    // frozen (lock_yellow) through the shot's own flight (fire), the body
+    // now stays locked to whatever zone it was already in the instant the
+    // aim froze — the same "freeze together, never diverge" rule SWEEP/
+    // BARRAGE already established, just extended to the one ranged kind
+    // that was missing it. lock_red (before anything freezes) is
+    // unaffected — aim and body both still live-track there, same as
+    // before.
+    || (e.kind === 'sniper' && (e.attackState === 'lock_yellow' || e.attackState === 'fire'))) {
     // NEXT ROUND (spec section 3): once a SWEEP/BARRAGE shot's own lock has
     // frozen e.zone (see startSweepAttack/startBarrageAttack's lock
     // transitions), the live player-tracking below is skipped for the rest
@@ -10063,7 +10131,21 @@ function updateEnemyCore(dt, now) {
         } else {
           // FIRE begins: freeze the bolt's origin (the aim point itself,
           // e.lockX/Y, was already frozen the instant YELLOW started).
-          const proj = screenSpaceEnemyAnchor();
+          // DARK OUT 2 ROUND ("弾丸が膝あたりから発射される" fix): was
+          // screenSpaceEnemyAnchor() — a FLOOR-anchored point (the enemy's
+          // own feet, see that function's own project()-at-CORRIDOR_FLOOR_Y
+          // definition), never the actual held gun. getRoidMuzzlePoint(e)
+          // is the existing, already-alpha-measured muzzle-tip system
+          // (ROID_MUZZLE_FRAC) resolveSweepShot() already uses for the same
+          // purpose — reused here instead of inventing a second one. Reads
+          // the CURRENTLY-drawn sprite's own zone (now frozen alongside
+          // e.lockX/Y by the updateEnemyFacing() fix above, so the muzzle
+          // point always matches the pose actually on screen) and returns
+          // its real gun-tip for zone 'left'/'right', or the existing chest
+          // anchor (still not the feet) for 'center'/drone/adamSphere,
+          // where the FIRE pose's own baked-in centered flash already reads
+          // correctly. No new coordinates invented.
+          const proj = getRoidMuzzlePoint(e);
           e.fireFromX = proj.x; e.fireFromY = proj.y;
           e.fireToX = e.lockX; e.fireToY = e.lockY;
           e.attackState = 'fire';
@@ -10147,26 +10229,16 @@ function updateEnemyCore(dt, now) {
   if (e.kind === 'sweep') {
     if (e.attackState === 'sweepTelegraph') {
       if (now >= e.attackUntil) {
-        const pl = state.player;
-        const worldZ = MISSILE_TARGET_BASE_WORLD_Z - pl.depthPos * MISSILE_TARGET_WORLD_Z_RANGE;
-        const scaleAtZ = FOCAL / (FOCAL + Math.max(worldZ, 1));
-        const lockWorldX = pl.strafeOffset / scaleAtZ;
-        const half = SWEEP_HALF_WIDTH_WORLD;
-        // dir=1 -> starts RIGHT (+X), sweeps to LEFT (-X); dir=-1 -> reverse.
-        e.sweepStartWorldX = lockWorldX + (e.sweepDirPending >= 0 ? half : -half);
-        e.sweepEndWorldX = lockWorldX + (e.sweepDirPending >= 0 ? -half : half);
-        e.sweepWorldZ = worldZ;
-        // NEXT ROUND (spec section 3): freeze e.zone to match THIS lock's
-        // own screen position right now, bypassing the normal slow-turn
-        // cooldown/hysteresis for this one instant — the body pose (see
-        // computeEnemyDrawRect()) and the whole burst's own start/end points
-        // are now guaranteed to agree on which side the shot is going,
-        // instead of the body possibly still showing a stale, independently
-        // -tracked zone from a moment earlier.
-        const lockProj = project(lockWorldX, CORRIDOR_FLOOR_Y, worldZ);
-        const anchorProj = screenSpaceEnemyAnchor();
-        const lockDiff = lockProj.x - anchorProj.x;
-        e.zone = lockDiff > ROID_FACE_ZONE_NEAR_PX ? 'right' : lockDiff < -ROID_FACE_ZONE_NEAR_PX ? 'left' : 'center';
+        // DARK OUT 2 ROUND: the lock world-X/Z + e.zone freeze + e.lockX/Y
+        // projection used to happen HERE (at telegraph's own END, the exact
+        // instant firing begins) — moved into startSweepAttack() so the new
+        // yellow lock-on reticle (renderEnemyTelegraphs()'s own sweepTelegraph
+        // block) has a real, stable point to draw for the WHOLE now-500ms
+        // telegraph, and so the body is already correctly facing the locked
+        // side for the entire blink window, not just snapping at the last
+        // instant. e.sweepStartWorldX/EndWorldX/WorldZ/zone are already set
+        // by the time this branch runs — only the bullet-count roll and the
+        // sweepFiring transition happen here now.
         const baseCount = SWEEP_BULLET_COUNT_MIN + Math.floor(Math.random() * (SWEEP_BULLET_COUNT_MAX - SWEEP_BULLET_COUNT_MIN + 1));
         e.sweepCount = e.sweepEnhanced ? baseCount + SWEEP_BULLET_COUNT_ENHANCED_BONUS : baseCount;
         e.sweepIndex = 0;
@@ -10275,6 +10347,38 @@ function startSweepAttack(e, now, enhanced, stealthMul) {
   e.sweepTracers = [];
   e.attackState = 'sweepTelegraph';
   e.attackUntil = now + SWEEP_TELEGRAPH_MS * (stealthMul || 1);
+  // DARK OUT 2 ROUND ("プレイヤーを捕捉->黄色いロックオン表示" fix): capture
+  // + freeze the lock world-X/Z, sweep start/end, and e.zone HERE (telegraph
+  // start) instead of at telegraph's end — moved verbatim from the
+  // sweepTelegraph tail-transition below (same formula, same constants, no
+  // new math). This gives the yellow lock-on reticle (e.lockX/e.lockY, the
+  // SAME fields/render style SNIPER's own lock_yellow already uses — see
+  // renderEnemyTelegraphs()) a stable point for the whole telegraph, and means
+  // the body already faces the locked side for the entire blink window
+  // instead of snapping at the last instant.
+  const pl = state.player;
+  const worldZ = MISSILE_TARGET_BASE_WORLD_Z - pl.depthPos * MISSILE_TARGET_WORLD_Z_RANGE;
+  const scaleAtZ = FOCAL / (FOCAL + Math.max(worldZ, 1));
+  const lockWorldX = pl.strafeOffset / scaleAtZ;
+  const half = SWEEP_HALF_WIDTH_WORLD;
+  // dir=1 -> starts RIGHT (+X), sweeps to LEFT (-X); dir=-1 -> reverse.
+  e.sweepStartWorldX = lockWorldX + (e.sweepDirPending >= 0 ? half : -half);
+  e.sweepEndWorldX = lockWorldX + (e.sweepDirPending >= 0 ? -half : half);
+  e.sweepWorldZ = worldZ;
+  const lockProj = project(lockWorldX, CORRIDOR_FLOOR_Y, worldZ);
+  const anchorProj = screenSpaceEnemyAnchor();
+  const lockDiff = lockProj.x - anchorProj.x;
+  e.zone = lockDiff > ROID_FACE_ZONE_NEAR_PX ? 'right' : lockDiff < -ROID_FACE_ZONE_NEAR_PX ? 'left' : 'center';
+  // The reticle itself uses playerOrDecoyMarkerPos() — the SAME real visual
+  // body-center (decoy-aware) SNIPER's own lock_yellow uses (see the 'NEXT
+  // ROUND'/'30TH ROUND' comments just above in the sniper branch) — NOT
+  // lockProj above, which is a floor-level world point only meant for the
+  // zone/facing decision. Centering the box on feet instead of the visible
+  // body was an already-fixed SNIPER bug (see renderEnemyTelegraphs()'s own
+  // history) this reuses the fix for, rather than reintroducing it here.
+  const m = playerOrDecoyMarkerPos();
+  e.lockX = m.x;
+  e.lockY = m.y;
 }
 
 // 16TH ROUND PART S: rolls (or, if forcedCount>0, forces) a fresh MULTI
@@ -12706,10 +12810,26 @@ const BOSS_ATTACK_ACTIVE_STATES = { blink: true, telegraph: true, impact: true, 
 // size boost) since 'blink'/'defense' are guard/reaction poses, not a
 // directional lunge toward a side.
 const BOSS_ATTACK_X_TRACK_STATES = { telegraph: true, counterApproach: true, impact: true, counterAttack: true };
+// DARK OUT 2 ROUND ("LLOYD 1/2 attacking outside the SPOTLIGHT circle read
+// as darkness-clipped" fix): same bug class as the CLAW-boss fix above —
+// ROID1/ROID2's own attack pose only ever drew via renderEnemy()'s normal
+// pre-mask call, so whichever part of the body fell outside the lit circle
+// got darkened mid-attack. Extends this SAME post-mask redraw (not a new
+// mechanism, not a z-order change — this function already runs at the exact
+// spot spec wants: after renderFlashlightMask(), before renderPlayer(),
+// i.e. background -> far enemy -> attack effects -> player is completely
+// untouched) to also cover ROID1/ROID2, gated on isRoidInAttackSequence()
+// (the SAME existing predicate already used elsewhere to mean "this
+// unit is genuinely mid-attack", covering SNIPER/MISSILE/SWEEP/BARRAGE
+// alike) rather than a new state list. Only the darkness MASK is
+// suppressed for the attacking body — draw order relative to the player is
+// exactly what it always was.
 function renderBossAttackFullBody() {
   const e = state.enemy;
-  if (e.kind !== 'claw' || e.deathState !== 'alive') return;
-  if (!BOSS_ATTACK_ACTIVE_STATES[e.attackState]) return;
+  if (e.deathState !== 'alive') return;
+  const isClawAttacking = e.kind === 'claw' && BOSS_ATTACK_ACTIVE_STATES[e.attackState];
+  const isRoidAttacking = (e.type === 'roid1' || e.type === 'roid2') && isRoidInAttackSequence(e, performance.now());
+  if (!isClawAttacking && !isRoidAttacking) return;
   const rect = computeEnemyDrawRect();
   if (!imgReady(rect.img)) return;
   ctx.drawImage(rect.img, rect.x, rect.y, rect.w, rect.h);
@@ -13825,6 +13945,73 @@ function renderMissileProjectiles(zFilter) {
       renderMissileLaunchFlash(m.launchFlashUntil);
     }
   }
+
+  // DARK OUT 2 ROUND ("EAST/WEST SHADOW中の後方弾丸が主人公に不自然に重なる"
+  // fix): ESCAPE-only — SNIPER's fire bolt and SWEEP's tracers used to
+  // always draw via renderEnemyTelegraphs(), unconditionally AFTER
+  // renderEscapePlayer() (see that function's own now-gated blocks), so a
+  // pursuer's shot always overlaid the player regardless of whether it was
+  // still behind them or had already reached them — exactly the reported
+  // symptom, most visible right when a SHADOW throw pulls a lock onto the
+  // decoy and the pursuer fires at it. Same real depth-compare split as
+  // missile/barrage above, reusing the SAME playerWorldZ this function
+  // already computed. COMBAT is untouched (renderEnemyTelegraphs() still
+  // draws these unconditionally there, per its own comment — COMBAT's
+  // player has no real world-Z of its own to compare against).
+  if (state.gameMode === 'escape') {
+    if (e.kind === 'sniper' && e.attackState === 'fire') {
+      // No real world-Z exists for a screen-space sniper bolt (unlike
+      // missile/barrage, which carry real worldX/worldZ) — its own flight
+      // PROGRESS is the equivalent signal the spec explicitly allows
+      // ("z/progress"). Still behind the player for the whole flight (t<1,
+      // the head hasn't yet reached the target); once t reaches 1 (the
+      // head IS the target's own point — e.fireToX/Y is derived from the
+      // frozen lock, at the player/decoy's position) it has reached/passed
+      // that depth, so it switches to the front pass — mirrors the
+      // missile system's own "bodyWorldZ has now closed past playerWorldZ"
+      // rule exactly, just expressed via progress instead of a raw Z.
+      const t = clamp(1 - (e.attackUntil - now) / SNIPER_FIRE_TRAVEL_MS, 0, 1);
+      const hasReachedTarget = t >= 1;
+      if ((!hasReachedTarget && drawBehind) || (hasReachedTarget && drawFront)) {
+        const hx = e.fireFromX + (e.fireToX - e.fireFromX) * t;
+        const hy = e.fireFromY + (e.fireToY - e.fireFromY) * t;
+        const tailT = Math.max(0, t - 0.35);
+        const tx = e.fireFromX + (e.fireToX - e.fireFromX) * tailT;
+        const ty = e.fireFromY + (e.fireToY - e.fireFromY) * tailT;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,90,70,0.95)';
+        ctx.lineWidth = 3;
+        ctx.shadowColor = 'rgba(255,90,70,0.8)';
+        ctx.shadowBlur = 6;
+        ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
+        ctx.restore();
+      }
+    }
+    if (e.kind === 'sweep' && e.sweepTracers && e.sweepTracers.length) {
+      // Each tracer DOES carry a real world-Z (e.sweepWorldZ, frozen at
+      // telegraph start from the same MISSILE_TARGET_BASE_WORLD_Z formula
+      // playerWorldZ itself uses — see startSweepAttack()), so this is a
+      // direct, real depth compare, same as barrage above — not a
+      // progress substitute.
+      const bodyIsBehind = e.sweepWorldZ > playerWorldZ;
+      if ((bodyIsBehind && drawBehind) || (!bodyIsBehind && drawFront)) {
+        ctx.save();
+        for (const tr of e.sweepTracers) {
+          const life = clamp((tr.until - now) / SWEEP_TRACER_LIFE_MS, 0, 1);
+          if (life <= 0) continue;
+          ctx.strokeStyle = 'rgba(255,205,120,' + (0.85 * life) + ')';
+          ctx.lineWidth = 2;
+          ctx.shadowColor = 'rgba(255,170,80,0.7)';
+          ctx.shadowBlur = 5;
+          ctx.beginPath(); ctx.moveTo(tr.x1, tr.y1); ctx.lineTo(tr.x2, tr.y2); ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = 'rgba(255,235,190,' + life + ')';
+          ctx.beginPath(); ctx.arc(tr.x2, tr.y2, 3, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+  }
 }
 
 // 30TH ROUND items 19-22: DECOY marker — a small pulsing amber diamond at
@@ -13944,30 +14131,65 @@ function renderEnemyTelegraphs(theme) {
       ctx.stroke();
       ctx.restore();
     } else if (e.attackState === 'fire') {
-      const t = clamp(1 - (e.attackUntil - now) / SNIPER_FIRE_TRAVEL_MS, 0, 1);
-      const hx = e.fireFromX + (e.fireToX - e.fireFromX) * t;
-      const hy = e.fireFromY + (e.fireToY - e.fireFromY) * t;
-      const tailT = Math.max(0, t - 0.35);
-      const tx = e.fireFromX + (e.fireToX - e.fireFromX) * tailT;
-      const ty = e.fireFromY + (e.fireToY - e.fireFromY) * tailT;
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,90,70,0.95)';
-      ctx.lineWidth = 3;
-      ctx.shadowColor = 'rgba(255,90,70,0.8)';
-      ctx.shadowBlur = 6;
-      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
-      ctx.restore();
+      // DARK OUT 2 ROUND ("EAST/WEST SHADOW中の後方弾丸が主人公に不自然に
+      // 重なる" fix): this bolt used to always draw here — inside
+      // renderEnemyTelegraphs(), called unconditionally AFTER renderEscapePlayer()
+      // in ESCAPE — so it visibly overlaid the player regardless of whether
+      // it was actually still behind them or had already reached/passed
+      // them. In ESCAPE specifically, the bolt now draws via
+      // renderMissileProjectiles() instead (same depth-aware behindPlayer/
+      // frontOfPlayer split already proven for missile/barrage — see that
+      // function's own new sniper block), bracketing renderEscapePlayer()
+      // the same way. COMBAT is completely untouched (no real player world-Z
+      // there — renderPlayer() uses a fixed foreground anchor — so this
+      // exact bolt draw, always after the player, stays exactly as before).
+      if (state.gameMode !== 'escape') {
+        const t = clamp(1 - (e.attackUntil - now) / SNIPER_FIRE_TRAVEL_MS, 0, 1);
+        const hx = e.fireFromX + (e.fireToX - e.fireFromX) * t;
+        const hy = e.fireFromY + (e.fireToY - e.fireFromY) * t;
+        const tailT = Math.max(0, t - 0.35);
+        const tx = e.fireFromX + (e.fireToX - e.fireFromX) * tailT;
+        const ty = e.fireFromY + (e.fireToY - e.fireFromY) * tailT;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,90,70,0.95)';
+        ctx.lineWidth = 3;
+        ctx.shadowColor = 'rgba(255,90,70,0.8)';
+        ctx.shadowBlur = 6;
+        ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(hx, hy); ctx.stroke();
+        ctx.restore();
+      }
     }
     return;
   }
 
   // --- 16TH ROUND PART S: SWEEP FIRE telegraph/tracers ---
-  // No LOCK ON ring/gauge/white ellipse/HUD (item 137/143) — the only
-  // "telegraph" is a brief muzzle glow while charging (item 138), then each
-  // shot's own short tracer + impact flash (item 139/159— never a long
-  // white line, never a UI marker).
+  // DARK OUT 2 ROUND: item 137/143's original "no LOCK ON ring/gauge/HUD"
+  // decision is superseded per explicit instruction — a real-device report
+  // found the muzzle-glow-only telegraph below gave insufficient warning
+  // before the burst starts. Added a yellow lock-on reticle, reusing the
+  // SNIPER kind's own lock_yellow bracket exactly (same size/color/corner-
+  // tick drawing, same blink formula) rather than inventing a new UI, now
+  // that startSweepAttack() freezes e.lockX/e.lockY (the player's real
+  // visual body-center, via playerOrDecoyMarkerPos() — not feet) at
+  // telegraph start and SWEEP_TELEGRAPH_MS reuses SNIPER_LOCK_YELLOW_MS
+  // (500ms) for a genuinely perceivable blink window. The muzzle glow stays
+  // as an additional cue, unchanged.
   if (e.kind === 'sweep') {
     if (e.attackState === 'sweepTelegraph') {
+      const size = 46;
+      ctx.save();
+      ctx.strokeStyle = '#ffd23b';
+      ctx.lineWidth = 3;
+      ctx.globalAlpha = 0.65 + 0.35 * Math.sin(now * 0.018);
+      ctx.strokeRect(e.lockX - size / 2, e.lockY - size / 2, size, size);
+      const c = 10;
+      ctx.beginPath();
+      ctx.moveTo(e.lockX - size / 2, e.lockY - size / 2 + c); ctx.lineTo(e.lockX - size / 2, e.lockY - size / 2); ctx.lineTo(e.lockX - size / 2 + c, e.lockY - size / 2);
+      ctx.moveTo(e.lockX + size / 2 - c, e.lockY - size / 2); ctx.lineTo(e.lockX + size / 2, e.lockY - size / 2); ctx.lineTo(e.lockX + size / 2, e.lockY - size / 2 + c);
+      ctx.moveTo(e.lockX - size / 2, e.lockY + size / 2 - c); ctx.lineTo(e.lockX - size / 2, e.lockY + size / 2); ctx.lineTo(e.lockX - size / 2 + c, e.lockY + size / 2);
+      ctx.moveTo(e.lockX + size / 2 - c, e.lockY + size / 2); ctx.lineTo(e.lockX + size / 2, e.lockY + size / 2); ctx.lineTo(e.lockX + size / 2, e.lockY + size / 2 - c);
+      ctx.stroke();
+      ctx.restore();
       const gun = screenSpaceEnemyAnchor();
       const grow = clamp(1 - (e.attackUntil - now) / SWEEP_TELEGRAPH_MS, 0, 1);
       ctx.save();
@@ -13979,22 +14201,33 @@ function renderEnemyTelegraphs(theme) {
       ctx.restore();
     }
     if (e.sweepTracers && e.sweepTracers.length) {
-      ctx.save();
-      for (const tr of e.sweepTracers) {
-        const life = clamp((tr.until - now) / SWEEP_TRACER_LIFE_MS, 0, 1);
-        if (life <= 0) continue;
-        ctx.strokeStyle = 'rgba(255,205,120,' + (0.85 * life) + ')';
-        ctx.lineWidth = 2;
-        ctx.shadowColor = 'rgba(255,170,80,0.7)';
-        ctx.shadowBlur = 5;
-        ctx.beginPath(); ctx.moveTo(tr.x1, tr.y1); ctx.lineTo(tr.x2, tr.y2); ctx.stroke();
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = 'rgba(255,235,190,' + life + ')';
-        ctx.beginPath(); ctx.arc(tr.x2, tr.y2, 3, 0, Math.PI * 2); ctx.fill();
+      // DARK OUT 2 ROUND: same ESCAPE-only move as the SNIPER bolt above —
+      // each tracer carries a real world-Z (e.sweepWorldZ, set once at
+      // telegraph start from the SAME MISSILE_TARGET_BASE_WORLD_Z-based
+      // formula playerWorldZ uses — see startSweepAttack()), so
+      // renderMissileProjectiles() can depth-split it against the player
+      // exactly like missile/barrage. COMBAT keeps drawing every tracer here
+      // unconditionally, same as before.
+      if (state.gameMode !== 'escape') {
+        ctx.save();
+        for (const tr of e.sweepTracers) {
+          const life = clamp((tr.until - now) / SWEEP_TRACER_LIFE_MS, 0, 1);
+          if (life <= 0) continue;
+          ctx.strokeStyle = 'rgba(255,205,120,' + (0.85 * life) + ')';
+          ctx.lineWidth = 2;
+          ctx.shadowColor = 'rgba(255,170,80,0.7)';
+          ctx.shadowBlur = 5;
+          ctx.beginPath(); ctx.moveTo(tr.x1, tr.y1); ctx.lineTo(tr.x2, tr.y2); ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = 'rgba(255,235,190,' + life + ')';
+          ctx.beginPath(); ctx.arc(tr.x2, tr.y2, 3, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
       }
-      ctx.restore();
       // pruning (never mutates gameplay state, just this render-list's own
-      // expired entries) — keeps the array from growing across a long burst
+      // expired entries) — keeps the array from growing across a long burst.
+      // Runs regardless of gameMode so ESCAPE's own renderMissileProjectiles()
+      // draw (which reads this same array) never accumulates stale entries.
       e.sweepTracers = e.sweepTracers.filter((tr) => tr.until > now);
     }
     return;

@@ -798,6 +798,13 @@
 
 </div>
 
-<script src="game.js?v=2"></script>
+<!-- DARK OUT 2 ROUND: bumped v=2->3 — this had not moved since commit
+     b67674a despite every game.js change since (including R24's 3-life/
+     FOCUS work and both later bug-fix rounds' ADAM/sniper/ENDING fixes),
+     so a browser or the GitHub Pages CDN (see CNAME) that already cached
+     game.js?v=2 kept serving pre-fix code indefinitely — the concrete,
+     provable explanation for "fixed and verified in code, still
+     reproduces on the real device" (see this round's ADAM investigation). -->
+<script src="game.js?v=3"></script>
 </body>
 </html>
