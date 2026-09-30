@@ -578,6 +578,17 @@ body.ending-active #hud { display: none; }
   background: linear-gradient(90deg, #ff3b3b, #ff8a3b);
   transition: width 0.15s ease-out;
 }
+/* 3-LIFE SYSTEM: simple "x3" readout to the right of the HP bar, inside
+   the existing #hp-row flex row (gap:8px already spaces it from the bar
+   without any layout change). Same weight/shadow as #hp-label for visual
+   consistency with the existing HUD, not a new UI style. */
+#life-count-readout {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #ff6b6b;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
 
 #hud-top-right {
   position: absolute;
@@ -1057,6 +1068,25 @@ body.ending-active #hud { display: none; }
   height: 100%;
   background: linear-gradient(90deg, #7fd3ff, #b09fff);
   transition: width 0.1s ease-out;
+}
+/* AREA C ROUND: charging/full/auto-aim-active states, set via
+   #focus-hud's own className in updateHud() (game.js). "charging" uses
+   the rules above with no override. FULL gets a brighter, glowing fill so
+   the player can see the exact instant a press will activate AUTO AIM;
+   ACTIVE swaps to a warm gold to read as clearly different from both
+   other states while the 5s window is running (also mirrored onto
+   #focus-label's own text, "AUTO AIM" instead of "FOCUS" — see
+   updateHud()). */
+#focus-hud.focus-state-full #focus-bar-fill {
+  background: linear-gradient(90deg, #b0e8ff, #e3d4ff);
+  box-shadow: 0 0 6px rgba(176,159,255,0.9);
+}
+#focus-hud.focus-state-active #focus-bar-fill {
+  background: linear-gradient(90deg, #ffcf5c, #ff9a3b);
+  box-shadow: 0 0 6px rgba(255,159,59,0.9);
+}
+#focus-hud.focus-state-active #focus-label {
+  color: #ffcf5c;
 }
 
 /* 10TH ROUND (items 25-27): AMMO stacks directly below #focus-hud.

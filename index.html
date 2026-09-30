@@ -275,6 +275,10 @@
       <div id="hp-row">
         <div id="hp-label">HP</div>
         <div id="hp-bar-track"><div id="hp-bar-fill"></div></div>
+        <!-- 3-LIFE SYSTEM (spec sections 8-12): simple "x3"-style readout
+             next to the existing single HP gauge — no HUD redesign, no
+             second/third HP bar. Text set by updateHud() in game.js. -->
+        <div id="life-count-readout">&times;3</div>
       </div>
       <!-- 9TH ROUND (item 36): ESCAPE MODE's own TIME LIMIT readout — hidden
            in COMBAT MODE via CSS (body.escape-mode gate), shown only while

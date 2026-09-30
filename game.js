@@ -17,7 +17,7 @@
 // not to do — bump this string by hand each adjustment round instead, the
 // same manually-maintained spirit as this project's existing asset `?v=N`
 // cache-busting query params.
-const BUILD_VERSION = 'DARKOUT2-R23';
+const BUILD_VERSION = 'DARKOUT2-R24';
 
 // ---------------------------------------------------------------------
 // 8TH ROUND: DEBUG MODE gate — ?debug=1 only. Read once at script load via
@@ -1282,13 +1282,14 @@ const GAMEPAD_BACK_LEFT_INDEX = null;
 const GAMEPAD_BACK_RIGHT_INDEX = null;
 // 15TH ROUND (items 29-34): FOCUS's activation moved off LB (which was
 // double-booked with RELOAD — see edge(4)'s own comment below) onto a
-// RIGHT-STICK-CLICK (R3, standard-mapping button 11) HOLD, so a quick tap
-// never triggers it (avoiding an accidental FOCUS toggle from a player just
-// resting a finger on R3) while a deliberate hold still feels responsive.
-// 500ms sits in the middle of the ~400-600ms guideline range — short enough
-// that a real hold doesn't feel laggy, long enough that a reflexive/
-// accidental tap (well under 300ms on a real controller) never fires it.
-const FOCUS_R3_HOLD_MS = 500;
+// RIGHT-STICK-CLICK (R3, standard-mapping button 11). AREA C ROUND: the
+// 500ms-hold-before-activating gate this round used to have here
+// (FOCUS_R3_HOLD_MS, tuned for the OLD hold-to-drain FOCUS spec) is
+// removed — the new FOCUS spec activates on a single PRESS while FULL, so
+// gating the raw R3 read behind a hold duration meant a normal single
+// click never registered at all. R3 is now read as a raw instantaneous
+// press, exactly like the touch-focus button already was (see
+// pollGamepad()'s own gpFocusHeldLocal comment).
 
 // ---------------------------------------------------------------------
 // AIM — 4th round: position-integrated (velocity) control, replacing the
@@ -1323,12 +1324,16 @@ const LIGHT_MOVE_SPEED_PX_S = 520;
 // not yet decided) — kept as named constants, not scattered literals, so
 // they're trivial to retune later.
 const FOCUS_MAX = 100;
-const FOCUS_DRAIN_PER_SEC = 40;   // empties in 2.5s of continuous AUTO AIM
-const FOCUS_RECOVER_PER_SEC = 20; // refills in 5s from empty while not in use
+const FOCUS_RECOVER_PER_SEC = 20; // refills in 5s from empty while not in use — this is ALSO the new charge-EMPTY->FULL rate (spec sections 13-14): 100/20=5s, unchanged, reused as-is
 // How fast AUTO AIM's assisted point approaches the target hit-center —
 // a smooth pull-in, not an instant snap-to-target (dt-multiplier lerp,
 // same shape as AIM_MOVE_SPEED_PX_S's own manual-AIM integration above).
 const AUTO_AIM_APPROACH_RATE = 9;
+// AREA C ROUND (spec sections 13-23, 35-45): fixed real-time duration of
+// one AUTO AIM activation, independent of framerate (checked via
+// now<autoAimUntil, a timestamp comparison, never a frame counter). The
+// spec's own number, not a guess.
+const AUTO_AIM_DURATION_MS = 5000;
 
 // ENEMY DEATH (4th round) — durations for the two death-effect families.
 // 28TH ROUND item 5: DEATH_EXPLODE_MS extended 650->1000 ("約1秒に圧縮" per
@@ -1995,6 +2000,8 @@ const ctx = canvas.getContext('2d');
 
 const hpFillEl = document.getElementById('hp-bar-fill');
 const hpLabelEl = document.getElementById('hp-label');
+// 3-LIFE SYSTEM: simple "x3"-style readout next to the existing HP gauge.
+const lifeCountEl = document.getElementById('life-count-readout');
 // 10TH ROUND (items 25-27): AMMO consolidated to ONE readout, #ammo-hud
 // (below #focus-hud) — the old top-right #ammo-readout (current/RESERVE)
 // and the 9TH ROUND under-HP readout (current/MAGAZINE) both duplicated
@@ -2018,6 +2025,11 @@ const exitWarningReadoutEl = document.getElementById('exit-warning-readout');
 const enemyNameEl = document.getElementById('enemy-name');
 const enemyHpFillEl = document.getElementById('enemy-hp-bar-fill');
 const focusFillEl = document.getElementById('focus-bar-fill');
+// AREA C ROUND: cached so updateHud() can toggle a charging/full/active
+// CSS class + swap the label text, conveying AUTO AIM state on the
+// existing FOCUS gauge without adding any new HUD element.
+const focusHudEl = document.getElementById('focus-hud');
+const focusLabelEl = document.getElementById('focus-label');
 // 12TH ROUND PART A (spec section 3): 3-bar HUD, shown only during the
 // run's opening 3-simultaneous-DRONE encounter (state.droneWave.
 // simultaneousMode) — see updateHud()'s own drone-squad block.
@@ -3929,6 +3941,21 @@ const state = {
 
   player: {
     hp: PLAYER_MAX_HP,
+    // 3-LIFE SYSTEM (spec sections 8-12, 32, 50, 62, 71-73): a SEPARATE
+    // concept from the existing HP gauge (kept as the single existing
+    // gauge, never split into 3) and from state.run.continueCount (the
+    // existing GAME-OVER-screen CONTINUE counter — LIFE loss never
+    // touches it). Starts at 3 here, in this single module-scope object
+    // literal that is never reconstructed anywhere else in this file
+    // (confirmed: no separate newGame()/initGame() exists — QUIT's
+    // window.location.reload() is the only way this file's state is ever
+    // rebuilt), so lifeCount naturally resets to 3 only at NEW GAME and is
+    // never touched by pause/resume, enemy transition, COMBAT<->ESCAPE
+    // switch, or route transition — nothing else in the file writes this
+    // field except the LIFE-consumption block in frame() (see its own
+    // comment next to the GAME OVER trigger).
+    lifeCount: 3,
+    lastLifeCountShown: -1, // dirty-check for the "x3" HUD readout, see updateHud()
     strafeOffset: 0,      // px from screen center, +east/-west
     scale: 1,              // depth pulse scale (north/south sync)
     scaleTarget: 1,         // 12TH ROUND: no longer written (see perspectiveScaleFromDepth()/depthPos below) — left in place, harmless, in case anything still reads it
@@ -3991,10 +4018,17 @@ const state = {
     // existing baseline orientation (every other PLAYER pose — walk/aim/
     // fire/north-dash — already faces north/away-from-camera).
     coverFacing: 'south', // NEXT ROUND (spec section 4): default changed from 'north' now that the NORTH cover pose is retired
-    // 4th round: FOCUS / AUTO AIM (LB, replaces the retired FLASH).
-    focus: FOCUS_MAX,
+    // AREA C ROUND: FOCUS / AUTO AIM. Old default was FOCUS_MAX (full at
+    // NEW GAME, so continuous-hold assistance was available immediately).
+    // New spec section 21 explicitly requires NEW GAME to start with FOCUS
+    // EMPTY / AUTO AIM OFF — changed to 0 to match; autoAimActive/
+    // autoAimUntil already default to off/expired below.
+    focus: 0,
     autoAimActive: false,
+    autoAimUntil: 0,
+    lastFocusHeldRaw: false, // edge-detect state for the FOCUS press, see updatePlayer()
     lastFocusFillPct: -1,
+    lastFocusState: null, // dirty-check for the charging/full/active HUD class, see updateHud()
   },
 
   enemy: {
@@ -4213,14 +4247,15 @@ const state = {
   // is physically released — see pollGamepad()'s own comment for the full
   // same-frame stale-action root cause this guards against.
   xResumeGuardUntilRelease: false,
-  // 15TH ROUND (items 29-34): R3 (right-stick click)-HOLD FOCUS. Timestamp
-  // of R3's own most recent rising edge (button 11), or null while R3 is
-  // not held — pollGamepad() compares `now - r3HoldStartAt` against
-  // FOCUS_R3_HOLD_MS each frame to decide whether FOCUS is actually active
-  // yet (see gpFocusHeldLocal below). A single top-level field (not nested
-  // under state.input) since it tracks raw HOLD DURATION, not a per-frame
-  // input value.
-  r3HoldStartAt: null,
+  // AREA C ROUND: the 15TH ROUND's own r3HoldStartAt (R3 500ms-hold-before-
+  // activating FOCUS gate) was removed here — see pollGamepad()'s own
+  // comment at gpFocusHeldLocal for why: FOCUS's new spec is "PRESS while
+  // FULL activates immediately", not "hold for 500ms", so gating the raw
+  // R3 read behind a 500ms duration meant a real single click never
+  // reached state.input.focusHeld's rising edge at all. r3HoldStartAt/
+  // FOCUS_R3_HOLD_MS were used exclusively for this one gate (confirmed via
+  // a full-file search — button 11/R3 is read nowhere else), so removing
+  // them is safe and touches no other input.
   // 9TH ROUND (item 39-43): pure diagnostic fields for the CONTROLLER-only
   // startup investigation — never read by any gameplay/control-flow logic,
   // only written for ?debug=1 visibility. lastGamepadButtonIndex/-At track
@@ -4962,7 +4997,6 @@ window.addEventListener('gamepaddisconnected', (e) => {
     state.gamepadConnected = false;
     state.prevButtons = [];
     state.gamepadSettleUntil = 0;
-    state.r3HoldStartAt = null; // 15TH ROUND: never let a stale hold-start timestamp survive a disconnect/reconnect
   }
 });
 
@@ -5544,19 +5578,19 @@ function pollGamepad(now) {
     gpAim.y = applyAimCurve(gp.axes[3] || 0);
 
     gpFire = logicalRB;                             // RB (or GameSir Nova Lite 2 rear-right alias) = FIRE
-    // 15TH ROUND (items 29-34): FOCUS is now a RIGHT-STICK-CLICK (R3,
-    // button 11) HOLD — pressed(11) alone is a raw instantaneous read, so
-    // r3HoldStartAt tracks the REAL wall-clock moment R3 was first pressed
-    // (set once on its own rising edge, cleared the instant it releases)
-    // and gpFocusHeldLocal only goes true once that duration crosses
-    // FOCUS_R3_HOLD_MS — a short tap never reaches the threshold and so
-    // never activates FOCUS at all (item 30). LB is FULLY freed of FOCUS
-    // duty here (see edge(4) below — LB is RELOAD only now), resolving the
-    // double-booking the 10TH ROUND's own comment used to describe.
-    const r3Pressed = pressed(11);
-    if (r3Pressed && state.r3HoldStartAt == null) state.r3HoldStartAt = now || 0;
-    else if (!r3Pressed) state.r3HoldStartAt = null;
-    const gpFocusHeldLocal = r3Pressed && state.r3HoldStartAt != null && (now || 0) - state.r3HoldStartAt >= FOCUS_R3_HOLD_MS;
+    // FOCUS is RIGHT-STICK-CLICK (R3, button 11). AREA C ROUND: this used
+    // to require R3 held 500ms before gpFocusHeldLocal went true (the old
+    // "hold to drain FOCUS" spec needed a debounce against accidental
+    // stick clicks during aiming) — but the new FOCUS spec is "a single
+    // PRESS while FULL activates instantly", so that 500ms gate meant a
+    // real single R3 click never even reached state.input.focusHeld's
+    // rising edge (updatePlayer()'s own press-edge detector never saw a
+    // true). Fixed by reading R3 as a raw instantaneous press, exactly
+    // like the touch-focus button's own pointerdown/pointerup already are
+    // — LB stays FULLY freed of FOCUS duty either way (see edge(4) below —
+    // LB is RELOAD only), resolving the double-booking the 10TH ROUND's own
+    // comment used to describe.
+    const gpFocusHeldLocal = pressed(11);
     // 24TH ROUND item 7 (root-caused + fixed 29TH ROUND item 11): same
     // same-frame stale-flag bug and same two-part fix as the ESCAPE branch
     // above — see its own comment for the full root-cause explanation.
@@ -6618,14 +6652,60 @@ function updatePlayer(dt, now, moveX, moveY, actions, moveLocked) {
       ammoBefore + '->' + p.ammo + ', reserve ' + reserveBefore + '->' + p.reserve + ')');
   }
 
-  // 4th round: FOCUS / AUTO AIM (LB / touch-focus), replacing FLASH. Held +
-  // FOCUS>0 -> AUTO AIM active, draining FOCUS; released (or FOCUS empty)
-  // -> AUTO AIM off, FOCUS recovers. SHOT itself is untouched (still RB) —
-  // this only ever assists the AIM point, never fires on its own.
-  p.autoAimActive = state.input.focusHeld && p.focus > 0.001;
-  if (p.autoAimActive) {
-    p.focus = Math.max(0, p.focus - FOCUS_DRAIN_PER_SEC * dt);
-  } else {
+  // FOCUS -> AUTO AIM ACTIVATION GAUGE (spec sections 13-23, 35-45, 63, 69,
+  // 71-75): FOCUS is repurposed from its old "hold to drain, converges AIM
+  // while held" role into a charge-then-press activator. Old role: held +
+  // FOCUS>0 kept AUTO AIM on continuously, draining FOCUS every frame,
+  // released or empty turned it off. New role: FOCUS now simply charges
+  // EMPTY->FULL over time and a single PRESS (rising edge) while FULL
+  // instantly spends the whole charge and starts a fixed 5-second AUTO AIM
+  // window, independent of whether the button stays held afterward.
+  //
+  // Button assignment is completely UNCHANGED — this still reads the exact
+  // same state.input.focusHeld this file already computes upstream from
+  // gamepad R3 (button 11, see gpFocusHeldLocal in pollGamepad() — its own
+  // 500ms-hold-before-activating gate was removed in this same round since
+  // it no longer matched the new press-to-activate spec, see that
+  // function's own comment) and touch-focus pointerdown/up (see
+  // focusBtnEl's own listeners); no new button/key was added or reassigned
+  // for any input method, per spec section 17's explicit requirement, and
+  // R3/touch-focus remain the only two ways to trigger FOCUS. p.lastFocusHeldRaw
+  // below tracks only the PREVIOUS FRAME's value of that same existing
+  // boolean, purely to detect its rising edge — it does not change what
+  // "held" means for any input device.
+  //
+  // Charge rate: FOCUS_RECOVER_PER_SEC=20 refilling FOCUS_MAX=100 is
+  // ALREADY exactly 5 real seconds EMPTY->FULL (see that constant's own
+  // pre-existing comment, "refills in 5s from empty") — reused completely
+  // unchanged, not a new/guessed number, and it is delta-time (dt) based
+  // like it always was, never frame-count based. FOCUS_DRAIN_PER_SEC (the
+  // old continuous-drain-while-held rate) is no longer read anywhere: the
+  // new activation spends the charge in one instant step (p.focus = 0)
+  // rather than draining it gradually, since AUTO AIM's new duration is a
+  // fixed 5s window, not however long FOCUS happens to last.
+  const focusPressEdge = state.input.focusHeld && !p.lastFocusHeldRaw;
+  p.lastFocusHeldRaw = state.input.focusHeld;
+  // Activate only on a genuine rising edge, only while FULL, and only if
+  // not already active — this alone (with no extra flag) already prevents
+  // button-mashing from extending or re-triggering the duration: the
+  // instant activation spends FOCUS to 0, and FOCUS_RECOVER_PER_SEC takes
+  // the same 5 real seconds to refill it that AUTO_AIM_DURATION_MS takes to
+  // expire, so FOCUS cannot reach FULL again until at least the moment the
+  // current window ends (autoAimActive's own now<autoAimUntil check right
+  // below is therefore never simultaneously true with a fresh FULL gauge).
+  if (focusPressEdge && !p.autoAimActive && p.focus >= FOCUS_MAX - 0.001) {
+    p.focus = 0;
+    p.autoAimUntil = now + AUTO_AIM_DURATION_MS;
+    if (DEBUG_MODE) r10DebugLog('AUTO AIM ACTIVATED (FOCUS press while FULL) -> ' + AUTO_AIM_DURATION_MS + 'ms');
+  }
+  // Delta-time-independent expiry: true for exactly AUTO_AIM_DURATION_MS
+  // real milliseconds after activation, then cleanly false again — no
+  // forced cursor warp/stick-value reset/touch-coordinate discard happens
+  // anywhere else when this flips back to false, so manual AIM (the `else`
+  // branch below, completely unmodified) simply resumes from wherever
+  // aimLiveX/Y/lightPersistX/Y were last left.
+  p.autoAimActive = now < (p.autoAimUntil || 0);
+  if (!p.autoAimActive) {
     p.focus = Math.min(FOCUS_MAX, p.focus + FOCUS_RECOVER_PER_SEC * dt);
   }
 
@@ -9829,6 +9909,20 @@ function updateEnemyCore(dt, now) {
           // attack's own speed are all untouched.
           e.z = Math.max(zMinCounter, e.z - gabrielAdamApproachSpeed(e) * GABRIEL_ADAM_DEFENSE_APPROACH_SPEED_MULT * dt);
         }
+        // (motion-based pose): GABRIEL only — while genuinely closing
+        // distance here (e.z still > zMinCounter above), the RUN cycle is
+        // now shown instead of the static defense pose (see
+        // computeEnemyDrawRect()'s gabrielClawMovingWhileStaticPose) — its
+        // frame index must keep advancing, same reused cadence/pattern as
+        // 'recovery'. ADAM has no RUN asset and falls back to set.idle
+        // instead (no frame index to advance there).
+        if (e.type === 'gabriel') {
+          e.clawWalkElapsedMs += dt * 1000;
+          if (e.clawWalkElapsedMs > GABRIEL_ESCAPE_RUN_FRAME_MS) {
+            e.clawWalkElapsedMs = 0;
+            e.clawWalkFrame = (e.clawWalkFrame + 1) % 3;
+          }
+        }
         if (e.z <= zMinCounter) {
           e.attackState = 'counterApproach';
           e.attackUntil = now + GABRIEL_ADAM_COUNTER_APPROACH_MS; // 0.3s windup (item 9) — never shortened by HP
@@ -9860,6 +9954,17 @@ function updateEnemyCore(dt, now) {
       const tNorm = clamp(1 - (e.attackUntil - now) / GABRIEL_ADAM_COUNTER_APPROACH_MS, 0, 1);
       const eased = 1 - Math.pow(1 - tNorm, 2);
       e.z = e.clawApproachStartZ + (zMin - e.clawApproachStartZ) * eased;
+      // (motion-based pose): same reasoning/reused cadence as the
+      // counterArmed-approach block above — 'counterApproach' always
+      // tweens e.z (this is a 300ms lunge, never stationary), so GABRIEL's
+      // RUN frame index must keep advancing through it too.
+      if (e.type === 'gabriel') {
+        e.clawWalkElapsedMs += dt * 1000;
+        if (e.clawWalkElapsedMs > GABRIEL_ESCAPE_RUN_FRAME_MS) {
+          e.clawWalkElapsedMs = 0;
+          e.clawWalkFrame = (e.clawWalkFrame + 1) % 3;
+        }
+      }
       if (now >= e.attackUntil) {
         e.z = zMin;
         e.attackState = 'counterAttack';
@@ -10499,10 +10604,41 @@ function computeEnemyDrawRect() {
     // which now reuses this SAME GABRIEL_ESCAPE_RUN_FRAME_MS cadence, never
     // a new timer. COMBAT/ESCAPE both run this identical shared code path
     // (no gameMode branch here), so both modes get the same behavior.
+    // (motion-based pose, real-device report): root cause of "防御/構え画像
+    // のまま位置だけが移動する" — 'counterApproach' (the fast lunge after a
+    // forced 5-hit counter, GABRIEL_ADAM_COUNTER_APPROACH_MS=300ms, ALWAYS
+    // tweens e.z via an eased interpolation — see updateEnemy()'s own
+    // 'counterApproach' branch) and 'defense' while e.counterArmed is true
+    // (the "close the remaining distance at 2x speed while still showing
+    // the defense pose" case explicitly added by an earlier round — see
+    // updateEnemy()'s own 'defense'+counterArmed branch, which tweens e.z
+    // every frame exactly like 'recovery' does) were BOTH already in the
+    // windup-image state list below, so they showed the static windup/
+    // defense sprite for their ENTIRE genuinely-moving duration — the same
+    // bug class 'recovery' had before this file's own earlier fix. Plain
+    // 'defense' (counterArmed===false, the normal bounded ~1100ms hold —
+    // GABRIEL_ADAM_DEFENSE_MS) has NO z-tween of its own (confirmed: no e.z
+    // write anywhere in that branch) and correctly keeps its static pose —
+    // only the counterArmed sub-case is affected.
+    const gabrielClawMovingWhileStaticPose = e.attackState === 'counterApproach'
+      || (e.attackState === 'defense' && e.counterArmed);
     const gabrielEscapeRunActive = isGabriel
-      && (e.attackState === 'idle' || e.attackState === 'blink' || e.attackState === 'approach' || e.attackState === 'telegraph' || e.attackState === 'recovery');
+      && (e.attackState === 'idle' || e.attackState === 'blink' || e.attackState === 'approach' || e.attackState === 'telegraph' || e.attackState === 'recovery'
+        || gabrielClawMovingWhileStaticPose);
     const gabrielEscapeRunFrame = gabrielEscapeRunActive
       ? ASSETS.gabriel.escapeRun[e.clawWalkFrame] : null;
+    // ADAM has no dedicated walk/run asset (verified — ASSETS.adam only
+    // ever had idle/windup/release/attackVariants; its existing "in
+    // motion" visual cue during the OTHER autonomous approach state
+    // ('idle', which also genuinely tweens e.z every frame — see
+    // ENEMY_IDLE_APPROACH_SPEED) has always been set.idle plus the
+    // Canvas-only body-bob in renderEnemy(), deliberately never a
+    // fabricated walk-cycle — see that historical comment). Reusing that
+    // EXACT same established pattern here (never GABRIEL's asset, never a
+    // new one) — ADAM falls back to set.idle instead of set.windup for
+    // these same two genuinely-moving sub-cases, picking up the identical
+    // body-bob "in motion" cue its own normal approach already uses.
+    const adamMovingWhileStaticPose = !isGabriel && gabrielClawMovingWhileStaticPose;
     // 12TH ROUND PART B (HISTORICAL): originally covered 'recovery' AND
     // 'cooldown' both holding the static attack/release sprite (closing the
     // "idle pose inserted mid-retreat" bug of that round). This round
@@ -10526,9 +10662,10 @@ function computeEnemyDrawRect() {
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
       : (gabrielEscapeRunFrame ? gabrielEscapeRunFrame.img
+        : (adamMovingWhileStaticPose ? set.idle
         : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach' ? set.windup
         : ((e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) ? set.release
-        : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle))));
+        : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle)))));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
     // 27TH ROUND item 3: real-play feedback (添付3枚目・4枚目) said GABRIEL/ADAM
     // still read as unnaturally gigantic at point-blank range (measured
@@ -10819,34 +10956,34 @@ function computeEnemyDrawRect() {
         drawH = Math.min(drawH, state.cssH * GABRIEL_ATTACK_MAX_DRAWH_FRAC);
       }
     }
-    // (ADAM ATTACK visual size, real-device report): the true ATTACK pose (impact/counterAttack,
-    // and the brief post-hit recovery hold sharing the same sprite — see
-    // adamRecoveryClawHold's own comment) still read too large even at the
-    // existing 0.92 clamp above. Root-cause check (measured every ADAM
-    // attackState via computeEnemyDrawRect() before touching anything): this
-    // is NOT a double-scale bug — every ADAM size clamp above (the 0.92
-    // impact/counterAttack cap, the 0.75 windup cap, the separate 0.92
-    // approach/blink/recovery cap a little above) is a single, deliberate,
-    // already-tuned ceiling; WINDUP/NORMAL/DEFENSE never reach the intended
-    // scope of this change (see the condition below). Placed HERE —
-    // deliberately AFTER every existing ADAM clamp above, not interleaved
-    // between them — so it always operates on the FULLY-RESOLVED drawH
-    // regardless of which earlier clamp produced it (recovery's own hold
-    // window used a DIFFERENT earlier clamp than impact/counterAttack — an
-    // interleaved placement was tried first and measured to give recovery a
-    // different final ratio than impact; moving it here fixed that). Holds
-    // a consistent ~50% ratio of the CURRENT on-screen ATTACK size at every
-    // distance. Measured BEFORE (844x390, ADAM_Z_MIN): impact/counterAttack/
-    // recovery-hold all = 201.83x358.80px (92.0% of viewport, matching
-    // R16's own measurement). AFTER this 0.50 multiplier: all three =
-    // ~100.9x179.4px (~46.0% of viewport) — confirmed via re-measurement,
-    // see this round's completion report. worldZ/attack distance/attack
-    // timing/damage/WINDUP/NORMAL/DEFENSE sizing are all untouched — this
-    // is the ATTACK pose's own final visual clamp only.
-    if (!isGabriel && (e.attackState === 'impact' || e.attackState === 'counterAttack' || adamRecoveryClawHold)) {
-      const ADAM_ATTACK_FINAL_VISUAL_MULT = 0.50;
-      drawH *= ADAM_ATTACK_FINAL_VISUAL_MULT;
-    }
+    // (ADAM WINDUP->ATTACK size continuity, real-device report): the R23
+    // ADAM_ATTACK_FINAL_VISUAL_MULT=0.50 below (now removed) was tuned by
+    // looking at the ATTACK pose in isolation ("still reads too large even
+    // at 0.92"), never checked against the pose immediately BEFORE it in the
+    // real sequence. Measured on 844x390 before this fix: WINDUP-family
+    // (blink/telegraph/defense/counterApproach, the 0.75 cap above) all sit
+    // at a uniform 75.0% of viewport height; ATTACK-family (impact/
+    // counterAttack/adamRecoveryClawHold) was 92.0% before the 0.50 mult,
+    // 46.0% after it — i.e. the mult made ATTACK render SMALLER than the
+    // WINDUP pose that leads into it (75%->46%, a 1.63x shrink at the exact
+    // instant the attack lands), which is the root cause of "windup reads
+    // huge, attack reads tiny right after". Fix: delete the 0.50 mult
+    // entirely, letting ATTACK stay at the ADAM_ATTACK_MAX_DRAWH_FRAC=0.92
+    // cap above — a value already independently real-device-measured and
+    // confirmed correct in an earlier round (see "R16 ADAM REVIEW" comment
+    // above: "measured 92% of a 390px mobile viewport, ~2.0x player height —
+    // deliberately more dramatic... matching ADAM's role as the heavier
+    // final-boss encounter"), not a newly-guessed number. This restores a
+    // smooth 75%->92% (1.23x) WINDUP->ATTACK escalation — consistent with
+    // GABRIEL's own already-shipped WINDUP->ATTACK ratio for the identical
+    // transition (GABRIEL_WINDUP_MAX_DRAWH_FRAC=0.62 ->
+    // GABRIEL_ATTACK_MAX_DRAWH_FRAC=0.72, a 1.16x rise) rather than a
+    // guessed ratio of its own. As a side effect this also makes
+    // adamRecoveryClawHold consistent with plain 'recovery' (both now 92%,
+    // previously 46% vs 92% — the same single-cause fix, not a second
+    // change). worldZ/attack distance/timing/damage/WINDUP/NORMAL/DEFENSE
+    // sizing are all untouched — this is the ATTACK pose's own final visual
+    // size only.
     const aspect = imgReady(img) ? img.naturalWidth / img.naturalHeight : 0.72;
     const drawW = drawH * aspect;
     const closeT = Math.max(0, Math.min(1, (distNorm - 0.5) / 0.5));
@@ -11455,14 +11592,17 @@ function updateGabrielAdamReaim(now) {
   // follow-up hit — legible as "GABRIEL/ADAM unfairly tanky" specifically
   // for FOCUS/auto-aim play, not a MANUAL-aim camping exploit (which is
   // what this system was actually built to prevent — see the item-30
-  // comment this replaces). FOCUS already has its own real cost
-  // (FOCUS_DRAIN_PER_SEC depletes it while held, and it only recovers while
-  // released) which independently rate-limits sustained auto-aim damage, so
-  // while auto-aim is active the "must have moved away since the last hit"
-  // clause is bypassed — only the elapsed-time gate and the current-hit
-  // check still apply. MANUAL aim is completely unaffected: it still must
-  // move away and back, exactly as before. The re-arm system itself is
-  // intentionally kept, not removed, per spec.
+  // comment this replaces). AREA C ROUND: FOCUS/AUTO AIM's own real cost is
+  // now a fixed AUTO_AIM_DURATION_MS window per activation plus a mandatory
+  // ~5s FOCUS recharge before the NEXT activation can ever begin (see
+  // updatePlayer()'s own FOCUS block) — a bounded-burst cost in place of
+  // the old continuous per-frame drain, but still a real, independent rate
+  // limit on sustained auto-aim damage — so while auto-aim is active the
+  // "must have moved away since the last hit" clause is still correctly
+  // bypassed — only the elapsed-time gate and the current-hit check still
+  // apply. MANUAL aim is completely unaffected: it still must move away and
+  // back, exactly as before. The re-arm system itself is intentionally
+  // kept, not removed, per spec.
   const reaimSatisfied = p.autoAimActive || e.aimMovedAwaySinceHit;
   e.damageAimArmed = elapsedOk && reaimSatisfied && isAimOnEffectiveHit();
 }
@@ -14345,6 +14485,13 @@ function updateHud() {
   const pct = p.infiniteLife ? 100 : Math.round((p.hp / PLAYER_MAX_HP) * 100);
   if (pct !== p.lastHpFillPct) { hpFillEl.style.width = pct + '%'; p.lastHpFillPct = pct; }
 
+  // 3-LIFE SYSTEM: dirty-checked "x3" text, same pattern as every other
+  // HUD field in this function.
+  if (lifeCountEl && p.lifeCount !== p.lastLifeCountShown) {
+    lifeCountEl.textContent = '×' + p.lifeCount;
+    p.lastLifeCountShown = p.lifeCount;
+  }
+
   // RUN FLOW: DISTANCE TO EXIT — persistent from game start through
   // ESCAPE_COMPLETE (spec section 12), dirty-checked like every other HUD
   // field here.
@@ -14486,9 +14633,21 @@ function updateHud() {
     if (enemyName !== e.lastNameText) { enemyNameEl.textContent = enemyName; e.lastNameText = enemyName; }
   }
 
-  // PART 17: FOCUS gauge.
+  // PART 17 (AREA C ROUND rewrite): FOCUS gauge, now also conveying
+  // charging/full/auto-aim-active states (spec section 45's "must clearly
+  // convey charging/full/auto-aim-active states" requirement) via a CSS
+  // class on the existing #focus-hud + the existing #focus-label text
+  // swapping to "AUTO AIM" while active — the exact same label-swap
+  // technique the HP gauge's own "LIFE ∞" state above already uses, no new
+  // HUD element added.
   const focusPct = Math.round((p.focus / FOCUS_MAX) * 100);
   if (focusPct !== p.lastFocusFillPct) { focusFillEl.style.width = focusPct + '%'; p.lastFocusFillPct = focusPct; }
+  const focusState = p.autoAimActive ? 'active' : (p.focus >= FOCUS_MAX - 0.001 ? 'full' : 'charging');
+  if (focusState !== p.lastFocusState) {
+    if (focusHudEl) focusHudEl.className = 'focus-state-' + focusState;
+    if (focusLabelEl) focusLabelEl.textContent = focusState === 'active' ? 'AUTO AIM' : 'FOCUS';
+    p.lastFocusState = focusState;
+  }
 }
 
 // 9TH ROUND (item 37): ESCAPE-exclusive enemy pursuit oscillation — see the
@@ -15881,6 +16040,18 @@ function continueRun(now) {
   const r = state.run;
   r.continueCount++;
   state.player.hp = PLAYER_MAX_HP;
+  // 3-LIFE SYSTEM: CONTINUE only ever runs after p.lifeCount has already
+  // hit 0 (see frame()'s own LIFE-consumption block, which intercepts
+  // every earlier HP<=0 before GAME OVER can fire) — so without this line
+  // lifeCount would stay permanently at 0 for the rest of the run after the
+  // FIRST GAME OVER. CONTINUE's own existing semantics already treat this
+  // as "a fresh full-strength attempt at the SAME encounter" (it refills
+  // HP to PLAYER_MAX_HP on the line above and restarts the encounter via
+  // beginCombatIntro() below); resetting lifeCount to its own NEW-GAME
+  // value (3, the same constant state.player's own initializer uses — not
+  // a new/invented number) here is a direct, symmetric extension of that
+  // exact same "fresh attempt" reset, not a separate new rule.
+  state.player.lifeCount = 3;
   hideGameOverScreen();
   hideRunBanner();
   r.gameOverTriggered = false;
@@ -15908,6 +16079,9 @@ function continueEscapeRun(now) {
   const r = state.run;
   r.continueCount++;
   state.player.hp = PLAYER_MAX_HP;
+  // 3-LIFE SYSTEM: same reasoning as continueRun()'s own identical line —
+  // see its comment.
+  state.player.lifeCount = 3;
   hideGameOverScreen();
   hideRunBanner();
   r.gameOverTriggered = false;
@@ -16247,6 +16421,29 @@ function frame(ts) {
     // in, this fires the same way. Guarded so it can only ever fire once
     // per run (never re-fires once RESULT/ENDING/GAME_OVER already owns
     // the phase).
+    // 3-LIFE SYSTEM (spec sections 8-12, 32, 50, 62, 71-73): intercepts the
+    // SAME HP<=0 condition the GAME OVER check right below already reads,
+    // strictly BEFORE it. While p.lifeCount>1 remain, one life is consumed
+    // and HP is refilled to full IN PLACE — nothing else is touched (no
+    // beginCombatIntro()/beginEscapeStretch() re-entry like continueRun()/
+    // continueEscapeRun() use for the GAME-OVER-screen CONTINUE flow below;
+    // those reset the encounter, which is exactly what LIFE loss must NOT
+    // do — see their own comments). enemy.hp/route/score/
+    // state.run.continueCount are therefore never touched by this block:
+    // it writes only p.lifeCount and p.hp, so the CURRENT encounter simply
+    // continues on the very same frame. Refilling p.hp here makes this
+    // naturally exactly-once per death event — the very next line's
+    // condition (and every later frame's) already reads p.hp>0, so it can
+    // never double-fire across multiple HP<=0 frames. Once lifeCount
+    // reaches 0, this block's own `> 1` guard stops matching and HP<=0
+    // falls through to the existing, unmodified triggerGameOver() call
+    // right below, connecting to the existing GAME OVER architecture only
+    // on the LAST life.
+    if (state.player.hp <= 0 && state.player.lifeCount > 1 && state.run.phase !== 'GAME_OVER' && state.run.phase !== 'ENDING' && state.run.phase !== 'RESULT') {
+      state.player.lifeCount--;
+      state.player.hp = PLAYER_MAX_HP;
+      if (DEBUG_MODE) r10DebugLog('LIFE LOST -> ' + state.player.lifeCount + ' remaining, HP refilled to ' + PLAYER_MAX_HP + ', encounter continues unchanged');
+    }
     if (state.player.hp <= 0 && state.run.phase !== 'GAME_OVER' && state.run.phase !== 'ENDING' && state.run.phase !== 'RESULT') {
       triggerGameOver(ts, 'PLAYER_HP_ZERO');
     }
@@ -16677,6 +16874,9 @@ window.__darkoutTps = {
   // only.
   ESCAPE_DASH_SCALE_PULSE_DECAY_RATE, ESCAPE_DASH_BLINK_CYCLES,
   ESCAPE_ATTACK_FREQ_MULT, LIGHT_MOVE_SPEED_PX_S, updatePlayer,
+  // AREA C ROUND: FOCUS/AUTO AIM charge-and-activate constants — exposed
+  // for automated testing only.
+  FOCUS_MAX, FOCUS_RECOVER_PER_SEC, AUTO_AIM_APPROACH_RATE, AUTO_AIM_DURATION_MS,
   // 14TH ROUND: COMBAT autonomous idle-approach, chain-explosion, exploded
   // BARREL SHADOW draw-order, DEBUG log de-spam — exposed for automated
   // testing only.
