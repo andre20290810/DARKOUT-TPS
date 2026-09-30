@@ -1265,6 +1265,26 @@ const GAMEPAD_TRIGGER_THRESHOLD = 0.5;
 // as real input (this is the same class of bug ACTION-GAME's own gamepad
 // work already had to solve — see that project's "settle window" fix).
 const GAMEPAD_SETTLE_MS = 350;
+// DARK OUT 2 ROUND (spec section 10: "MODE SELECTでGamepad決定操作が実機で
+// 依然として効かない" — fresh root-cause pass, NOT assuming the prior
+// settle-window fix already covers this): how long the adopted pad may
+// report connected:false / be entirely missing from navigator.getGamepads()
+// before pollGamepad() treats it as a REAL disconnect and forces full
+// re-adoption (which resets prevButtons to [] and re-arms a fresh
+// GAMEPAD_SETTLE_MS window — see this constant's own use site). A real
+// Bluetooth "WIRELESS CONTROLLER" is well documented to report brief,
+// single-poll connection blips under normal use (RF interference, power
+// save polling gaps) that a wired/simulated pad never produces — previously
+// ANY single blip immediately nulled state.gamepadIndex and wiped
+// prevButtons/re-armed settle, so a confirm press unlucky enough to
+// straddle one of these blips could be silently discarded even though the
+// SAME settle-window carve-out this round's predecessor already fixed was
+// working exactly as designed for the one-time adoption race it targeted.
+// This is a structurally different, ongoing-churn bug, not a duplicate of
+// that fix — reproducible only with a real flaky wireless connection, which
+// is exactly why no prior Playwright pass (always a stable simulated/wired
+// pad) could have caught it.
+const GAMEPAD_DROPOUT_GRACE_MS = 500;
 // GAMESIR NOVA LITE 2 REAR-BUTTON SUPPORT: rear-left/rear-right must behave
 // as a pure ALIAS of physical LB(4)/RB(5) — never a separate action — per
 // explicit spec ("do NOT guess Web Gamepad API button indices... build a
@@ -1758,6 +1778,21 @@ const GABRIEL_ESCAPE_ATTACK_HOLD_MS = 420;
 // COMBAT-only ("COMBAT MODEでADAMが攻撃した際").
 const CLAW_COMBAT_ATTACK_HOLD_MS = CLAW_SWING_MS + 300;
 const CLAW_COOLDOWN_MS = 1200;  // unchanged from the old cooldown duration
+// DARK OUT 2 ROUND (spec section 8): the ONE new value this round's spec
+// explicitly pre-authorizes — the fixed gap between each of the 3 hits in
+// the new HP<=50% "attack->return->attack->return->attack->return" combo
+// (see the 'impact'->'recovery' and 'recovery'->next-state transitions in
+// updateEnemy() for how this is actually used: it replaces CLAW_RECOVERY_MS
+// as the 'recovery'/return duration ONLY between combo hits, never for the
+// combo's final return or for an ordinary single-hit attack). Written as an
+// alias of CLAW_COOLDOWN_MS just above (already exactly 1200ms, a
+// completely unrelated post-sequence idle-cooldown timer) rather than a
+// fresh literal, since the two genuinely happen to share the same duration —
+// per spec's own "既存の値の再利用を優先" instruction, reusing the existing
+// constant's value here (via a distinctly-named alias, so the two remain
+// independently tunable/readable for their very different roles) goes
+// further than just writing "1200" a second time.
+const CLAW_COMBO_RETURN_MS = CLAW_COOLDOWN_MS;
 const CLAW_DAMAGE = 20;         // unchanged value, now a named constant
 // Real lateral reach at the swing instant — a bit under STRAFE_DASH_DISTANCE_PX
 // (100px) so a single, well-timed DASH reliably clears it, matching spec
@@ -4244,6 +4279,12 @@ const state = {
 
   gamepadConnected: false,
   gamepadIndex: null,
+  // DARK OUT 2 ROUND (spec section 10, fresh root-cause pass): timestamp of
+  // the last poll where the adopted pad genuinely reported connected:true —
+  // see pollGamepad()'s own comment at its READ of this field for the full
+  // story (a transient Bluetooth drop-out on a real WIRELESS CONTROLLER
+  // no longer immediately forces full re-adoption).
+  gamepadLastSeenAt: 0,
   prevButtons: [],
   // 5TH ROUND: settle window state — see GAMEPAD_SETTLE_MS above.
   // gamepadSettleUntil is a timestamp; while now < this, pollGamepad()
@@ -5031,10 +5072,33 @@ function pollGamepad(now) {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   let gp = null;
   if (state.gamepadIndex !== null) {
-    gp = pads[state.gamepadIndex] || null;
-    if (!gp || !gp.connected) { gp = null; state.gamepadIndex = null; }
+    const candidateAtIndex = pads[state.gamepadIndex] || null;
+    if (candidateAtIndex && candidateAtIndex.connected) {
+      gp = candidateAtIndex;
+      state.gamepadLastSeenAt = now || 0;
+    } else if ((now || 0) - state.gamepadLastSeenAt < GAMEPAD_DROPOUT_GRACE_MS) {
+      // DARK OUT 2 ROUND (spec section 10): within the grace window — treat
+      // this as a transient blip, not a real disconnect. gp stays null for
+      // THIS poll only (no button/axis reads possible while the pad is
+      // genuinely absent from the array), but state.gamepadIndex/
+      // prevButtons/gamepadSettleUntil are all left completely untouched,
+      // so the very next successful poll picks up exactly where input left
+      // off — no forced re-adoption, no wiped prevButtons, no fresh settle
+      // window discarding whatever the player was mid-press on. Falls
+      // through to `if (!gp)` below, which — since gamepadIndex is still
+      // set — is skipped (see its own condition), so this poll simply
+      // returns neutral input for one frame via the existing `if (gp)`
+      // gate further down, identical in effect to one dropped frame of
+      // input, never a full re-sync.
+    } else {
+      // Missing/disconnected for longer than the grace window — a genuine
+      // disconnect (or this index was never real to begin with). Same
+      // behavior as before this round: drop it and let the block below
+      // search for a replacement.
+      state.gamepadIndex = null;
+    }
   }
-  if (!gp) {
+  if (gp === null && state.gamepadIndex === null) {
     // 5TH ROUND ("複数Gamepadの誤認識" investigation): previously this
     // just grabbed the FIRST connected pad index, so a spurious/ghost
     // gamepad entry (a known real phenomenon on some browser/OS combos —
@@ -5061,6 +5125,7 @@ function pollGamepad(now) {
       // the instant settle expires.
       state.gamepadSettleUntil = (now || 0) + GAMEPAD_SETTLE_MS;
       state.prevButtons = [];
+      state.gamepadLastSeenAt = now || 0;
       console.log('[gamepad] adopted index', candidateIndex, 'id=', candidate.id, 'mapping=', candidate.mapping || '(non-standard)', 'axes=', candidate.axes.length, 'buttons=', candidate.buttons.length);
       if (DEBUG_MODE) r10DebugLog('GAMEPAD DETECTED: idx=' + candidateIndex + ' id=' + (candidate.id || '?').slice(0, 24));
       // 5TH ROUND ("スティックが効かない" investigation): LEFT STICK/RIGHT
@@ -7540,6 +7605,25 @@ function updateEscapeCollapse(dt, now, jumpPressed) {
 // only the atmospheric half of it. Never fires during a boss's own
 // 'impact' resolution (same soft anti-stacking guard COLLAPSE already
 // uses), and never damages the player — pure visual/atmosphere.
+// DARK OUT 2 ROUND (spec section 7: "爪攻撃中は瓦礫を降らせない"): a claw
+// attack's real 予備動作(windup)〜着地〜combo-return sequence is exactly
+// 'telegraph' (the windup tell) -> 'impact' (the swing landing) ->
+// 'recovery' (the return/retreat motion) — and, once the HP<=50% 3-hit
+// combo exists (spec section 8), each of the 3 hits cycles back through
+// this SAME telegraph->impact->recovery run without ever passing through
+// 'cooldown'/'idle' in between (that's what makes it one uninterruptible
+// combo instead of 3 separate attacks) — so gating on exactly these three
+// states already covers BOTH the single-hit and the 3-hit-combo case
+// identically, with no combo-specific flag needed: the debris gate reads
+// the real state machine, never a timer. 'blink'/'approach' (the earlier
+// "something is coming"/close-the-distance beats, before any real windup)
+// and 'cooldown' (after the sequence has fully ended) are intentionally
+// excluded — debris is free to fall right up until telegraph genuinely
+// begins, and resumes as soon as the sequence is fully back to cooldown.
+function isClawAttackSequenceActive(e) {
+  return e.kind === 'claw' && (e.attackState === 'telegraph' || e.attackState === 'impact' || e.attackState === 'recovery');
+}
+
 function updateCombatQuake(dt, now) {
   const q = state.combatQuake;
   const elapsed = now - q.phaseStartedAt;
@@ -7555,7 +7639,10 @@ function updateCombatQuake(dt, now) {
     q.shakeX = 0; q.shakeY = 0; q.tiltAngle = 0;
   }
 
-  if ((q.phase === 'quake' || q.phase === 'debris') && Math.random() < dt * 9) {
+  // Spec section 7: only the FALLING DEBRIS pauses during a real claw-attack
+  // sequence — the shake/tilt envelope above is untouched (never asked to
+  // stop), matching "揺れ演出はそのまま、瓦礫の落下だけを止める".
+  if ((q.phase === 'quake' || q.phase === 'debris') && !isClawAttackSequenceActive(state.enemy) && Math.random() < dt * 9) {
     spawnParticle({
       type: 'quakeDebris',
       x: state.centerX + (Math.random() * 2 - 1) * state.cssW * 0.42,
@@ -7568,7 +7655,12 @@ function updateCombatQuake(dt, now) {
   }
 
   if (q.phase === 'idle') {
-    if (now >= q.nextEventAt && state.enemy.attackState !== 'impact') {
+    // Extends the pre-existing single-state ('impact'-only) start guard to
+    // the same full isClawAttackSequenceActive() window above, so a brand
+    // new quake also never spins up mid-attack only to sit uselessly with
+    // its own debris suppressed the whole time — same reasoning, same
+    // predicate, not a second mechanism.
+    if (now >= q.nextEventAt && !isClawAttackSequenceActive(state.enemy)) {
       q.phase = 'quake'; q.phaseStartedAt = now;
     }
   } else if (q.phase === 'quake') {
@@ -8263,9 +8355,32 @@ function spawnDroneWave2(now) {
   const dw = state.droneWave;
   dw.extra = [];
   for (let i = 0; i < DRONE_WAVE_EXTRA_COUNT; i++) {
+    const z = DRONE_WAVE_EXTRA_Z[i] || DRONE_WAVE_EXTRA_Z[DRONE_WAVE_EXTRA_Z.length - 1];
+    // DARK OUT 2 ROUND #2 ("COMBAT開始時、左端に巨大DRONE spriteがはみ出す"
+    // fix): screenX/screenY/scale used to start as bare placeholders
+    // (0,0,1) and were only ever corrected by updateDroneWave()'s own
+    // project()-based tween — but updateDroneWave() is called ONLY from
+    // frame()'s plain-COMBAT update branch, which updateRunFlow()'s own
+    // "a transition/intro phase owns this frame" gate explicitly SKIPS for
+    // the entire COMBAT_INTRO phase (see that gate's own comment). This
+    // spawn call happens INSIDE COMBAT_INTRO (updateCombatIntroPhase()'s
+    // enemy-reveal instant), while renderDroneWave() keeps drawing every
+    // frame regardless of phase — so for the whole ~700ms reveal beat
+    // (RUN_INTRO_REVEAL_MS) that follows, every extra rendered at literal
+    // screen (0,0) with scale=1 (DRONE_WORLD_HEIGHT=140px, i.e. 36% of a
+    // 390px mobile viewport height), centered on the origin and therefore
+    // half cropped off — exactly the reported "巨大なDRONEの一部が左端に
+    //残っている", reproduced directly via spawnDroneWave2()+
+    // renderDroneWave() with zero updateDroneWave() ticks in between.
+    // Fixed by computing the SAME real projection updateDroneWave() itself
+    // uses (project() at this extra's own lane/z, offset by the same
+    // fully-raised descend amount every extra starts at) right here at
+    // spawn time, so the very first render already shows it in its real,
+    // correctly-scaled position — no new formula, no new constants.
+    const initProj = project(0, CORRIDOR_FLOOR_Y - DRONE_WORLD_HEIGHT * 0.55, z);
     dw.extra.push({
       lane: 0,
-      z: DRONE_WAVE_EXTRA_Z[i] || DRONE_WAVE_EXTRA_Z[DRONE_WAVE_EXTRA_Z.length - 1],
+      z,
       patrolPhaseOffset: DRONE_WAVE_PATROL_PHASE_OFFSETS[i] || (i * 2.4),
       hp: DRONE_WAVE_HP,
       maxHp: DRONE_WAVE_HP,
@@ -8275,7 +8390,7 @@ function spawnDroneWave2(now) {
       nextIdleCheckAt: 0,
       lockX: 0, lockY: 0,
       fireFromX: 0, fireFromY: 0, fireToX: 0, fireToY: 0,
-      screenX: 0, screenY: 0, scale: 1,
+      screenX: initProj.x, screenY: initProj.y - DRONE_WAVE_DESCEND_DROP_PX, scale: initProj.scale,
       lastDamageHitAt: 0,
       deathUntil: 0,
       // 16TH ROUND (spec sections 2-6): sequential-combat redesign — this
@@ -9729,6 +9844,20 @@ function updateEnemyCore(dt, now) {
         // を使用" holds for the whole sequence, not just the render frame
         // it happened to be picked on.
         if (e.type === 'adam') e.adamAttackVariantIndex = Math.random() < 0.5 ? 0 : 1;
+        // DARK OUT 2 ROUND (spec section 8): rolled ONCE per attack instance,
+        // same lifecycle as adamAttackVariantIndex just above. HP<=50% reuses
+        // the EXACT SAME hpFrac<=0.5 predicate gabrielAdamApproachSpeed()
+        // already established for its own HP<50% speed boost (see that
+        // function's comment), rather than a second/different threshold —
+        // ADDS the new 3-hit combo alongside the existing single-hit attack
+        // (spec: "single/3-hitをランダムに選択... 常に3-hitに置き換えるわけ
+        // ではない"), 50/50 either way. HP>50% is unconditionally always
+        // single-hit (clawComboHitsPlanned=1), so nothing below this line
+        // changes for that case — same as before this round. Reset every
+        // attack instance so no stale combo state can leak between attacks.
+        const hpFracNow = e.maxHp > 0 ? e.hp / e.maxHp : 1;
+        e.clawComboHitsPlanned = (hpFracNow <= 0.5 && Math.random() < 0.5) ? 3 : 1;
+        e.clawComboHitIndex = 0;
       } else if (e.type === 'roid1' || e.type === 'roid2') {
         // 16TH ROUND PART S: replaces the old plain missile/sniper 45/55
         // pool for ROID1/ROID2 ONLY (drone/adamSphere keep the untouched
@@ -9879,6 +10008,12 @@ function updateEnemyCore(dt, now) {
           // recorded into DEBUG only.
           r10DebugLog('CLAW: ' + (dashInvincible ? 'AVOIDED (dash-invincible)' : 'MISS (out of range)'));
         }
+        // DARK OUT 2 ROUND (spec section 8): counts this real hit-test
+        // toward the combo's total — always runs (single-hit attacks just
+        // reach clawComboHitIndex===clawComboHitsPlanned===1 immediately, no
+        // behavior change for them), so damage-judgment/invincibility above
+        // is completely untouched either way.
+        e.clawComboHitIndex = (e.clawComboHitIndex || 0) + 1;
       }
     } else if (e.attackState === 'impact') {
       if (now >= e.attackUntil) {
@@ -9888,7 +10023,23 @@ function updateEnemyCore(dt, now) {
         // GABRIEL/ADAM to their mid "stalking" distance after an attack,
         // rather than leaving them parked at melee range forever.
         e.attackState = 'recovery';
-        e.attackUntil = now + CLAW_RECOVERY_MS;
+        // DARK OUT 2 ROUND (spec section 8): mid-combo (more hits still
+        // planned), the "return" between hits uses CLAW_COMBO_RETURN_MS
+        // (the pre-authorized 1.2s) instead of the ordinary CLAW_RECOVERY_MS
+        // — the combo's FINAL hit (or an ordinary single-hit attack, where
+        // clawComboHitIndex reaches clawComboHitsPlanned immediately above)
+        // keeps the original CLAW_RECOVERY_MS unchanged, so HP>50%/single-
+        // hit behavior is byte-for-byte identical to before this round.
+        const comboContinues = e.clawComboHitIndex < (e.clawComboHitsPlanned || 1);
+        // Tracked explicitly (not re-derived from the CLAW_RECOVERY_MS
+        // literal) since GABRIEL's own z-tween math below reads
+        // `e.attackUntil - <this recovery's real duration>` to find the
+        // instant 'recovery' began — with the combo now making that duration
+        // vary (CLAW_COMBO_RETURN_MS mid-combo, CLAW_RECOVERY_MS otherwise),
+        // hardcoding CLAW_RECOVERY_MS there would silently mis-time GABRIEL's
+        // return motion during a combo hit's 1.2s window.
+        e.clawRecoveryDurationMs = comboContinues ? CLAW_COMBO_RETURN_MS : CLAW_RECOVERY_MS;
+        e.attackUntil = now + e.clawRecoveryDurationMs;
         e.clawApproachStartZ = e.z;
         // 18TH ROUND (spec sections 13-17): ADAM-only grace window — see
         // the counterAttack branch's own comment for the full ROOT CAUSE
@@ -9925,9 +10076,34 @@ function updateEnemyCore(dt, now) {
       // push the target past the world's own far bound.
       const baseTargetZ = e.type === 'gabriel' ? GABRIEL_STALK_Z : ADAM_STALK_Z;
       const targetZ = clamp(baseTargetZ + e.clawDistanceBonusZ, 0, ENEMY_Z_MAX);
-      const tNorm = clamp(1 - (e.attackUntil - now) / CLAW_RECOVERY_MS, 0, 1);
-      const eased = 1 - Math.pow(1 - tNorm, 2);
-      e.z = e.clawApproachStartZ + (targetZ - e.clawApproachStartZ) * eased;
+      // DARK OUT 2 ROUND #2 ("かぎ爪攻撃画像が小さく・高く・遠く見える" fix):
+      // this tween used to run unconditionally from the very first
+      // 'recovery' frame, but computeEnemyDrawRect()'s adamRecoveryClawHold
+      // keeps showing the claw-strike sprite (attackVariants) for the first
+      // ADAM_RECOVERY_CLAW_HOLD_MS (160ms) of this SAME state, purely as a
+      // sprite-selection hold — it never froze e.z. With the eased curve
+      // below, 160ms out of CLAW_RECOVERY_MS(900) already covers ~32% of
+      // the full retreat, so ADAM was visibly shrinking/rising away toward
+      // ADAM_STALK_Z WHILE still showing the claw sprite — exactly the
+      // reported "claw attack image but small/high/far" (screenshot 2).
+      // ADAM-only (isGabriel excluded — GABRIEL has no equivalent hold
+      // field and its own formula below is untouched, mathematically
+      // identical to the original): z stays pinned at clawApproachStartZ
+      // (already ADAM_Z_MIN, same as 'impact') for the hold's own duration,
+      // then the SAME eased tween runs across the REMAINING time up to the
+      // existing e.attackUntil deadline — no new constants, reuses
+      // CLAW_RECOVERY_MS/ADAM_RECOVERY_CLAW_HOLD_MS(via clawSpriteHoldUntil)
+      // exactly as already defined.
+      const inAdamClawHold = e.type !== 'gabriel' && now < (e.clawSpriteHoldUntil || 0);
+      if (inAdamClawHold) {
+        e.z = e.clawApproachStartZ;
+      } else {
+        const tweenStartAt = e.type !== 'gabriel' ? e.clawSpriteHoldUntil : (e.attackUntil - (e.clawRecoveryDurationMs || CLAW_RECOVERY_MS));
+        const tweenDurationMs = Math.max(1, e.attackUntil - tweenStartAt);
+        const tNorm = clamp((now - tweenStartAt) / tweenDurationMs, 0, 1);
+        const eased = 1 - Math.pow(1 - tNorm, 2);
+        e.z = e.clawApproachStartZ + (targetZ - e.clawApproachStartZ) * eased;
+      }
       // (GABRIEL retreat RUN): 'recovery' is the genuinely-moving retreat window (e.z
       // tweens every frame above) — GABRIEL now shows the RUN cycle here
       // (see computeEnemyDrawRect()'s gabrielEscapeRunActive), so its frame
@@ -9948,8 +10124,29 @@ function updateEnemyCore(dt, now) {
       }
       if (now >= e.attackUntil) {
         e.z = targetZ;
-        e.attackState = 'cooldown';
-        e.attackUntil = now + CLAW_COOLDOWN_MS;
+        // DARK OUT 2 ROUND (spec section 8): mid-combo — loop straight back
+        // into 'approach' (skip 'blink'; already fighting, no new "something
+        // is coming" tell needed for hit 2/3) to close distance for the next
+        // hit, reusing the EXACT SAME field setup the idle->blink->approach
+        // transition above uses and the EXACT SAME approach->telegraph->
+        // impact path an ordinary attack takes — so every existing per-state
+        // image-selection/hit-test/invincibility/recovery-freeze rule (see
+        // this function's other comments) applies identically to every hit
+        // of the combo, not just the first. 'idle' — the ONLY state that
+        // ever rolls a brand new attack (see this block's very top) — is
+        // never revisited until the whole combo finishes, so no other attack
+        // command can interrupt mid-combo: a direct structural guarantee
+        // from reusing the existing state machine, not a separate lock/flag.
+        const comboContinues = e.clawComboHitIndex < (e.clawComboHitsPlanned || 1);
+        if (comboContinues) {
+          e.clawApproachStartZ = e.z;
+          e.clawApproachStartLane = e.lane;
+          e.attackState = 'approach';
+          e.attackUntil = now + CLAW_APPROACH_MS;
+        } else {
+          e.attackState = 'cooldown';
+          e.attackUntil = now + CLAW_COOLDOWN_MS;
+        }
       }
     } else if (e.attackState === 'cooldown') {
       if (now >= e.attackUntil) { e.attackState = 'idle'; e.nextIdleCheckAt = now + (900 + Math.random() * 1400) * enemyAttackFreqMult(e.type); }
@@ -10765,11 +10962,35 @@ function computeEnemyDrawRect() {
     // 'recovery' from this size cap too.
     const gabrielRetreatSizeContinuity = isGabriel
       && (e.attackState === 'recovery' || e.attackState === 'cooldown');
+    // DARK OUT 2 ROUND #2 ("かぎ爪攻撃直前に正面・翼展開のidle画像が表示される"
+    // fix — re-confirmed via real-device screenshot after the earlier
+    // cache-bust round did NOT resolve it): traced this ternary fresh rather
+    // than trusting the prior round's "already fully clamped" conclusion.
+    // ADAM's own attack sequence is idle(stalk) -> blink(first tell) ->
+    // approach(closing in) -> telegraph(windup/ready) -> impact(strike).
+    // 'blink'/'approach' were never in ANY branch above (GABRIEL exits
+    // earlier via gabrielEscapeRunFrame, which is isGabriel-gated — dead for
+    // ADAM), so both fell all the way through to the final `: set.idle` —
+    // the SAME plain standing/wings-spread pose 'idle' itself uses, at up
+    // to the 0.75 windup-family size cap (correctly clamped, so this was
+    // never a raw-size bug — it was ALWAYS the wrong sprite for these two
+    // states). Since 'approach' is the state that runs immediately before
+    // 'telegraph', showing the neutral idle pose there is exactly "the
+    // giant idle-looking image appears right before the attack". ADAM-only
+    // (isGabriel excluded — GABRIEL already uses its own escapeRun frame
+    // for these same states and is untouched): 'blink'/'approach' now join
+    // 'telegraph' on the SAME existing set.windup (claw-raised "ready")
+    // pose, giving a coherent alert->ready->strike progression instead of
+    // idle->[snap to ready]->strike. No new asset, no new size clamp — the
+    // existing 0.75 windup-family cap (ADAM_WINDUP_MAX_DRAWH_FRAC) already
+    // covers 'blink'/'approach' by attackState, independent of which image
+    // is drawn, so this is a sprite-selection-only change.
     const img = (!isGabriel && inAttackPose)
       ? ASSETS.adam.attackVariants[e.adamAttackVariantIndex]
       : (gabrielEscapeRunFrame ? gabrielEscapeRunFrame.img
         : (adamMovingWhileStaticPose ? set.idle
-        : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach' ? set.windup
+        : (e.attackState === 'telegraph' || e.attackState === 'defense' || e.attackState === 'counterApproach'
+          || (!isGabriel && (e.attackState === 'blink' || e.attackState === 'approach')) ? set.windup
         : ((e.attackState === 'impact' || e.attackState === 'counterAttack' || gabrielRetreatHoldingAttackSprite) ? set.release
         : (isGabriel && isWalking ? ASSETS.gabriel.walk[e.clawWalkFrame] : set.idle)))));
     const distNorm = 1 - (e.z - zMin) / (ENEMY_Z_MAX - zMin);
@@ -12826,6 +13047,15 @@ const BOSS_ATTACK_X_TRACK_STATES = { telegraph: true, counterApproach: true, imp
 // exactly what it always was.
 function renderBossAttackFullBody() {
   const e = state.enemy;
+  // DARK OUT 2 ROUND: GABRIEL's kneeling/defeat pose gets the exact same
+  // post-mask redraw treatment as an active CLAW/ROID attack pose below —
+  // see drawGabrielKneelingPose()'s own comment for the full root cause.
+  // Checked first/separately since 'kneeling' is its own deathState value,
+  // not covered by the 'alive'-only gate the attack-pose check below uses.
+  if (e.deathState === 'kneeling') {
+    drawGabrielKneelingPose();
+    return;
+  }
   if (e.deathState !== 'alive') return;
   const isClawAttacking = e.kind === 'claw' && BOSS_ATTACK_ACTIVE_STATES[e.attackState];
   const isRoidAttacking = (e.type === 'roid1' || e.type === 'roid2') && isRoidInAttackSequence(e, performance.now());
@@ -13500,6 +13730,40 @@ function renderEscapePlayer() {
   ctx.restore();
 }
 
+// DARK OUT 2 ROUND ("GABRIELのkneeling/倒れ演出ポーズがSPOTLIGHT範囲外で
+// 暗闇に隠れて見える" fix): drawGabrielKneelingPose() itself is unchanged
+// (still the exact anchor-based draw renderEnemy() always used) — only
+// extracted to a shared function so the SAME draw call can also run a
+// second time, post-mask, from renderBossAttackFullBody() below (see that
+// function's own comment for why: this is the identical fix pattern already
+// established there for CLAW/ROID attack poses, never a new mechanism).
+// Root cause confirmed by reading the render pass order in frame(): a
+// COMBAT-mode renderEnemy() call (which draws this pose) runs BEFORE
+// renderFlashlightMask(), same as every other ordinary world sprite — so
+// whichever part of GABRIEL's kneeling silhouette fell outside the
+// currently-lit SPOTLIGHT circle got darkened/hidden by the mask's own
+// ~0.90-alpha overlay, exactly the same bug class already fixed for
+// telegraphs/blasts/boss-attack-poses (see their own comments), NOT a
+// z-order problem — z-order (this draw always runs before renderPlayer(),
+// preserving "GABRIEL behind the player" depth) is completely untouched by
+// this fix and must stay that way per spec ("z-orderを最前面にする方法は
+// 明示的に禁止"). The fix removes only the darkness MASK for this pose,
+// never reorders anything relative to the player.
+function drawGabrielKneelingPose() {
+  const e = state.enemy;
+  const frame = ASSETS.gabriel.cinematicPose;
+  if (!imgReady(frame.img) || !e.deathPoseAnchor) return;
+  const anchor = e.deathPoseAnchor;
+  const bodyScale = computeBodyVisualScale(frame, anchor.bodyHeightPx);
+  const drawW = frame.img.naturalWidth * bodyScale;
+  const drawH = frame.img.naturalHeight * bodyScale;
+  const dx = anchor.cx - frame.bodyCenterXFrac * drawW;
+  const dy = anchor.bottomY - frame.bodyBottomFrac * drawH;
+  ctx.save();
+  ctx.drawImage(frame.img, dx, dy, drawW, drawH);
+  ctx.restore();
+}
+
 function renderEnemy(theme) {
   const e = state.enemy;
   if (e.deathState === 'gone') return; // fully defeated — nothing left to draw
@@ -13516,18 +13780,7 @@ function renderEnemy(theme) {
   // ratio. No fade, no filter, no crop — the pose stays fully visible for
   // the whole DEATH_KNEEL_MS hold, per spec ("その姿勢を表示").
   if (e.deathState === 'kneeling') {
-    const frame = ASSETS.gabriel.cinematicPose;
-    if (imgReady(frame.img) && e.deathPoseAnchor) {
-      const anchor = e.deathPoseAnchor;
-      const bodyScale = computeBodyVisualScale(frame, anchor.bodyHeightPx);
-      const drawW = frame.img.naturalWidth * bodyScale;
-      const drawH = frame.img.naturalHeight * bodyScale;
-      const dx = anchor.cx - frame.bodyCenterXFrac * drawW;
-      const dy = anchor.bottomY - frame.bodyBottomFrac * drawH;
-      ctx.save();
-      ctx.drawImage(frame.img, dx, dy, drawW, drawH);
-      ctx.restore();
-    }
+    drawGabrielKneelingPose();
     return;
   }
   const rect = computeEnemyDrawRect();
@@ -15467,7 +15720,25 @@ function beginCombatIntro(now, enemyType, isFinal, encounterRole) {
   r.encounterRole = encounterRole || null;
   setGameMode('combat'); // also correctly toggles body.escape-mode/gamemode-btn CSS
   setStageTheme('lab'); // corridor visual skin back to COMBAT's own stage — see setStageTheme()'s own comment
-  state.enemy.hp = 0; // hidden — computeEnemyDrawRect()/renderEnemy() draw nothing meaningful for a dead-on-arrival enemy, and updateEnemy() itself is never called while this phase owns the frame
+  state.enemy.hp = 0; // dead-on-arrival — updateEnemy() itself is never called while this phase owns the frame
+  // DARK OUT 2 ROUND #2 ("ADAM SPHERE→LLOYD切替時にADAM SPHEREが残る" fix):
+  // the hp=0 line above was never actually what hides the outgoing enemy —
+  // renderEnemy() gates on e.deathState==='gone' only (`if (e.deathState
+  // === 'gone') return;`), never on hp. An ESCAPE pursuer that was EVADED
+  // (SURVIVE timer expiry, e.g. ADAM SPHERE's own COMMON_ESCAPE_ADAM_SPHERE
+  // step) was never "defeated", so its deathState was still 'alive' the
+  // instant this function ran — meaning renderEnemy() kept drawing it, at
+  // its last real pose/position from the ESCAPE stretch, for this whole
+  // phase's ~2s empty-stage window (no overlay covers it there — the
+  // DISMOUNT_TRANSITION fade that precedes this phase has already finished
+  // by this point, and COMBAT_INTRO's own reveal overlay only activates
+  // once r.enemyRevealed flips true, later). Setting deathState here too
+  // makes the ALREADY-EXISTING 'gone' gate do what this function's own
+  // comment always claimed — no new hide mechanism, just correcting which
+  // field actually drives it. spawnEnemy() (called at the real reveal
+  // instant, below) already resets deathState back to 'alive' for the NEW
+  // enemy, so this is a same-frame-safe, self-clearing gap-fill.
+  state.enemy.deathState = 'gone';
   hideRunBanner();
   if (DEBUG_MODE) r10DebugLog('RUN FLOW: COMBAT_INTRO start, enemy=' + enemyType + ' final=' + r.isFinalCombat + ' role=' + r.encounterRole);
 }
@@ -16066,7 +16337,32 @@ function updateEndingPhase(now) {
   // never a large frozen-duration jump once resumed.
   if (state.paused) return;
   updateEndingScene(now);
-  const played = endingBgmAudioEl ? endingBgmAudioEl.currentTime : (now - state.run.phaseStartedAt) / 1000;
+  // DARK OUT 2 ROUND (spec section 9: "ENDINGが実機で全く開始しない" — root
+  // cause): `played` used to read ONLY endingBgmAudioEl.currentTime whenever
+  // the element existed at all, falling back to real elapsed time ONLY if
+  // the element was missing outright. currentTime never advances past 0 if
+  // .play() (called in beginEnding()) never actually starts real playback —
+  // exactly what real mobile browsers' autoplay-restriction policies commonly
+  // do to a NOT-yet-user-gestured second <audio> element (the ENDING track
+  // is a separate element from the main gameplay BGM, so an earlier TAP TO
+  // START gesture unlocking THAT element does not necessarily unlock this
+  // one on every device/browser) — a purely real-device failure mode no
+  // desktop/headless environment reproduces, matching this round's explicit
+  // "実機でのみ発生・前回のPlaywright確認を信頼しない" warning. With `played`
+  // stuck at 0 forever, updateEndingMessage()'s line-reveal thresholds
+  // (4.0/7.5/11.0/15.0s) and the RUN_ENDING_RESULT_GATE_SEC(60s) RESULT gate
+  // below both silently never fire — the reported "no ENDING text, no
+  // RESULT" — even though state.run.phase genuinely is 'ENDING' the whole
+  // time. Fix: fall back to the SAME real-elapsed-time formula the
+  // element-missing branch already used, but trigger it whenever the element
+  // isn't GENUINELY playing right now (.paused), not only when it's absent
+  // outright — one unified condition, reusing the existing fallback formula
+  // verbatim rather than inventing a second one. Whenever BGM really is
+  // advancing, `played` still reads its true currentTime exactly as before,
+  // preserving "実際の再生時間を演出時間として使う" for every device where
+  // playback succeeds.
+  const bgmActuallyPlaying = !!(endingBgmAudioEl && !endingBgmAudioEl.paused);
+  const played = bgmActuallyPlaying ? endingBgmAudioEl.currentTime : (now - state.run.phaseStartedAt) / 1000;
   // 21ST ROUND: driven by the SAME `played` value the 60s gate below uses,
   // so PAUSE (this whole function already returns early above, per its own
   // existing 18TH ROUND comment) freezes line reveals exactly like it
