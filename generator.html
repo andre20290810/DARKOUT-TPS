@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GGP Generator</title>
+<link rel="icon" type="image/png" sizes="32x32" href="assets/icon/favicon-32.png?v=1">
+<link rel="stylesheet" href="ggp/generator.css?v=1">
+</head>
+<body>
+<div class="gen">
+  <header class="gen-head">
+    <div class="gen-brand">GGP <span>Generator v0.1</span></div>
+    <div class="gen-engine">ENGINE: DARK OUT 2</div>
+  </header>
+
+  <main class="gen-main">
+    <form id="gen-form" class="gen-panel" autocomplete="off">
+      <section class="gen-sec">
+        <h2>BASIC</h2>
+        <label class="gen-field">
+          <span>Game Title</span>
+          <input id="f-title" type="text" placeholder="DARK OUT 2" maxlength="40">
+        </label>
+      </section>
+
+      <section class="gen-sec">
+        <h2>PLAYER</h2>
+        <div class="gen-field">
+          <span>Player Image</span>
+          <div class="gen-file" data-kind="image">
+            <input id="f-player-image" type="file" accept="image/*">
+            <img class="gen-thumb" alt="" hidden>
+            <button type="button" class="gen-clear" hidden>Use original</button>
+          </div>
+        </div>
+        <label class="gen-field">
+          <span>Player HP</span>
+          <input id="f-player-hp" type="number" min="1" step="1" data-default="300">
+        </label>
+      </section>
+
+      <section class="gen-sec">
+        <h2>ENEMY</h2>
+        <div class="gen-field">
+          <span>Enemy Image</span>
+          <div class="gen-file" data-kind="image">
+            <input id="f-enemy-image" type="file" accept="image/*">
+            <img class="gen-thumb" alt="" hidden>
+            <button type="button" class="gen-clear" hidden>Use original</button>
+          </div>
+        </div>
+        <label class="gen-field">
+          <span>Applies to</span>
+          <select id="f-enemy-targets">
+            <option value="all">All enemies</option>
+            <option value="drone">DRONE</option>
+            <option value="adamSphere">ADAM SPHERE</option>
+            <option value="roid1">ROID 1</option>
+            <option value="roid2">ROID 2</option>
+            <option value="gabriel">GABRIEL</option>
+            <option value="adam">ADAM</option>
+          </select>
+        </label>
+        <label class="gen-field">
+          <span>Enemy HP</span>
+          <input id="f-enemy-hp" type="number" min="1" step="1" data-default="300">
+          <small>ROID 1/2 get double this, as in the original.</small>
+        </label>
+        <label class="gen-field">
+          <span>Enemy Speed (x)</span>
+          <input id="f-enemy-speed" type="number" min="0.1" step="0.1" data-default="1">
+          <small>Multiplies the enemy approach speed in COMBAT.</small>
+        </label>
+      </section>
+
+      <section class="gen-sec">
+        <h2>STAGE</h2>
+        <div class="gen-field">
+          <span>Background Image</span>
+          <div class="gen-file" data-kind="image">
+            <input id="f-stage-bg" type="file" accept="image/*">
+            <img class="gen-thumb" alt="" hidden>
+            <button type="button" class="gen-clear" hidden>Use original</button>
+          </div>
+        </div>
+        <label class="gen-field">
+          <span>Time Limit (sec)</span>
+          <input id="f-stage-time" type="number" min="1" step="1" data-default="90">
+          <small>ESCAPE stage length. COMBAT has no time limit in DARK OUT 2.</small>
+        </label>
+      </section>
+
+      <section class="gen-sec">
+        <h2>AUDIO</h2>
+        <div class="gen-field">
+          <span>Battle BGM</span>
+          <div class="gen-file" data-kind="audio">
+            <input id="f-audio-battle" type="file" accept="audio/*">
+            <span class="gen-filename" hidden></span>
+            <button type="button" class="gen-clear" hidden>Use original</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="gen-actions">
+        <button type="submit" id="preview-btn" class="gen-primary">PREVIEW</button>
+        <button type="button" id="reset-btn">Reset to default</button>
+      </div>
+    </form>
+
+    <section class="gen-stage">
+      <div class="gen-frame-wrap">
+        <iframe id="preview-frame" title="Game preview" allow="autoplay; fullscreen; gamepad"></iframe>
+        <div id="preview-empty" class="gen-frame-empty">Press PREVIEW to start the game with these settings.</div>
+      </div>
+      <div class="gen-status" id="preview-status" role="status">Not started</div>
+      <details class="gen-json">
+        <summary>game config (sent to the engine)</summary>
+        <pre id="config-json"></pre>
+      </details>
+    </section>
+  </main>
+</div>
+<script src="ggp/generator.js?v=1"></script>
+</body>
+</html>

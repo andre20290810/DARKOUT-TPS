@@ -1,0 +1,67 @@
+/* GGP Generator v0.1 — dark single-theme tool UI, matched to DARK OUT 2's
+   own black/HUD look. Layout: settings column on the left, 16:9 preview on
+   the right; stacks to one column on narrow screens. */
+:root {
+  --bg: #07090b;
+  --panel: #0e1215;
+  --line: #1f272d;
+  --fg: #d7dee3;
+  --muted: #7d8a93;
+  --accent: #f0a640;
+  --accent-ink: #120c03;
+  --field: #13191d;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
+.gen { min-height: 100vh; display: flex; flex-direction: column; padding-inline: 16px; }
+.gen-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding-block: 14px; border-bottom: 1px solid var(--line);
+}
+.gen-brand { font: 700 18px/1 var(--mono); letter-spacing: 0.12em; color: var(--accent); }
+.gen-brand span { color: var(--fg); font-weight: 400; letter-spacing: 0.04em; margin-left: 6px; }
+.gen-engine { font: 12px var(--mono); letter-spacing: 0.1em; color: var(--muted); }
+
+.gen-main {
+  flex: 1; display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  gap: 20px; padding-block: 16px;
+}
+@media (max-width: 860px) { .gen-main { grid-template-columns: minmax(0, 1fr); } }
+
+.gen-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.gen-sec { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.gen-sec h2 { margin: 0; font: 700 11px/1 var(--mono); letter-spacing: 0.18em; color: var(--muted); }
+.gen-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.gen-field > span { font-size: 12px; color: var(--fg); }
+.gen-field small { color: var(--muted); font-size: 11px; }
+.gen-field input[type=text], .gen-field input[type=number], .gen-field select {
+  width: 100%; background: var(--field); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 7px 9px; font: 14px var(--mono); font-variant-numeric: tabular-nums;
+}
+.gen-file { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.gen-file input[type=file] { max-width: 100%; color: var(--muted); font-size: 12px; }
+.gen-thumb { width: 56px; height: 56px; object-fit: contain; background: #000; border: 1px solid var(--line); border-radius: 4px; }
+.gen-filename { font: 12px var(--mono); color: var(--fg); overflow-wrap: anywhere; }
+
+button { font: 600 12px var(--mono); letter-spacing: 0.08em; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--field); color: var(--fg); padding: 7px 10px; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gen-clear { padding: 4px 8px; font-size: 11px; }
+.gen-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.gen-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 11px 22px; font-size: 14px; letter-spacing: 0.2em; }
+.gen-primary:hover { filter: brightness(1.08); border-color: var(--accent); }
+
+.gen-stage { display: flex; flex-direction: column; gap: 10px; min-width: 0; align-self: start; position: sticky; top: 12px; }
+@media (max-width: 860px) { .gen-stage { position: static; } }
+.gen-frame-wrap { position: relative; width: 100%; aspect-ratio: 16 / 9; max-width: 100%; background: #000; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.gen-frame-wrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.gen-frame-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--muted); font: 13px var(--mono); }
+.gen-status { font: 12px var(--mono); color: var(--muted); }
+.gen-json { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; min-width: 0; }
+.gen-json summary { cursor: pointer; font: 12px var(--mono); color: var(--muted); }
+.gen-json pre { margin: 8px 0 0; overflow: auto; max-height: 40vh; font: 12px/1.5 var(--mono); color: var(--fg); }

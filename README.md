@@ -40,3 +40,35 @@ Early prototype. Verifies the core interaction loop (movement, dash,
 flashlight/aim split, fire/reload, stealth/flash, one enemy with
 distance-based scale and a telegraphed attack, three corridor themes) is
 playable and holds a stable frame rate. Not a full game.
+
+## GGP Generator v0.1
+
+DARK OUT 2 can be re-skinned and re-balanced from one config file without
+touching the engine code.
+
+- `game.json`: the game config. `ggp/ggp-boot.js` reads it, exposes it as
+  `window.GGP`, then loads `game.js`. `null` image fields keep the original art.
+- `generator.html`: upload player/enemy/background images and a battle BGM,
+  set HP/speed/time limit, press PREVIEW to play the result in the frame.
+  Uploads stay in the browser only. Needs an http server (not `file://`).
+
+```
+python3 -m http.server 8000
+# game:      http://localhost:8000/index.html      (uses game.json)
+# generator: http://localhost:8000/generator.html
+```
+
+| game.json field | engine value it sets |
+|---|---|
+| `title` | page title + MODE SELECT title (`null` = unchanged) |
+| `player.image` | every frame in `assets/player/` and `assets/player_escape/` |
+| `player.hp` | `PLAYER_MAX_HP` (default 300) |
+| `enemy.image` + `enemy.imageTargets` | every frame of the listed enemies (drone, roid1, roid2, gabriel, adamSphere, adam) |
+| `enemy.hp` | `ENEMY_MAX_HP` (default 300; ROID 1/2 stay at 2x) |
+| `enemy.speedMultiplier` | x `ENEMY_IDLE_APPROACH_SPEED` and `CLAW_STALK_SPEED` (default 1) |
+| `stage.background` | backdrop painted behind the corridor |
+| `stage.escapeTimeLimitSec` | `ESCAPE_TIME_LIMIT_SEC` (default 90) |
+| `audio.battle` | `#bgm-audio` source |
+
+Replacement images are fitted into each original frame's own canvas size and
+measured body box, so sprite scaling and anchoring stay as tuned.

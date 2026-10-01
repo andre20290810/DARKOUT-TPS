@@ -6,6 +6,24 @@
  * Standalone project — does not read or write ACTION-GAME in any way.
  */
 
+// GGP (Game Generation Platform) v0.1: game-specific content (title, a few
+// balance numbers, character/stage art, BGM) is read from ONE resolved game
+// config (game.json, or the Generator's preview config) that
+// ggp/ggp-boot.js puts on window.GGP before this file runs. Everything
+// below only ever reads it through these three helpers. Without a GGP
+// object (game.js loaded on its own) every helper returns the built-in
+// value passed to it, so the game behaves exactly as before GGP existed.
+const GGP = (typeof window !== 'undefined' && window.GGP) || null;
+function ggpNum(path, builtIn) {
+  return GGP && typeof GGP.num === 'function' ? GGP.num(path, builtIn) : builtIn;
+}
+function ggpAsset(src) {
+  return GGP && typeof GGP.resolveAsset === 'function' ? GGP.resolveAsset(src) : src;
+}
+function ggpIsOverridden(src) {
+  return !!GGP && typeof GGP.fitOverride === 'function' && ggpAsset(src) !== src;
+}
+
 // 11TH ROUND (spec sections 40-41): manually-maintained build identifier,
 // shown only in the DEBUG MODE panel (?debug=1) and its COPY DEBUG
 // clipboard text (see r10UpdateDebugPanel()/r10FormatDebugText()) — lets a
@@ -510,7 +528,7 @@ const ESCAPE_MOVE_CURVE_POWER = 1.7;
 // balance number. Counts down real elapsed seconds (state.escape.timeLeftSec,
 // reset by setGameMode() whenever ESCAPE MODE is (re-)entered), reaching 0
 // triggers the shared CLEAR SEQUENCE (see triggerClearSequence()).
-const ESCAPE_TIME_LIMIT_SEC = 90;
+const ESCAPE_TIME_LIMIT_SEC = ggpNum('stage.escapeTimeLimitSec', 90); // GGP: game.json stage.escapeTimeLimitSec
 // RUN FLOW SYSTEM constants — see state.run's own comment for the full
 // design. Kept together here so the whole run's pacing can be tuned from
 // one place.
@@ -684,7 +702,7 @@ const ADAM_RECOVERY_CLAW_HOLD_MS = 160;
 // closer than this, exactly as 9TH ROUND left it.
 const GABRIEL_STALK_Z = GABRIEL_NORMAL_Z_MIN + 180;
 const ADAM_STALK_Z = ADAM_NORMAL_Z_MIN + 180;
-const CLAW_STALK_SPEED = 40; // world-z units/sec of autonomous idle approach
+const CLAW_STALK_SPEED = 40 * ggpNum('enemy.speedMultiplier', 1); // GGP: x game.json enemy.speedMultiplier. world-z units/sec of autonomous idle approach
 // RUN FLOW round: shared "how fast does GABRIEL/ADAM currently close
 // distance" helper — used both by the idle-state stalk tick below AND the
 // new far-range DEFENSE-HIT approach tick (see the 'defense' attackState
@@ -724,7 +742,7 @@ function gabrielAdamApproachSpeed(e) {
 // attack roll (confirmed via live measurement: z stayed at 900 for 3+
 // straight seconds of idle play with zero drift, in COMBAT). Same
 // autonomous-creep pattern as CLAW_STALK_SPEED, applied to non-claw types.
-const ENEMY_IDLE_APPROACH_SPEED = 40; // world-z units/sec, COMBAT-mode only (see updateEnemy())
+const ENEMY_IDLE_APPROACH_SPEED = 40 * ggpNum('enemy.speedMultiplier', 1); // GGP: x game.json enemy.speedMultiplier. world-z units/sec, COMBAT-mode only (see updateEnemy())
 // 14TH ROUND (items 5-8): compressed chain-explosion, ported from ACTION-
 // GAME's (DARKOUT 1's) own boss-death explosion pattern — updateRoidDeath()/
 // updateAdamSphereCombat()'s "targetCount = min(COUNT, floor(elapsed/WINDOW*
@@ -1154,7 +1172,7 @@ const FIRE_HAPTIC_STRONG = 0.15;
 // ROUND changed the option set to 500/1000/2000/INFINITE (that round's own
 // comment records the prior set as "100/300/500/INFINITE") — not a newly
 // invented number, the exact value this project already used here once.
-let PLAYER_MAX_HP = 300;
+let PLAYER_MAX_HP = ggpNum('player.hp', 300); // GGP: game.json player.hp
 // 5TH ROUND PART 12: short damage-blink duration — brief enough not to
 // obscure gameplay, clearly visible as an immediate "you were just hit"
 // cue. Never overlaps the moment damage is possible again: damage is only
@@ -1387,7 +1405,7 @@ const BULLET_DAMAGE = 12;
 // asset/AI/HP of its own at all — see ENEMY_IMPLEMENTED) — every single
 // entity this constant applies to IS a boss fight, so tripling it here
 // cannot accidentally also triple some other, non-boss enemy's HP.
-const ENEMY_MAX_HP = 100 * 3; // was 100
+const ENEMY_MAX_HP = ggpNum('enemy.hp', 100 * 3); // GGP: game.json enemy.hp. was 100
 // 10TH ROUND (item 40): ROID1/ROID2 specifically doubled (300->600) — real-
 // device feedback said they were "too weak" compared to GABRIEL/ADAM/ADAM
 // SPHERE, which all keep the shared ENEMY_MAX_HP (300) unchanged.
@@ -2945,10 +2963,16 @@ const IMAGE_LOAD_STALL_TIMEOUT_MS = 15000;
 const IMAGE_LOAD_MAX_RETRIES = 3;
 const imgLoadStartedAt = new Map();
 const imgRetryCount = new Map();
-function loadImg(src) {
+function loadImg(src, ggpBodyBox) {
   const img = new Image();
   img.decoding = 'async';
   img.src = src;
+  // GGP: game.json player.image / enemy.image may replace this file. The
+  // original still loads first so the replacement can be fitted into the
+  // original's own canvas size and body box (ggpBodyBox: the frame's
+  // measured body fractions) — every size/anchor calculation below then
+  // sees the same geometry it was tuned for.
+  if (ggpIsOverridden(src)) GGP.fitOverride(img, src, ggpBodyBox);
   imgLoadStartedAt.set(img, performance.now());
   imgRetryCount.set(img, 0);
   return img;
@@ -2957,6 +2981,7 @@ function retryStalledImage(img) {
   const retries = imgRetryCount.get(img) || 0;
   imgRetryCount.set(img, retries + 1);
   imgLoadStartedAt.set(img, performance.now());
+  if (/^(blob|data):/.test(img.src)) return; // GGP: an in-browser upload can't take a ?_retry= query
   const baseSrc = img.src.split('&_retry=')[0];
   img.src = baseSrc + (baseSrc.includes('?') ? '&' : '?') + '_retry=' + (retries + 1) + '_' + Date.now();
   if (DEBUG_MODE) r10DebugLog('LOADING: stalled image retry ' + (retries + 1) + '/' + IMAGE_LOAD_MAX_RETRIES + ': ' + baseSrc);
@@ -2973,8 +2998,8 @@ function retryStalledImage(img) {
 // fills a portion) never desyncs the on-screen body height between frames,
 // the same problem ACTION-GAME's own computeBodyVisualScale() exists to
 // solve — see spriteFrame()/computeRoidBodyScale() below.
-function spriteFrame(src, bodyTopFrac, bodyBottomFrac) {
-  return { img: loadImg(src), bodyTopFrac, bodyBottomFrac };
+function spriteFrame(src, bodyTopFrac, bodyBottomFrac, ggpBodyCenterXFrac) {
+  return { img: loadImg(src, { top: bodyTopFrac, bottom: bodyBottomFrac, centerX: ggpBodyCenterXFrac }), bodyTopFrac, bodyBottomFrac };
 }
 
 // 11TH ROUND (items 17-19): extends spriteFrame() with the frame's own
@@ -3032,7 +3057,7 @@ function escapeSpriteFrame(src, bodyTopFrac, bodyBottomFrac, wheelBottomFrac, wh
 // on-screen position — mirrors escapeSpriteFrame()'s own wheelCenterXFrac
 // idea for the same reason.
 function coverSpriteFrame(src, bodyTopFrac, bodyBottomFrac, bodyCenterXFrac) {
-  return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac), { bodyCenterXFrac });
+  return Object.assign(spriteFrame(src, bodyTopFrac, bodyBottomFrac, bodyCenterXFrac), { bodyCenterXFrac });
 }
 
 // 9 real, user-supplied ESCAPE player sprites (assets/player_escape/) — a
@@ -3577,6 +3602,13 @@ function collectImages(node, out) {
 }
 const REQUIRED_IMAGES = [];
 collectImages(ASSETS, REQUIRED_IMAGES);
+// GGP: optional stage backdrop (game.json stage.background, null by
+// default). When set it joins the same LOADING gate as every character
+// image and renderCorridor() paints it where the theme's flat fog color
+// used to be; the corridor floor/structures still draw on top.
+const GGP_STAGE_BACKGROUND = GGP && GGP.config && GGP.config.stage && GGP.config.stage.background
+  ? loadImg(GGP.config.stage.background) : null;
+if (GGP_STAGE_BACKGROUND) REQUIRED_IMAGES.push(GGP_STAGE_BACKGROUND);
 
 const loadingScreenEl = document.getElementById('loading-screen');
 const loadingBarFillEl = document.getElementById('loading-bar-fill');
@@ -4661,7 +4693,7 @@ Object.defineProperty(state.player, 'hp', {
 // PLAYER_MAX_HP's own declaration comment (this project's own prior 300
 // value, not a new guess) and the PAUSE MENU's own first tier. See
 // setPlayerLifeMode() below, the sole writer.
-state.player.lifeMode = 300;
+state.player.lifeMode = PLAYER_MAX_HP; // GGP: follows game.json player.hp (300 by default)
 
 // fixed-size particle pool (avoid per-shot allocation churn)
 const PARTICLE_POOL_SIZE = 48;
@@ -12954,6 +12986,13 @@ function renderWarningLightsEmissive(theme) {
 function renderCorridor(theme) {
   ctx.fillStyle = theme.fog;
   ctx.fillRect(0, 0, state.cssW, state.cssH);
+  if (GGP_STAGE_BACKGROUND && GGP_STAGE_BACKGROUND.complete && GGP_STAGE_BACKGROUND.naturalWidth > 0) {
+    // GGP: cover-fit the stage backdrop over the fog fill.
+    const bg = GGP_STAGE_BACKGROUND;
+    const k = Math.max(state.cssW / bg.naturalWidth, state.cssH / bg.naturalHeight);
+    const bw = bg.naturalWidth * k, bh = bg.naturalHeight * k;
+    ctx.drawImage(bg, (state.cssW - bw) / 2, (state.cssH - bh) / 2, bw, bh);
+  }
 
   // floor / ceiling wedge (ground plane readability even without structures)
   const flFar = project(0, CORRIDOR_FLOOR_Y, Z_FAR);

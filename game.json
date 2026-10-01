@@ -1,0 +1,21 @@
+{
+  "ggpVersion": "0.1",
+  "title": null,
+  "player": {
+    "image": null,
+    "hp": 300
+  },
+  "enemy": {
+    "image": null,
+    "imageTargets": ["drone", "roid1", "roid2", "gabriel", "adamSphere", "adam"],
+    "hp": 300,
+    "speedMultiplier": 1
+  },
+  "stage": {
+    "background": null,
+    "escapeTimeLimitSec": 90
+  },
+  "audio": {
+    "battle": "assets/audio/after_the_limits.mp3"
+  }
+}
